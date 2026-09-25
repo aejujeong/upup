@@ -23,6 +23,9 @@ import math
 import time
 import datetime as dt
 import webbrowser
+import re
+import html as htmllib
+import urllib.request
 from pathlib import Path
 
 import pandas as pd
@@ -36,6 +39,8 @@ CACHE = Path(os.environ.get("CACHE_DIR") or Path(__file__).with_name("cache"))
 CHART_DIR = OUT.parent / "c"   # 종목별 차트 데이터 (c/종목코드.json)
 INLINE_CHARTS = bool(os.environ.get("INLINE_CHARTS"))   # 미리보기용: 차트 데이터를 페이지 안에 넣음
 KST = dt.timezone(dt.timedelta(hours=9))
+DESC_PER_RUN = 700             # 한 번 실행할 때 새로 받아올 회사 소개 수 (처음 며칠에 걸쳐 전 종목이 채워짐)
+DESC_REFRESH_DAYS = 120        # 회사 소개를 다시 받아오는 주기
 
 # ---- S&R Pro Toolkit 설정 (트레이딩뷰 기본값) ----
 SR = {
@@ -205,6 +210,78 @@ def save_chart(code, dlist, o, h, l, c):
         (CHART_DIR / f"{code}.json").write_text(json.dumps(bars, separators=(",", ":")), encoding="utf-8")
 
 
+def _get(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    raw = urllib.request.urlopen(req, timeout=10).read()
+    for enc in ("utf-8", "cp949"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            pass
+    return raw.decode("utf-8", "ignore")
+
+
+def _clean(fragment):
+    items = re.findall(r"<li[^>]*>(.*?)</li>", fragment, re.S) or [fragment]
+    out = []
+    for x in items:
+        x = re.sub(r"<br\s*/?>", " ", x, flags=re.I)
+        x = htmllib.unescape(re.sub(r"<[^>]+>", "", x)).replace("\xa0", " ")
+        x = re.sub(r"\s+", " ", x).strip()
+        if x:
+            out.append(x)
+    return " ".join(out)
+
+
+def fetch_desc(code):
+    """회사 개요(사업 요약) 몇 줄을 가져온다. 에프앤가이드 → 와이즈리포트 순서로 시도."""
+    try:
+        t = _get(f"https://comp.fnguide.com/SVO2/ASP/SVD_Main.asp?pGB=1&gicode=A{code}")
+        m = re.search(r'id="bizSummaryContent"[^>]*>(.*?)</ul>', t, re.S)
+        if m and _clean(m.group(1)):
+            return _clean(m.group(1))
+    except Exception:
+        pass
+    t = _get(f"https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd={code}")
+    items = re.findall(r'<li class="dot_cmp">(.*?)</li>', t, re.S)
+    return _clean("".join(f"<li>{x}</li>" for x in items))
+
+
+def load_descs(codes):
+    f = CACHE / "desc.json"
+    try:
+        descs = json.loads(f.read_text(encoding="utf-8"))
+    except Exception:
+        descs = {}
+    today = dt.datetime.now(KST).date()
+    def stale(c):
+        e = descs.get(c)
+        if not e:
+            return True
+        try:
+            return (today - dt.date.fromisoformat(e["t"])).days > DESC_REFRESH_DAYS
+        except Exception:
+            return True
+    todo = sorted((c for c in codes if stale(c)), key=lambda c: c in descs)   # 없는 것부터
+    fails = done = 0
+    for c in todo[:DESC_PER_RUN]:
+        try:
+            text = fetch_desc(c)
+            descs[c] = {"x": text[:400], "t": today.isoformat()}
+            done += 1
+            fails = 0
+        except Exception:
+            fails += 1
+            if fails >= 15:
+                print("회사 소개 사이트 접속이 계속 실패해서 이번 실행에서는 건너뜁니다.")
+                break
+        time.sleep(0.2)
+    print(f"회사 소개: 새로 {done}개, 보유 {sum(1 for c in codes if descs.get(c, {}).get('x'))}개 / 전체 {len(codes)}개")
+    CACHE.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(descs, ensure_ascii=False), encoding="utf-8")
+    return {c: descs[c]["x"] for c in codes if c in descs}
+
+
 def adjust_splits(o, h, l, c, chg):
     """액면분할·병합·감자로 가격이 끊긴 날을 찾아 그 이전 가격을 보정한다 (트레이딩뷰 수정주가 방식).
     거래소 등락률은 조정된 기준가로 계산되므로, 실제 종가 변화와 등락률이 크게 어긋나는 날을 이벤트로 본다."""
@@ -233,6 +310,28 @@ def collect(days_all):
         exh = pick(fr, "한도소진률", "한도소진율")
         mcap = pick(cap, "시가총액")
         close = pick(cap, "종가")
+        try:
+            fund = stock.get_market_fundamental(base, market=m)   # EPS·PER·PBR (직전 결산 기준)
+        except Exception as e:
+            print(f"[{m}] 재무지표를 불러오지 못했습니다: {e}")
+            fund = None
+        sector = {}
+        try:   # 한국거래소 업종 분류
+            sec = stock.get_market_sector_classifications(base, m)
+            col = next((x for x in ("업종명", "업종") if x in sec.columns), None)
+            if col:
+                sector = sec[col].to_dict()
+        except Exception as e:
+            print(f"[{m}] 업종 분류를 불러오지 못했습니다: {e}")
+        def fval(t, col):
+            if fund is None or col not in fund.columns or t not in fund.index:
+                return None
+            v = fund.at[t, col]
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return None
+            return None if math.isnan(v) else v
 
         for t in cap.index:
             if mcap.get(t, 0) <= 0:
@@ -245,6 +344,10 @@ def collect(days_all):
                 "cap": round(float(mcap[t]) / 1e8, 1),       # 억 원
                 "own": round(float(own.get(t, 0) or 0), 2),
                 "exh": round(float(exh.get(t, 0) or 0), 2),
+                "sec": sector.get(t) or "",
+                "eps": fval(t, "EPS"),
+                "per": fval(t, "PER"),
+                "pbr": fval(t, "PBR"),
                 "d": [None] * len(days),                      # 외국인 일별 [매수대금, 매도대금(백만원), 매수량, 매도량]
                 "di": [None] * len(days),                     # 기관 일별 (같은 형식)
                 "sr": None,
@@ -316,6 +419,9 @@ def collect(days_all):
             r["name"] = stock.get_market_ticker_name(t)
         r["d"] = [x if x else [0, 0, 0, 0] for x in r["d"]]
         r["di"] = [x if x else [0, 0, 0, 0] for x in r["di"]]
+    descs = load_descs(list(rows.keys()))
+    for t, r in rows.items():
+        r["desc"] = descs.get(t, "")
     prune_cache(set(days_all))
     return list(rows.values())
 
@@ -345,7 +451,7 @@ TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>100억 부자 트레이딩</title>
+<title>100억 트레이딩</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
@@ -358,7 +464,7 @@ TEMPLATE = r"""<!doctype html>
 body{margin:0;background:var(--cream);color:var(--ink);
   font-family:Pretendard,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
   font-size:15px;line-height:1.5}
-.wrap{max-width:1320px;margin:0 auto;padding:36px 20px 60px}
+.wrap{max-width:1500px;margin:0 auto;padding:36px 20px 60px}
 h1{font-size:30px;font-weight:800;margin:0;letter-spacing:-.02em}
 .sub{color:var(--gray);margin:6px 0 22px}
 .tabs{display:flex;gap:8px;margin-bottom:12px}
@@ -378,11 +484,13 @@ select,input{font:inherit;font-size:14px;padding:6px 10px;border:1px solid var(-
   border-radius:6px;background:#fff;color:var(--ink);width:120px}
 input[type=search]{width:170px}
 #sort{width:190px}
+#secf{width:170px}
+td.sec{color:var(--gray);font-size:13px;max-width:150px;overflow:hidden;text-overflow:ellipsis}
 button:focus-visible,select:focus-visible,input:focus-visible,th:focus-visible,tr:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
 .info{color:var(--gray);font-size:13px;margin:0 0 8px}
 .tbl{overflow-x:auto;background:#fff;border-radius:6px}
 table{border-collapse:collapse;width:100%}
-#main{min-width:1210px}
+#main{min-width:1440px}
 th,td{border:1px solid var(--olive);padding:8px 10px;text-align:left;white-space:nowrap}
 th{background:var(--olive);color:#fff;font-weight:700;text-align:center}
 #main th{cursor:pointer;user-select:none}
@@ -411,7 +519,12 @@ dialog::backdrop{background:rgba(0,0,0,.5)}
 .dh{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
 .dh h2{margin:0;font-size:24px;font-weight:800}
 .dh p{margin:4px 0 0;color:var(--gray);font-size:14px}
-.close{font:inherit;font-size:14px;padding:6px 14px;border-radius:999px;border:1px solid var(--olive);background:#fff;color:var(--ink);cursor:pointer}
+.info{margin-top:14px}
+.info th{background:var(--pale);color:var(--ink);text-align:left;font-weight:700;width:1%}
+.info td{min-width:90px;color:var(--ink)}
+.desc{margin:12px 0 0;padding:12px 14px;background:#fff;border:1px solid var(--olive);border-radius:8px;font-size:14px;line-height:1.65}
+.desc.none{color:var(--gray)}
+.close{white-space:nowrap;font:inherit;font-size:14px;padding:6px 14px;border-radius:999px;border:1px solid var(--olive);background:#fff;color:var(--ink);cursor:pointer}
 dialog h3{font-size:16px;margin:22px 0 8px}
 .small td,.small th{padding:7px 10px;font-size:14px}
 .small td:first-child{font-weight:600}
@@ -434,6 +547,8 @@ dialog h3{font-size:16px;margin:22px 0 8px}
 .badge{display:inline-block;background:var(--sup);color:#fff;font-size:12px;font-weight:700;padding:2px 9px;border-radius:999px}
 .muted{color:var(--stone)}
 .badge.rb{background:var(--red)}
+.pl{font-weight:700}
+.pl.loss{color:var(--bean);font-weight:500}
 .star{border:0;background:none;cursor:pointer;font-size:20px;line-height:1;padding:2px 4px;color:#BDBDBD}
 .star.on{color:var(--red)}
 .star:focus-visible{outline:2px solid var(--ink);outline-offset:1px;border-radius:4px}
@@ -446,7 +561,7 @@ td.st{text-align:center;width:44px}
 </head>
 <body>
 <div class="wrap">
-  <h1>100억 부자 트레이딩</h1>
+  <h1>100억 트레이딩</h1>
   <p class="sub" id="sub"></p>
 
   <div class="tabs" id="per">
@@ -467,6 +582,12 @@ td.st{text-align:center;width:44px}
       <div class="seg" id="srf">
         <button data-v="ALL" class="on">전체</button><button data-v="NEAR">근처만</button>
       </div></div>
+    <div class="field"><label>업종</label>
+      <select id="secf"><option value="">전체</option></select></div>
+    <div class="field"><label>실적</label>
+      <div class="seg" id="pf">
+        <button data-v="ALL" class="on">전체</button><button data-v="P">흑자만</button><button data-v="L">적자만</button>
+      </div></div>
     <div class="field"><label>정렬 기준</label>
       <select id="sort">
         <option value="net">외국인 순매수 금액</option>
@@ -476,11 +597,12 @@ td.st{text-align:center;width:44px}
         <option value="own">외국인 보유율</option>
         <option value="cap">시가총액</option>
         <option value="dist">지지선과 가까운 순</option>
+        <option value="per">PER 낮은 순</option>
       </select></div>
     <div class="field"><label>시총 최소 (억)</label><input id="minCap" type="number" min="0" step="500" value="0"></div>
     <div class="field"><label>한 페이지에</label>
       <select id="top"><option>30</option><option selected>100</option><option>300</option></select></div>
-    <div class="field"><label>종목 찾기</label><input id="q" type="search" placeholder="종목명 또는 코드"></div>
+    <div class="field"><label>종목 찾기</label><input id="q" type="search" placeholder="종목명, 코드, 업종"></div>
   </div>
 
   <p class="info" id="info"></p>
@@ -489,32 +611,34 @@ td.st{text-align:center;width:44px}
     <tbody id="body"></tbody>
   </table></div>
   <nav class="pager" id="pager" aria-label="페이지 이동"></nav>
-  <p class="foot">데이터 출처: 한국거래소. 순매수는 매수대금에서 매도대금을 뺀 값이며, 기관은 한국거래소 기관합계 기준입니다. 종목을 누르면 상세 내역이 열립니다. 지지선은 LuxAlgo의 Support &amp; Resistance Pro Toolkit(CC BY-NC-SA 4.0) 로직을 옮겨 계산했으며 트레이딩뷰 화면과 조금 다를 수 있습니다. 투자 판단의 근거가 아닌 참고용 자료입니다.</p>
+  <p class="foot">데이터 출처: 한국거래소. 순매수는 매수대금에서 매도대금을 뺀 값이며, 기관은 한국거래소 기관합계 기준입니다. 흑자·적자와 PER은 직전 결산 연도 EPS 기준입니다. 종목을 누르면 상세 내역이 열립니다. 지지선은 LuxAlgo의 Support &amp; Resistance Pro Toolkit(CC BY-NC-SA 4.0) 로직을 옮겨 계산했으며 트레이딩뷰 화면과 조금 다를 수 있습니다. 투자 판단의 근거가 아닌 참고용 자료입니다.</p>
 </div>
 
 <dialog id="dlg" aria-labelledby="dName"><div class="dbody">
   <div class="dh">
-    <div><h2 id="dName"></h2><p id="dMeta"></p></div>
+    <div><h2 id="dName"></h2></div>
     <div class="dbtns"><button class="dstar" id="dStar"></button><button class="close" id="dClose">닫기</button></div>
   </div>
-  <h3>매매 요약</h3>
-  <div class="tbl"><table class="small">
-    <thead><tr><th>항목</th><th id="hDay">전날</th><th id="hMon">한달</th></tr></thead>
-    <tbody id="dSum"></tbody>
-  </table></div>
+  <div class="tbl info"><table class="small"><tbody id="dInfo"></tbody></table></div>
+  <p class="desc" id="dDesc"></p>
   <div class="tvhead"><h3>가격 차트 (일봉, 지지·저항 구간 표시)</h3><a class="tvlink" id="tvLink" target="_blank" rel="noopener">트레이딩뷰에서 크게 보기</a></div>
   <div class="tv" id="tv"></div>
   <p class="legend"><span><i></i>지지선</span><span><i class="zone"></i>지지 구간</span><span><i class="res"></i>저항선</span><span><i class="zres"></i>저항 구간</span></p>
   <h3>지지·저항 구간 (S&amp;R Pro Toolkit 기준)</h3>
   <div id="dSr"></div>
-  <h3 id="dChartTitle"></h3>
-  <div class="chart" id="dChart"></div>
-  <h3 id="dChartTitle2"></h3>
-  <div class="chart" id="dChart2"></div>
   <h3>일별 내역</h3>
   <div class="tbl"><table class="small">
     <thead><tr><th>날짜</th><th>외국인 순매수</th><th>외국인 수량</th><th>기관 순매수</th><th>기관 수량</th></tr></thead>
     <tbody id="dRows"></tbody>
+  </table></div>
+  <h3 id="dChartTitle"></h3>
+  <div class="chart" id="dChart"></div>
+  <h3 id="dChartTitle2"></h3>
+  <div class="chart" id="dChart2"></div>
+  <h3>매매 요약</h3>
+  <div class="tbl"><table class="small">
+    <thead><tr><th>항목</th><th id="hDay">전날</th><th id="hMon">한달</th></tr></thead>
+    <tbody id="dSum"></tbody>
   </table></div>
 </div></dialog>
 
@@ -523,7 +647,7 @@ const DATA = __DATA__;
 const META = __META__;
 const CHARTS = __CHARTS__ || {};
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL'};
+const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:''};
 const WKEY = 'upup-watchlist';
 let WATCH = new Set();
 try { WATCH = new Set(JSON.parse(localStorage.getItem(WKEY) || '[]')); } catch (e) {}
@@ -564,6 +688,7 @@ const COLS = [
   {k:'name', t:'종목명'},
   {k:null,   t:'코드'},
   {k:null,   t:'시장'},
+  {k:'sec',  t:'업종'},
   {k:'cap',  t:'시가총액(억)'},
   {k:'own',  t:'외국인 보유율'},
   {k:'net',  t:'외국인 순매수'},
@@ -571,6 +696,8 @@ const COLS = [
   {k:'pct',  t:'외국인/시총'},
   {k:'inet', t:'기관 순매수'},
   {k:'inv',  t:'기관 수량'},
+  {k:'eps',  t:'실적'},
+  {k:'per',  t:'PER'},
   {k:'dist', t:'지지선'},
 ];
 function val(r, k){
@@ -578,6 +705,8 @@ function val(r, k){
   if (k === 'inet') return r.b[S.per].net;
   if (k === 'inv') return r.b[S.per].nv;
   if (k === 'sum') return r.a[S.per].net + r.b[S.per].net;
+  if (k === 'eps') return r.eps;
+  if (k === 'per') return r.eps > 0 && r.per > 0 ? r.per : null;
   if (k === 'dist') return r.sr && r.sr.dist !== null ? Math.abs(r.sr.dist) : null;
   return r[k];
 }
@@ -591,7 +720,7 @@ function drawHead(){
   $('head').querySelectorAll('th[data-k]').forEach(th => {
     const go = () => {
       const k = th.dataset.k;
-      if (S.sort === k) S.dir *= -1; else { S.sort = k; S.dir = (k === 'name' || k === 'dist') ? 1 : -1; }
+      if (S.sort === k) S.dir *= -1; else { S.sort = k; S.dir = (k === 'name' || k === 'sec' || k === 'dist' || k === 'per') ? 1 : -1; }
       if ([...$('sort').options].some(o => o.value === k)) $('sort').value = k;
       S.page = 1; render();
     };
@@ -600,6 +729,10 @@ function drawHead(){
   });
 }
 
+function plCell(r){
+  if (r.eps === null || r.eps === undefined || r.eps === 0) return '<span class="muted">-</span>';
+  return r.eps > 0 ? '<span class="pl">흑자</span>' : '<span class="pl loss">적자</span>';
+}
 function srCell(r){
   if (!r.sr || !r.sr.levels.length) return '<span class="muted">-</span>';
   if (r.sr.near) return '<span class="badge">지지 근처</span>';
@@ -632,14 +765,16 @@ function render(){
   const q = S.q.trim().toLowerCase();
   let rows = DATA.filter(r =>
     (S.watch === 'ALL' || WATCH.has(r.code)) &&
+    (!S.sec || r.sec === S.sec) &&
+    (S.pf === 'ALL' || (S.pf === 'P' ? r.eps > 0 : (r.eps !== null && r.eps < 0))) &&
     (S.mkt === 'ALL' || r.mkt === S.mkt) &&
     (S.sr === 'ALL' || (r.sr && r.sr.near)) &&
     r.cap >= S.minCap &&
-    (!q || r.name.toLowerCase().includes(q) || r.code.includes(q)));
+    (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q)));
   const total = rows.length;
   rows.sort((a, b) => {
     const x = val(a, S.sort), y = val(b, S.sort);
-    if (S.sort === 'name') return x.localeCompare(y, 'ko') * S.dir;
+    if (S.sort === 'name' || S.sort === 'sec') return (x || '힣').localeCompare(y || '힣', 'ko') * S.dir;
     if (x === null || y === null) return x === y ? 0 : (x === null ? 1 : -1);
     return (x - y) * S.dir;
   });
@@ -662,6 +797,7 @@ function render(){
       <td class="name">${esc(r.name)}</td>
       <td class="code">${r.code}</td>
       <td>${r.mkt}</td>
+      <td class="sec" title="${esc(r.sec || '')}">${r.sec ? esc(r.sec) : '<span class="muted">-</span>'}</td>
       <td>${fmt(r.cap)}</td>
       <td>${fmt(r.own, 2)}%</td>
       <td class="${cls}">${won(a.net, true)}</td>
@@ -669,6 +805,8 @@ function render(){
       <td class="${cls}">${plus(a.pct)}${fmt(a.pct, 2)}%</td>
       <td class="${icls}">${won(b.net, true)}</td>
       <td class="${icls}">${shares(b.nv, true)}</td>
+      <td>${plCell(r)}</td>
+      <td>${r.eps > 0 && r.per > 0 ? fmt(r.per, 1) + '배' : '<span class="muted">-</span>'}</td>
       <td>${srCell(r)}</td>
     </tr>`;
   }).join('') : `<tr><td colspan="${COLS.length}" class="empty">${S.watch === 'W' && !WATCH.size ? '관심종목이 없습니다. 종목 왼쪽의 ☆를 눌러 추가해 보세요.' : '조건에 맞는 종목이 없습니다. 시총 최소값을 낮추거나 검색어를 지워 보세요.'}</td></tr>`;
@@ -794,10 +932,23 @@ function openDetail(code){
   const r = BY[code]; if (!r) return;
   const d = r.a['1'], m = r.a['M'], di = r.b['1'], mi = r.b['M'];
   $('dName').textContent = r.name;
+  $('dDesc').textContent = r.desc || '회사 소개를 아직 불러오지 못했습니다. 다음 갱신 때 채워집니다.';
+  $('dDesc').classList.toggle('none', !r.desc);
   const ds = () => { const on = WATCH.has(r.code); $('dStar').textContent = on ? '★ 관심종목' : '☆ 관심종목 추가'; $('dStar').classList.toggle('on', on); };
   ds();
   $('dStar').onclick = () => { toggleWatch(r.code); ds(); render(); };
-  $('dMeta').textContent = `${r.code}, ${r.mkt}, 시가총액 ${fmt(r.cap)}억, 종가 ${fmt(r.price)}원, 외국인 보유율 ${fmt(r.own, 2)}%, 한도소진율 ${fmt(r.exh, 2)}%`;
+  const pl = r.eps === null || r.eps === undefined ? '-' : r.eps > 0 ? '흑자' : r.eps < 0 ? '적자' : '-';
+  const cells = [
+    ['종목코드', r.code], ['시장', r.mkt], ['업종', r.sec ? esc(r.sec) : '-'],
+    ['종가', fmt(r.price) + '원'], ['시가총액', fmt(r.cap) + '억'], ['외국인 보유율', fmt(r.own, 2) + '%'],
+    ['한도소진율', fmt(r.exh, 2) + '%'], ['실적', pl], ['EPS', r.eps === null || r.eps === undefined ? '-' : fmt(r.eps) + '원'],
+    ['PER', r.eps > 0 && r.per > 0 ? fmt(r.per, 1) + '배' : '-'], ['PBR', r.pbr ? fmt(r.pbr, 2) + '배' : '-'], ['', ''],
+  ];
+  let info = '';
+  for (let k = 0; k < cells.length; k += 3) {
+    info += '<tr>' + cells.slice(k, k + 3).map(([a, b]) => a ? `<th>${a}</th><td>${b}</td>` : '<th></th><td></td>').join('') + '</tr>';
+  }
+  $('dInfo').innerHTML = info;
   $('hDay').textContent = `전날 (${DAYS[ND - 1].slice(5)})`;
   $('hMon').textContent = `한달 (${ND}거래일)`;
   const mk = (x, y) => (t, a, b, cls) => `<tr><td>${t}</td><td class="${cls ? cls(x) : ''}">${a(x)}</td><td class="${cls ? cls(y) : ''}">${a(y)}</td></tr>`;
@@ -863,8 +1014,13 @@ $('sub').textContent = `외국인·기관 순매수 순위, 기준일 ${DAYS[ND 
 seg($('per'), v => S.per = v);
 seg($('watchf'), v => S.watch = v);
 seg($('mkt'), v => S.mkt = v);
+seg($('pf'), v => S.pf = v);
+[...new Set(DATA.map(r => r.sec).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko')).forEach(v => {
+  const o = document.createElement('option'); o.value = v; o.textContent = v; $('secf').appendChild(o);
+});
+$('secf').onchange = e => { S.sec = e.target.value; S.page = 1; render(); };
 seg($('srf'), v => S.sr = v);
-$('sort').onchange = e => { S.sort = e.target.value; S.dir = S.sort === 'dist' ? 1 : -1; S.page = 1; render(); };
+$('sort').onchange = e => { S.sort = e.target.value; S.dir = (S.sort === 'dist' || S.sort === 'per') ? 1 : -1; S.page = 1; render(); };
 $('minCap').oninput = e => { S.minCap = Number(e.target.value) || 0; S.page = 1; render(); };
 $('top').onchange = e => { S.top = Number(e.target.value); S.page = 1; render(); };
 $('q').oninput = e => { S.q = e.target.value; S.page = 1; render(); };
