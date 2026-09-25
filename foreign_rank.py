@@ -29,7 +29,7 @@ import pandas as pd
 from pykrx import stock
 
 MONTH = 20                     # '한달'을 몇 거래일로 볼지
-HISTORY = 320                  # 지지선 계산에 쓰는 과거 거래일 수 (ATR 200 계산을 위해 넉넉히)
+HISTORY = 740                  # 받아오는 과거 거래일 수 (약 3년). 늘리면 첫 실행이 그만큼 오래 걸립니다
 MARKETS = ["KOSPI", "KOSDAQ"]
 OUT = Path(os.environ.get("OUT_FILE") or Path(__file__).with_name("foreign_rank.html"))
 CACHE = Path(os.environ.get("CACHE_DIR") or Path(__file__).with_name("cache"))
@@ -189,7 +189,7 @@ def sr_levels(o, h, l, c):
 
     # 마지막 봉 기준으로 화면에 보이는 활성 구간(최신순 최대 N개, 지지·저항 합산)
     visible = [lv for lv in levels if not lv.mit and not lv.hidden][: SR["max_levels"]]
-    return [lv for lv in visible if lv.sup]
+    return [lv for lv in visible if lv.sup], [lv for lv in visible if not lv.sup]
 
 
 CHARTS = {}
@@ -203,6 +203,22 @@ def save_chart(code, dlist, o, h, l, c):
     else:
         CHART_DIR.mkdir(parents=True, exist_ok=True)
         (CHART_DIR / f"{code}.json").write_text(json.dumps(bars, separators=(",", ":")), encoding="utf-8")
+
+
+def adjust_splits(o, h, l, c, chg):
+    """액면분할·병합·감자로 가격이 끊긴 날을 찾아 그 이전 가격을 보정한다 (트레이딩뷰 수정주가 방식).
+    거래소 등락률은 조정된 기준가로 계산되므로, 실제 종가 변화와 등락률이 크게 어긋나는 날을 이벤트로 본다."""
+    n = len(c)
+    mult, adj = 1.0, [1.0] * n
+    for i in range(n - 1, 0, -1):
+        adj[i] = mult
+        base = 1 + chg[i] / 100
+        if c[i - 1] > 0 and base > 0 and not math.isnan(chg[i]):
+            f = (c[i] / c[i - 1]) / base
+            if f > 1.3 or f < 0.77:
+                mult *= f
+    adj[0] = mult
+    return ([x * a for x, a in zip(v, adj)] for v in (o, h, l, c))
 
 
 def collect(days_all):
@@ -262,7 +278,8 @@ def collect(days_all):
             df = cached("ohlcv", m, day, lambda: stock.get_market_ohlcv(day, market=m), day == base)
             if df is None or df.empty:
                 continue
-            df = df[["시가", "고가", "저가", "종가"]].copy()
+            cols = [x for x in ("시가", "고가", "저가", "종가", "등락률") if x in df.columns]
+            df = df[cols].copy()
             df["day"] = day
             frames.append(df)
         if not frames:
@@ -276,18 +293,23 @@ def collect(days_all):
                 continue
             g = g.sort_values("day")
             o, h, l, c = (g[x].astype(float).tolist() for x in ("시가", "고가", "저가", "종가"))
+            if "등락률" in g.columns:
+                o, h, l, c = adjust_splits(o, h, l, c, g["등락률"].astype(float).tolist())
             dlist = g["day"].tolist()
-            sups = sr_levels(o, h, l, c)
+            sups, ress = sr_levels(o, h, l, c)
             save_chart(t, dlist, o, h, l, c)
             last = c[-1]
-            lv_out = [{
-                "base": round(lv.base, 2), "top": round(lv.top, 2), "btm": round(lv.btm, 2),
-                "since": f"{dlist[lv.start][:4]}-{dlist[lv.start][4:6]}-{dlist[lv.start][6:]}",
-                "entries": lv.entries, "sweeps": lv.sweeps,
-            } for lv in sups]
+            def pack(lst):
+                return [{
+                    "base": round(lv.base, 2), "top": round(lv.top, 2), "btm": round(lv.btm, 2),
+                    "since": f"{dlist[lv.start][:4]}-{dlist[lv.start][4:6]}-{dlist[lv.start][6:]}",
+                    "entries": lv.entries, "sweeps": lv.sweeps,
+                } for lv in lst]
+            lv_out, res_out = pack(sups), pack(ress)
             near = any(lv.btm <= last <= lv.top for lv in sups)
-            dist = min(((last - lv.base) / lv.base * 100 for lv in sups if lv.base > 0), default=None)
-            r["sr"] = {"near": near, "dist": None if dist is None else round(dist, 2), "levels": lv_out}
+            # 현재가에서 지지선까지 거리 (%). 음수 = 그만큼 내려가야 지지선에 닿음
+            dist = max(((lv.base - last) / last * 100 for lv in sups if last > 0), default=None)
+            r["sr"] = {"near": near, "dist": None if dist is None else round(dist, 2), "levels": lv_out, "res": res_out}
 
     for t, r in rows.items():
         if r["name"] is None:
@@ -329,7 +351,7 @@ TEMPLATE = r"""<!doctype html>
 <style>
 :root{
   --cream:#FFFFFF; --ink:#1A1A1A; --olive:#C62828; --pale:#FDF1F1;
-  --gray:#6B6B6B; --stone:#8A8A8A; --bean:#767676; --red:#C62828;
+  --gray:#6B6B6B; --stone:#8A8A8A; --bean:#767676; --red:#C62828; --sup:#089981;
   padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
 }
 *{box-sizing:border-box}
@@ -355,11 +377,12 @@ h1{font-size:30px;font-weight:800;margin:0;letter-spacing:-.02em}
 select,input{font:inherit;font-size:14px;padding:6px 10px;border:1px solid var(--olive);
   border-radius:6px;background:#fff;color:var(--ink);width:120px}
 input[type=search]{width:170px}
+#sort{width:190px}
 button:focus-visible,select:focus-visible,input:focus-visible,th:focus-visible,tr:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
 .info{color:var(--gray);font-size:13px;margin:0 0 8px}
 .tbl{overflow-x:auto;background:#fff;border-radius:6px}
 table{border-collapse:collapse;width:100%}
-#main{min-width:1160px}
+#main{min-width:1210px}
 th,td{border:1px solid var(--olive);padding:8px 10px;text-align:left;white-space:nowrap}
 th{background:var(--olive);color:#fff;font-weight:700;text-align:center}
 #main th{cursor:pointer;user-select:none}
@@ -400,10 +423,24 @@ dialog h3{font-size:16px;margin:22px 0 8px}
 .tv{height:420px;background:#fff;border:1px solid var(--olive);border-radius:6px;overflow:hidden;position:relative}
 .tv .msg{padding:14px;color:var(--gray);font-size:14px;margin:0}
 .legend{display:flex;gap:16px;flex-wrap:wrap;color:var(--gray);font-size:13px;margin:6px 0 0}
-.legend i{display:inline-block;width:18px;height:0;border-top:2px solid var(--red);vertical-align:middle;margin-right:6px}
+.legend i{display:inline-block;width:18px;height:0;border-top:2px solid var(--sup);vertical-align:middle;margin-right:6px}
+.legend i.res{border-top-color:var(--red)}
+.legend i.zres{height:10px;border:0;background:rgba(198,40,40,.16)}
 .legend i.dash{border-top:2px dashed #E57373}
-.badge{display:inline-block;background:var(--red);color:#fff;font-size:12px;font-weight:700;padding:2px 9px;border-radius:999px}
+.legend i.zone{height:10px;border:0;background:rgba(8,153,129,.16)}
+.zones{position:absolute;left:0;top:0;pointer-events:none;z-index:2;overflow:hidden}
+.zones div{position:absolute;background:rgba(8,153,129,.14)}
+.zones div.r{background:rgba(198,40,40,.12)}
+.badge{display:inline-block;background:var(--sup);color:#fff;font-size:12px;font-weight:700;padding:2px 9px;border-radius:999px}
 .muted{color:var(--stone)}
+.badge.rb{background:var(--red)}
+.star{border:0;background:none;cursor:pointer;font-size:20px;line-height:1;padding:2px 4px;color:#BDBDBD}
+.star.on{color:var(--red)}
+.star:focus-visible{outline:2px solid var(--ink);outline-offset:1px;border-radius:4px}
+td.st{text-align:center;width:44px}
+.dstar{font:inherit;font-size:14px;padding:6px 14px;border-radius:999px;border:1px solid var(--olive);background:#fff;color:var(--ink);cursor:pointer;white-space:nowrap}
+.dstar.on{background:var(--olive);color:#fff}
+.dbtns{display:flex;gap:8px}
 .note{color:var(--gray);font-size:13px;margin:6px 0 0}
 </style>
 </head>
@@ -418,6 +455,10 @@ dialog h3{font-size:16px;margin:22px 0 8px}
   <p class="range" id="range"></p>
 
   <div class="bar">
+    <div class="field"><label>보기</label>
+      <div class="seg" id="watchf">
+        <button data-v="ALL" class="on">전체</button><button data-v="W" id="wBtn">관심종목</button>
+      </div></div>
     <div class="field"><label>시장</label>
       <div class="seg" id="mkt">
         <button data-v="ALL" class="on">전체</button><button data-v="코스피">코스피</button><button data-v="코스닥">코스닥</button>
@@ -454,17 +495,17 @@ dialog h3{font-size:16px;margin:22px 0 8px}
 <dialog id="dlg" aria-labelledby="dName"><div class="dbody">
   <div class="dh">
     <div><h2 id="dName"></h2><p id="dMeta"></p></div>
-    <button class="close" id="dClose">닫기</button>
+    <div class="dbtns"><button class="dstar" id="dStar"></button><button class="close" id="dClose">닫기</button></div>
   </div>
   <h3>매매 요약</h3>
   <div class="tbl"><table class="small">
     <thead><tr><th>항목</th><th id="hDay">전날</th><th id="hMon">한달</th></tr></thead>
     <tbody id="dSum"></tbody>
   </table></div>
-  <div class="tvhead"><h3>가격 차트 (일봉, 지지 구간 표시)</h3><a class="tvlink" id="tvLink" target="_blank" rel="noopener">트레이딩뷰에서 크게 보기</a></div>
+  <div class="tvhead"><h3>가격 차트 (일봉, 지지·저항 구간 표시)</h3><a class="tvlink" id="tvLink" target="_blank" rel="noopener">트레이딩뷰에서 크게 보기</a></div>
   <div class="tv" id="tv"></div>
-  <p class="legend"><span><i></i>지지선</span><span><i class="dash"></i>지지 구간 위·아래 끝</span></p>
-  <h3>지지 구간 (S&amp;R Pro Toolkit 기준)</h3>
+  <p class="legend"><span><i></i>지지선</span><span><i class="zone"></i>지지 구간</span><span><i class="res"></i>저항선</span><span><i class="zres"></i>저항 구간</span></p>
+  <h3>지지·저항 구간 (S&amp;R Pro Toolkit 기준)</h3>
   <div id="dSr"></div>
   <h3 id="dChartTitle"></h3>
   <div class="chart" id="dChart"></div>
@@ -482,7 +523,13 @@ const DATA = __DATA__;
 const META = __META__;
 const CHARTS = __CHARTS__ || {};
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1};
+const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL'};
+const WKEY = 'upup-watchlist';
+let WATCH = new Set();
+try { WATCH = new Set(JSON.parse(localStorage.getItem(WKEY) || '[]')); } catch (e) {}
+function saveWatch(){ try { localStorage.setItem(WKEY, JSON.stringify([...WATCH])); } catch (e) {} }
+function toggleWatch(code){ WATCH.has(code) ? WATCH.delete(code) : WATCH.add(code); saveWatch(); }
+function starBtn(code){ const on = WATCH.has(code); return `<button class="star${on ? ' on' : ''}" data-star="${code}" aria-pressed="${on}" aria-label="관심종목 ${on ? '해제' : '추가'}">${on ? '★' : '☆'}</button>`; }
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -512,6 +559,7 @@ DATA.forEach(r => {
 });
 
 const COLS = [
+  {k:null,   t:'관심'},
   {k:null,   t:'순위'},
   {k:'name', t:'종목명'},
   {k:null,   t:'코드'},
@@ -583,6 +631,7 @@ function render(){
     : `${DAYS[0]} ~ ${DAYS[ND-1]}, 최근 ${ND}거래일 합계 기준`;
   const q = S.q.trim().toLowerCase();
   let rows = DATA.filter(r =>
+    (S.watch === 'ALL' || WATCH.has(r.code)) &&
     (S.mkt === 'ALL' || r.mkt === S.mkt) &&
     (S.sr === 'ALL' || (r.sr && r.sr.near)) &&
     r.cap >= S.minCap &&
@@ -608,6 +657,7 @@ function render(){
   $('body').innerHTML = rows.length ? rows.map((r, i) => {
     const a = r.a[S.per], b = r.b[S.per], cls = cc(a.net), icls = cc(b.net);
     return `<tr tabindex="0" data-code="${r.code}">
+      <td class="st">${starBtn(r.code)}</td>
       <td>${off + i + 1}</td>
       <td class="name">${esc(r.name)}</td>
       <td class="code">${r.code}</td>
@@ -621,7 +671,8 @@ function render(){
       <td class="${icls}">${shares(b.nv, true)}</td>
       <td>${srCell(r)}</td>
     </tr>`;
-  }).join('') : `<tr><td colspan="${COLS.length}" class="empty">조건에 맞는 종목이 없습니다. 시총 최소값을 낮추거나 검색어를 지워 보세요.</td></tr>`;
+  }).join('') : `<tr><td colspan="${COLS.length}" class="empty">${S.watch === 'W' && !WATCH.size ? '관심종목이 없습니다. 종목 왼쪽의 ☆를 눌러 추가해 보세요.' : '조건에 맞는 종목이 없습니다. 시총 최소값을 낮추거나 검색어를 지워 보세요.'}</td></tr>`;
+  $('wBtn').textContent = `관심종목 (${WATCH.size})`;
 }
 
 /* ---------- 상세 ---------- */
@@ -646,8 +697,42 @@ function chart(series, who){
     <text x="${W - R}" y="${H - 6}" font-size="12" fill="#6B6B6B" text-anchor="end">${DAYS[ND - 1].slice(5)}</text>
   </svg>`;
 }
-let chartObj = null, chartCode = null;
-function clearChart(){ if (chartObj) { chartObj.remove(); chartObj = null; } }
+let chartObj = null, chartCode = null, zoneRaf = 0;
+function clearChart(){
+  cancelAnimationFrame(zoneRaf); zoneRaf = 0;
+  if (chartObj) { chartObj.remove(); chartObj = null; }
+}
+// 지지 구간을 차트 위에 색칠한다 (형성일부터 오른쪽 끝까지)
+function paintZones(box, series, levels){
+  const layer = document.createElement('div');
+  layer.className = 'zones';
+  box.appendChild(layer);
+  const els = levels.map(lv => { const d = document.createElement('div'); if (lv.res) d.className = 'r'; return layer.appendChild(d); });
+  const ts = chartObj.timeScale();
+  const loop = () => {
+    if (!chartObj) return;
+    const right = ts.width();
+    layer.style.width = right + 'px';
+    layer.style.height = Math.max(0, box.clientHeight - ts.height()) + 'px';   // 날짜 축 위까지만
+    levels.forEach((lv, i) => {
+      const y1 = series.priceToCoordinate(lv.top), y2 = series.priceToCoordinate(lv.btm);
+      let x1 = ts.timeToCoordinate(lv.since);
+      if (x1 === null) {
+        const vr = ts.getVisibleRange();
+        x1 = vr && lv.since < vr.from ? 0 : right;
+      }
+      const el = els[i];
+      if (y1 === null || y2 === null || x1 >= right) { el.style.display = 'none'; return; }
+      el.style.display = 'block';
+      el.style.left = Math.max(0, x1) + 'px';
+      el.style.width = Math.max(0, right - Math.max(0, x1)) + 'px';
+      el.style.top = Math.min(y1, y2) + 'px';
+      el.style.height = Math.abs(y2 - y1) + 'px';
+    });
+    zoneRaf = requestAnimationFrame(loop);
+  };
+  loop();
+}
 async function drawChart(r){
   const box = $('tv');
   clearChart(); chartCode = r.code;
@@ -680,31 +765,38 @@ async function drawChart(r){
     downColor: '#4A4A4A', borderDownColor: '#4A4A4A', wickDownColor: '#4A4A4A',
   });
   s.setData(bars.map(b => ({time: b[0], open: b[1], high: b[2], low: b[3], close: b[4]})));
-  (r.sr ? r.sr.levels : []).forEach(lv => {
-    s.createPriceLine({price: lv.base, color: '#C62828', lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: '지지'});
-    s.createPriceLine({price: lv.top, color: '#E57373', lineWidth: 1, lineStyle: 2, axisLabelVisible: false});
-    s.createPriceLine({price: lv.btm, color: '#E57373', lineWidth: 1, lineStyle: 2, axisLabelVisible: false});
-  });
+  const sups = r.sr ? r.sr.levels : [], ress = r.sr ? (r.sr.res || []) : [];
+  sups.forEach(lv => s.createPriceLine({price: lv.base, color: '#089981', lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: '지지'}));
+  ress.forEach(lv => s.createPriceLine({price: lv.base, color: '#C62828', lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: '저항'}));
   chartObj.timeScale().setVisibleLogicalRange({from: Math.max(0, bars.length - 180), to: bars.length + 3});
+  const zs = sups.map(lv => ({...lv, res: false})).concat(ress.map(lv => ({...lv, res: true})));
+  if (zs.length) paintZones(box, s, zs);
 }
-function srDetail(r){
-  if (!r.sr || !r.sr.levels.length) return '<p class="note">현재 활성 지지 구간이 없습니다.</p>';
-  const rows = r.sr.levels.map(lv => {
-    const d = (r.price - lv.base) / lv.base * 100, inZone = r.price >= lv.btm && r.price <= lv.top;
+function srTable(list, price, kind){
+  if (!list.length) return `<p class="note">현재 활성 ${kind} 구간이 없습니다.</p>`;
+  const rows = list.map(lv => {
+    const d = (lv.base - price) / price * 100, inZone = price >= lv.btm && price <= lv.top;
     return `<tr><td>${fmt(lv.base)}원</td><td>${fmt(lv.btm)} ~ ${fmt(lv.top)}원</td>
-      <td>${inZone ? '<span class="badge">구간 안</span>' : plus(d) + fmt(d, 1) + '%'}</td>
+      <td>${inZone ? `<span class="badge${kind === '저항' ? ' rb' : ''}">구간 안</span>` : plus(d) + fmt(d, 1) + '%'}</td>
       <td>${lv.since}</td><td>${lv.entries}회</td><td>${lv.sweeps}회</td></tr>`;
   }).join('');
-  const cfg = META.sr;
   return `<div class="tbl"><table class="small">
-    <thead><tr><th>지지선</th><th>지지 구간</th><th>현재가 대비</th><th>형성일</th><th>진입</th><th>스윕</th></tr></thead>
-    <tbody>${rows}</tbody></table></div>
-    <p class="note">설정: ${cfg.method}, 민감도 ${cfg.sensitivity}, ATR ${cfg.atr_period}, 구간 폭 ATR×${cfg.zone_mult}. 종가가 지지 구간 안에 있으면 "지지 근처"로 표시합니다.</p>`;
+    <thead><tr><th>${kind}선</th><th>${kind} 구간</th><th>현재가에서 거리</th><th>형성일</th><th>진입</th><th>스윕</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+function srDetail(r){
+  if (!r.sr) return '<p class="note">지지·저항을 계산할 만큼 시세 데이터가 없습니다.</p>';
+  const cfg = META.sr;
+  return srTable(r.sr.levels, r.price, '지지') + '<div style="height:10px"></div>' + srTable(r.sr.res || [], r.price, '저항') +
+    `<p class="note">설정: ${cfg.method}, 민감도 ${cfg.sensitivity}, ATR ${cfg.atr_period}, 구간 폭 ATR×${cfg.zone_mult}. 거리는 현재가에서 선까지 몇 % 움직여야 닿는지입니다. 종가가 지지 구간 안에 있으면 "지지 근처"로 표시합니다.</p>`;
 }
 function openDetail(code){
   const r = BY[code]; if (!r) return;
   const d = r.a['1'], m = r.a['M'], di = r.b['1'], mi = r.b['M'];
   $('dName').textContent = r.name;
+  const ds = () => { const on = WATCH.has(r.code); $('dStar').textContent = on ? '★ 관심종목' : '☆ 관심종목 추가'; $('dStar').classList.toggle('on', on); };
+  ds();
+  $('dStar').onclick = () => { toggleWatch(r.code); ds(); render(); };
   $('dMeta').textContent = `${r.code}, ${r.mkt}, 시가총액 ${fmt(r.cap)}억, 종가 ${fmt(r.price)}원, 외국인 보유율 ${fmt(r.own, 2)}%, 한도소진율 ${fmt(r.exh, 2)}%`;
   $('hDay').textContent = `전날 (${DAYS[ND - 1].slice(5)})`;
   $('hMon').textContent = `한달 (${ND}거래일)`;
@@ -746,8 +838,13 @@ function openDetail(code){
   $('dlg').showModal();
   drawChart(r);
 }
-$('body').addEventListener('click', e => { const tr = e.target.closest('tr[data-code]'); if (tr) openDetail(tr.dataset.code); });
+$('body').addEventListener('click', e => {
+  const st = e.target.closest('[data-star]');
+  if (st) { toggleWatch(st.dataset.star); render(); return; }
+  const tr = e.target.closest('tr[data-code]'); if (tr) openDetail(tr.dataset.code);
+});
 $('body').addEventListener('keydown', e => {
+  if (e.target.closest('[data-star]')) return;
   const tr = e.target.closest('tr[data-code]');
   if (tr && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openDetail(tr.dataset.code); }
 });
@@ -764,6 +861,7 @@ function seg(el, onPick){
 }
 $('sub').textContent = `외국인·기관 순매수 순위, 기준일 ${DAYS[ND - 1]}, 코스피와 코스닥 ${fmt(META.count)}개 종목 (생성 ${META.made})`;
 seg($('per'), v => S.per = v);
+seg($('watchf'), v => S.watch = v);
 seg($('mkt'), v => S.mkt = v);
 seg($('srf'), v => S.sr = v);
 $('sort').onchange = e => { S.sort = e.target.value; S.dir = S.sort === 'dist' ? 1 : -1; S.page = 1; render(); };
