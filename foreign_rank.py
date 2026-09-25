@@ -464,7 +464,7 @@ TEMPLATE = r"""<!doctype html>
 body{margin:0;background:var(--cream);color:var(--ink);
   font-family:Pretendard,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
   font-size:15px;line-height:1.5}
-.wrap{max-width:1500px;margin:0 auto;padding:36px 20px 60px}
+.wrap{max-width:1780px;margin:0 auto;padding:36px 20px 60px}
 h1{font-size:30px;font-weight:800;margin:0;letter-spacing:-.02em}
 .sub{color:var(--gray);margin:6px 0 22px}
 .tabs{display:flex;gap:8px;margin-bottom:12px}
@@ -485,12 +485,14 @@ select,input{font:inherit;font-size:14px;padding:6px 10px;border:1px solid var(-
 input[type=search]{width:170px}
 #sort{width:190px}
 #secf{width:170px}
+#main td.cmp{background:#FAFAFA}
+#main tbody tr:nth-child(even) td.cmp{background:#F3F3F3}
 td.sec{color:var(--gray);font-size:13px;max-width:150px;overflow:hidden;text-overflow:ellipsis}
 button:focus-visible,select:focus-visible,input:focus-visible,th:focus-visible,tr:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
 .info{color:var(--gray);font-size:13px;margin:0 0 8px}
 .tbl{overflow-x:auto;background:#fff;border-radius:6px}
 table{border-collapse:collapse;width:100%}
-#main{min-width:1440px}
+#main{min-width:1720px}
 th,td{border:1px solid var(--olive);padding:8px 10px;text-align:left;white-space:nowrap}
 th{background:var(--olive);color:#fff;font-weight:700;text-align:center}
 #main th{cursor:pointer;user-select:none}
@@ -565,7 +567,7 @@ td.st{text-align:center;width:44px}
   <p class="sub" id="sub"></p>
 
   <div class="tabs" id="per">
-    <button data-v="1" class="on">전날 순매수</button><button data-v="M">한달 순매수</button>
+    <button data-v="1" class="on">전날 순매수</button><button data-v="10">10일 순매수</button><button data-v="M">한달 순매수</button>
   </div>
   <p class="range" id="range"></p>
 
@@ -592,8 +594,10 @@ td.st{text-align:center;width:44px}
       <select id="sort">
         <option value="net">외국인 순매수 금액</option>
         <option value="inet">기관 순매수 금액</option>
-        <option value="sum">외국인+기관 합산</option>
+        <option value="sum">외국인+기관 합산 금액</option>
         <option value="pct">외국인 순매수 시총 대비</option>
+        <option value="ipct">기관 순매수 시총 대비</option>
+        <option value="spct">외국인+기관 합산 시총 대비</option>
         <option value="own">외국인 보유율</option>
         <option value="cap">시가총액</option>
         <option value="dist">지지선과 가까운 순</option>
@@ -637,7 +641,7 @@ td.st{text-align:center;width:44px}
   <div class="chart" id="dChart2"></div>
   <h3>매매 요약</h3>
   <div class="tbl"><table class="small">
-    <thead><tr><th>항목</th><th id="hDay">전날</th><th id="hMon">한달</th></tr></thead>
+    <thead><tr><th>항목</th><th id="hDay">전날</th><th id="h10">10일</th><th id="hMon">한달</th></tr></thead>
     <tbody id="dSum"></tbody>
   </table></div>
 </div></dialog>
@@ -674,14 +678,16 @@ function agg(d){
   return {buy, sell, net:buy-sell, bv, sv, nv:bv-sv};
 }
 DATA.forEach(r => {
-  r.a = {'1': agg(r.d.slice(-1)), 'M': agg(r.d)};     // 외국인
-  r.b = {'1': agg(r.di.slice(-1)), 'M': agg(r.di)};   // 기관
+  r.a = {'1': agg(r.d.slice(-1)), '10': agg(r.d.slice(-10)), 'M': agg(r.d)};     // 외국인
+  r.b = {'1': agg(r.di.slice(-1)), '10': agg(r.di.slice(-10)), 'M': agg(r.di)};   // 기관
   for (const k in r.a) {
     r.a[k].pct = r.cap ? r.a[k].net / r.cap : 0;   // 시총 대비 %
     r.b[k].pct = r.cap ? r.b[k].net / r.cap : 0;
   }
 });
 
+const PNAME = {'1': '전날', '10': '10일', 'M': '한달'};
+const OTHER = {'1': 'M', '10': 'M', 'M': '1'};   // 비교용으로 같이 보여줄 기간
 const COLS = [
   {k:null,   t:'관심'},
   {k:null,   t:'순위'},
@@ -692,10 +698,13 @@ const COLS = [
   {k:'cap',  t:'시가총액(억)'},
   {k:'own',  t:'외국인 보유율'},
   {k:'net',  t:'외국인 순매수'},
-  {k:'nv',   t:'외국인 수량'},
   {k:'pct',  t:'외국인/시총'},
   {k:'inet', t:'기관 순매수'},
-  {k:'inv',  t:'기관 수량'},
+  {k:'ipct', t:'기관/시총'},
+  {k:'sum',  t:'합산 순매수'},
+  {k:'spct', t:'합산/시총'},
+  {k:'opct', t:() => `${PNAME[OTHER[S.per]]} 외국인/시총`},
+  {k:'oipct', t:() => `${PNAME[OTHER[S.per]]} 기관/시총`},
   {k:'eps',  t:'실적'},
   {k:'per',  t:'PER'},
   {k:'dist', t:'지지선'},
@@ -705,6 +714,10 @@ function val(r, k){
   if (k === 'inet') return r.b[S.per].net;
   if (k === 'inv') return r.b[S.per].nv;
   if (k === 'sum') return r.a[S.per].net + r.b[S.per].net;
+  if (k === 'ipct') return r.b[S.per].pct;
+  if (k === 'spct') return r.a[S.per].pct + r.b[S.per].pct;
+  if (k === 'opct') return r.a[OTHER[S.per]].pct;
+  if (k === 'oipct') return r.b[OTHER[S.per]].pct;
   if (k === 'eps') return r.eps;
   if (k === 'per') return r.eps > 0 && r.per > 0 ? r.per : null;
   if (k === 'dist') return r.sr && r.sr.dist !== null ? Math.abs(r.sr.dist) : null;
@@ -713,9 +726,10 @@ function val(r, k){
 
 function drawHead(){
   $('head').innerHTML = COLS.map(c => {
-    if (!c.k) return `<th class="nosort">${c.t}</th>`;
+    const t = typeof c.t === 'function' ? c.t() : c.t;
+    if (!c.k) return `<th class="nosort">${t}</th>`;
     const arw = S.sort === c.k ? `<span class="arw">${S.dir < 0 ? '▼' : '▲'}</span>` : '';
-    return `<th tabindex="0" data-k="${c.k}">${c.t}${arw}</th>`;
+    return `<th tabindex="0" data-k="${c.k}"${c.cmp ? ' class="cmp"' : ''}>${t}${arw}</th>`;
   }).join('');
   $('head').querySelectorAll('th[data-k]').forEach(th => {
     const go = () => {
@@ -759,9 +773,12 @@ $('pager').addEventListener('click', e => {
   $('main').scrollIntoView({block: 'start', behavior: 'smooth'});
 });
 function render(){
+  const n10 = Math.min(10, ND);
   $('range').textContent = S.per === '1'
     ? `${DAYS[ND-1]} 하루 기준`
-    : `${DAYS[0]} ~ ${DAYS[ND-1]}, 최근 ${ND}거래일 합계 기준`;
+    : S.per === '10'
+      ? `${DAYS[ND - n10]} ~ ${DAYS[ND-1]}, 최근 ${n10}거래일 합계 기준`
+      : `${DAYS[0]} ~ ${DAYS[ND-1]}, 최근 ${ND}거래일 합계 기준`;
   const q = S.q.trim().toLowerCase();
   let rows = DATA.filter(r =>
     (S.watch === 'ALL' || WATCH.has(r.code)) &&
@@ -791,6 +808,8 @@ function render(){
   const cc = v => v > 0 ? 'pos' : (v < 0 ? 'neg' : '');
   $('body').innerHTML = rows.length ? rows.map((r, i) => {
     const a = r.a[S.per], b = r.b[S.per], cls = cc(a.net), icls = cc(b.net);
+    const sn = a.net + b.net, sp = a.pct + b.pct, scls = cc(sn);
+    const o = r.a[OTHER[S.per]], oi = r.b[OTHER[S.per]];
     return `<tr tabindex="0" data-code="${r.code}">
       <td class="st">${starBtn(r.code)}</td>
       <td>${off + i + 1}</td>
@@ -801,10 +820,13 @@ function render(){
       <td>${fmt(r.cap)}</td>
       <td>${fmt(r.own, 2)}%</td>
       <td class="${cls}">${won(a.net, true)}</td>
-      <td class="${cls}">${shares(a.nv, true)}</td>
       <td class="${cls}">${plus(a.pct)}${fmt(a.pct, 2)}%</td>
       <td class="${icls}">${won(b.net, true)}</td>
-      <td class="${icls}">${shares(b.nv, true)}</td>
+      <td class="${icls}">${plus(b.pct)}${fmt(b.pct, 2)}%</td>
+      <td class="${scls}">${won(sn, true)}</td>
+      <td class="${scls}">${plus(sp)}${fmt(sp, 2)}%</td>
+      <td class="cmp ${cc(o.pct)}">${plus(o.pct)}${fmt(o.pct, 2)}%</td>
+      <td class="cmp ${cc(oi.pct)}">${plus(oi.pct)}${fmt(oi.pct, 2)}%</td>
       <td>${plCell(r)}</td>
       <td>${r.eps > 0 && r.per > 0 ? fmt(r.per, 1) + '배' : '<span class="muted">-</span>'}</td>
       <td>${srCell(r)}</td>
@@ -930,7 +952,7 @@ function srDetail(r){
 }
 function openDetail(code){
   const r = BY[code]; if (!r) return;
-  const d = r.a['1'], m = r.a['M'], di = r.b['1'], mi = r.b['M'];
+  const d = r.a['1'], t = r.a['10'], m = r.a['M'], di = r.b['1'], ti = r.b['10'], mi = r.b['M'];
   $('dName').textContent = r.name;
   $('dDesc').textContent = r.desc || '회사 소개를 아직 불러오지 못했습니다. 다음 갱신 때 채워집니다.';
   $('dDesc').classList.toggle('none', !r.desc);
@@ -950,10 +972,13 @@ function openDetail(code){
   }
   $('dInfo').innerHTML = info;
   $('hDay').textContent = `전날 (${DAYS[ND - 1].slice(5)})`;
+  $('h10').textContent = `10일 (${Math.min(10, ND)}거래일)`;
   $('hMon').textContent = `한달 (${ND}거래일)`;
-  const mk = (x, y) => (t, a, b, cls) => `<tr><td>${t}</td><td class="${cls ? cls(x) : ''}">${a(x)}</td><td class="${cls ? cls(y) : ''}">${a(y)}</td></tr>`;
-  const line = mk(d, m), iline = mk(di, mi);
-  const grp = t => `<tr class="grp"><td colspan="3">${t}</td></tr>`;
+  const mk = (...xs) => (label, a, b, cls) => `<tr><td>${label}</td>` + xs.map(x => `<td class="${cls ? cls(x) : ''}">${a(x)}</td>`).join('') + '</tr>';
+  const line = mk(d, t, m), iline = mk(di, ti, mi);
+  const both = (x, y) => ({net: x.net + y.net, pct: x.pct + y.pct});
+  const sline = mk(both(d, di), both(t, ti), both(m, mi));
+  const grp = label => `<tr class="grp"><td colspan="4">${label}</td></tr>`;
   const c = x => x.net > 0 ? 'pos' : (x.net < 0 ? 'neg' : '');
   $('dSum').innerHTML = [
     grp('외국인'),
@@ -973,6 +998,9 @@ function openDetail(code){
     iline('순매수 수량', x => shares(x.nv, true), null, c),
     iline('평균 매수단가', x => avg(x.buy, x.bv)),
     iline('순매수/시총', x => `${plus(x.pct)}${fmt(x.pct, 2)}%`, null, c),
+    grp('외국인+기관 합산'),
+    sline('순매수 금액', x => won(x.net, true), null, c),
+    sline('순매수/시총', x => `${plus(x.pct)}${fmt(x.pct, 2)}%`, null, c),
   ].map(s => s.replace('class="undefined"', '')).join('');
   $('dSr').innerHTML = srDetail(r);
   $('dChartTitle').textContent = `일별 외국인 순매수 (최근 ${ND}거래일)`;
