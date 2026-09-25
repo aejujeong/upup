@@ -323,7 +323,7 @@ TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>외국인·기관 순매수 순위</title>
+<title>100억 부자 트레이딩</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <style>
@@ -409,7 +409,7 @@ dialog h3{font-size:16px;margin:22px 0 8px}
 </head>
 <body>
 <div class="wrap">
-  <h1>외국인·기관 순매수 순위</h1>
+  <h1>100억 부자 트레이딩</h1>
   <p class="sub" id="sub"></p>
 
   <div class="tabs" id="per">
@@ -762,7 +762,7 @@ function seg(el, onPick){
     b.classList.add('on'); onPick(b.dataset.v); S.page = 1; render();
   });
 }
-$('sub').textContent = `기준일 ${DAYS[ND - 1]}, 코스피와 코스닥 ${fmt(META.count)}개 종목 (생성 ${META.made})`;
+$('sub').textContent = `외국인·기관 순매수 순위, 기준일 ${DAYS[ND - 1]}, 코스피와 코스닥 ${fmt(META.count)}개 종목 (생성 ${META.made})`;
 seg($('per'), v => S.per = v);
 seg($('mkt'), v => S.mkt = v);
 seg($('srf'), v => S.sr = v);
