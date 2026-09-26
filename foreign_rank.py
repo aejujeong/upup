@@ -33,7 +33,7 @@ import pandas as pd
 from pykrx import stock
 
 MONTH = 20                     # '한달'을 몇 거래일로 볼지
-NET_HISTORY = 140              # 과거 시점 보기에서 고를 수 있는 기간 (거래일, 약 7개월)
+NET_HISTORY = 480              # 기준일로 고를 수 있는 기간 (거래일, 약 2년). NET_FETCH보다 클 수 없음
 NET_FETCH = 480                # 외국인·기관 매매를 받아오는 기간 (패턴 찾기용, 약 2년)
 PAT_WIN = 60                   # 패턴 비교 구간 (거래일, 약 3개월)
 PAT_YEAR = 250                 # '1년 수익률' 기준 거래일
