@@ -23,6 +23,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
+      - uses: actions/cache@v4          # 지난 날짜 데이터를 저장해 두고 다음 실행 때 재사용
+        with:
+          path: cache
+          key: krx-${{ github.run_id }}
+          restore-keys: krx-
       - run: python foreign_rank.py
         env:
           OUT_FILE: site/index.html
