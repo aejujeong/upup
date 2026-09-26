@@ -257,18 +257,114 @@ def _clean(fragment):
     return " ".join(out)
 
 
+DESC_DEBUG = {}
+
+
 def fetch_desc(code):
-    """회사 개요(사업 요약) 몇 줄을 가져온다. 에프앤가이드 → 와이즈리포트 순서로 시도."""
+    """회사 개요(사업 요약) 몇 줄을 가져온다. 에프앤가이드 → 와이즈리포트 순서로 시도. 못 찾으면 빈 문자열."""
+    t = ""
     try:
-        t = _get(f"https://comp.fnguide.com/SVO2/ASP/SVD_Main.asp?pGB=1&gicode=A{code}")
-        m = re.search(r'id="bizSummaryContent"[^>]*>(.*?)</ul>', t, re.S)
+        t = _get(f"https://comp.fnguide.com/SVO2/ASP/SVD_Main.asp?pGB=1&gicode=A{code}&cID=&MenuYn=Y&ReportGB=&NewMenuID=101&stkGb=701")
+        m = re.search(r'id=["\']bizSummaryContent["\'][^>]*>(.*?)</ul>', t, re.S)
         if m and _clean(m.group(1)):
             return _clean(m.group(1))
+    except Exception as e:
+        DESC_DEBUG.setdefault("fnguide_err", str(e))
+    if t and "fnguide" not in DESC_DEBUG:
+        tt = re.search(r"<title>(.*?)</title>", t, re.S)
+        DESC_DEBUG["fnguide"] = f"응답 {len(t)}자, 제목 '{(tt.group(1).strip() if tt else '')[:40]}', 사업요약 표시 {'있음' if 'bizSummary' in t else '없음'}"
+    t = _get(f"https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd={code}")
+    items = re.findall(r'<li class=["\']dot_cmp["\'][^>]*>(.*?)</li>', t, re.S)
+    if not items and "wisereport" not in DESC_DEBUG:
+        DESC_DEBUG["wisereport"] = f"응답 {len(t)}자, dot_cmp 표시 {'있음' if 'dot_cmp' in t else '없음'}"
+    return _clean("".join(f"<li>{x}</li>" for x in items))
+
+
+# ---- 금융감독원 DART: 사업보고서의 '사업의 개요' (인증키가 있을 때 우선 사용) ----
+DART_KEY = os.environ.get("DART_KEY", "").strip()
+DART_PER_RUN = 400             # DART에서 한 번 실행할 때 받아올 회사 수 (사업보고서 파일이 커서 조금씩)
+
+
+def _dart_get(path, **params):
+    from urllib.parse import urlencode
+    url = f"https://opendart.fss.or.kr/api/{path}?" + urlencode(dict(crtfc_key=DART_KEY, **params))
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    return urllib.request.urlopen(req, timeout=30).read()
+
+
+def _dart_corp_codes():
+    """종목코드 → DART 고유번호 표 (한 달에 한 번 새로 받음)"""
+    import io, zipfile
+    import xml.etree.ElementTree as ET
+    f = CACHE / "dart_corp.json"
+    try:
+        saved = json.loads(f.read_text(encoding="utf-8"))
+        if (dt.date.today() - dt.date.fromisoformat(saved["t"])).days < 30:
+            return saved["map"]
     except Exception:
         pass
-    t = _get(f"https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd={code}")
-    items = re.findall(r'<li class="dot_cmp">(.*?)</li>', t, re.S)
-    return _clean("".join(f"<li>{x}</li>" for x in items))
+    z = zipfile.ZipFile(io.BytesIO(_dart_get("corpCode.xml")))
+    root = ET.fromstring(z.read(z.namelist()[0]))
+    mp = {}
+    for el in root.iter("list"):
+        sc = (el.findtext("stock_code") or "").strip()
+        if sc:
+            mp[sc] = el.findtext("corp_code").strip()
+    CACHE.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"t": dt.date.today().isoformat(), "map": mp}), encoding="utf-8")
+    return mp
+
+
+def _dart_overview_text(xml_text):
+    """사업보고서 본문에서 '사업의 개요' 부분만 뽑아 앞부분 몇 문장으로 줄인다."""
+    m = re.search(r"<TITLE[^>]*>\s*(?:\d+\.\s*)?사업의\s*개요\s*</TITLE>(.*?)(?=<TITLE)", xml_text, re.S | re.I)
+    if not m:
+        m = re.search(r"사업의\s*개요(.*?)(?=<TITLE|주요\s*제품)", xml_text, re.S)
+    if not m:
+        return ""
+    body = re.sub(r"<TABLE.*?</TABLE>", " ", m.group(1), flags=re.S | re.I)      # 표는 빼고 글만
+    body = htmllib.unescape(re.sub(r"<[^>]+>", " ", body))
+    body = re.sub(r"\s+", " ", body).strip()
+    body = re.sub(r"(?:^|(?<=\s))(?:[가-하]\.|\(\d+\)|\d+\))\s*[^.]{0,25}?(?=\s(?:당사|동사|회사|당그룹|본사|연결회사|지배회사)\S*\s)", "", body).strip()
+    sents = re.split(r"(?<=[다음함임됨])\.\s+|(?<=니다)\.\s*", body)
+    out = ""
+    for sn in sents:
+        sn = sn.strip(" -·□○●※")
+        if len(sn) < 15:
+            continue
+        piece = sn if sn.endswith(".") else sn + "."
+        if len(out) + len(piece) > 420:
+            break
+        out += (" " if out else "") + piece
+    return out or body[:400]
+
+
+def fetch_desc_dart(code, corp_map):
+    import io, zipfile
+    cc = corp_map.get(code)
+    if not cc:
+        return ""
+    bgn = (dt.date.today() - dt.timedelta(days=500)).strftime("%Y%m%d")
+    lst = json.loads(_dart_get("list.json", corp_code=cc, bgn_de=bgn, pblntf_detail_ty="A001", page_count=5))
+    items = lst.get("list") or []
+    if not items:                                                   # 사업보고서가 없으면 분기·반기보고서
+        lst = json.loads(_dart_get("list.json", corp_code=cc, bgn_de=bgn, pblntf_ty="A", page_count=5))
+        items = lst.get("list") or []
+    if not items:
+        return ""
+    z = zipfile.ZipFile(io.BytesIO(_dart_get("document.xml", rcept_no=items[0]["rcept_no"])))
+    for name in z.namelist():
+        raw = z.read(name)
+        for enc in ("utf-8", "cp949"):
+            try:
+                txt = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                txt = raw.decode("utf-8", "ignore")
+        got = _dart_overview_text(txt)
+        if got:
+            return got
+    return ""
 
 
 SECTOR_REFRESH_DAYS = 7        # 세부 업종 목록을 다시 받아오는 주기
@@ -400,6 +496,49 @@ def load_sectors():
     return (saved or {}).get("map") or {}, (saved or {}).get("prod") or {}
 
 
+REF_SHEET = "1CRxMKK8YpduGmJlpAeku8Y76WMDq3pJvHnFCJ9vahEk"   # 참고용 장기 사이클 표 (구글 시트, 링크 공유 필요)
+
+
+def load_cycle_ref():
+    """직접 정리한 장기 사이클 표를 구글 시트에서 CSV로 받아온다. 실패하면 지난번에 받아둔 것을 쓴다."""
+    import csv, io
+    f = CACHE / "cycle_ref.csv"
+    txt = None
+    if REF_SHEET:
+        try:
+            txt = _get(f"https://docs.google.com/spreadsheets/d/{REF_SHEET}/export?format=csv&gid=0")
+            if "섹터" not in txt:
+                raise ValueError("표 머리글(섹터)을 찾지 못함")
+            CACHE.mkdir(parents=True, exist_ok=True)
+            f.write_text(txt, encoding="utf-8")
+        except Exception as e:
+            print(f"참고 사이클 표를 받지 못해 저장된 것을 씁니다: {e}")
+            txt = None
+    if txt is None:
+        try:
+            txt = f.read_text(encoding="utf-8")
+        except Exception:
+            return None
+    rows = list(csv.reader(io.StringIO(txt)))
+    hdr_i = next((i for i, r in enumerate(rows) if "섹터" in r and any("현재 사이클" in c for c in r)), None)
+    if hdr_i is None:
+        return None
+    hdr = rows[hdr_i]
+    col = lambda name: next((k for k, h in enumerate(hdr) if name in h), None)
+    cs = {"rank": col("순위"), "sec": col("섹터"), "stage": col("현재 사이클"), "start": col("사이클 시작"),
+          "rally": col("대표 상승"), "next": col("다음 연결"), "view": col("진입 관점")}
+    lf = {"flow": col("사이클"), "pos": col("현재 위치"), "nxt": col("다음 단계")}
+    get = lambda r, k: (r[k].strip() if k is not None and k < len(r) else "")
+    secs, flows = [], []
+    for r in rows[hdr_i + 1:]:
+        if get(r, cs["sec"]):
+            secs.append({k: get(r, v) for k, v in cs.items()})
+        if lf["flow"] is not None and lf["flow"] != cs["stage"] and get(r, lf["flow"]):
+            flows.append({k: get(r, v) for k, v in lf.items()})
+    print(f"참고 사이클 표: 섹터 {len(secs)}개, 큰 흐름 {len(flows)}개")
+    return {"secs": secs, "flows": flows}
+
+
 def load_descs(codes):
     f = CACHE / "desc.json"
     try:
@@ -409,27 +548,40 @@ def load_descs(codes):
     today = dt.datetime.now(KST).date()
     def stale(c):
         e = descs.get(c)
-        if not e:
+        if not e or not e.get("x"):                                    # 비어 있으면 다시 시도
             return True
         try:
             return (today - dt.date.fromisoformat(e["t"])).days > DESC_REFRESH_DAYS
         except Exception:
             return True
-    todo = sorted((c for c in codes if stale(c)), key=lambda c: c in descs)   # 없는 것부터
-    fails = done = 0
-    for c in todo[:DESC_PER_RUN]:
+    todo = sorted((c for c in codes if stale(c)), key=lambda c: c in descs and bool(descs[c].get("x")))
+    corp_map, src = None, "기업정보 사이트"
+    if DART_KEY:
         try:
-            text = fetch_desc(c)
-            descs[c] = {"x": text[:400], "t": today.isoformat()}
-            done += 1
+            corp_map, src = _dart_corp_codes(), "DART"
+        except Exception as e:
+            print(f"DART 고유번호 목록을 받지 못해 기업정보 사이트로 시도합니다: {e}")
+    limit = DART_PER_RUN if corp_map else DESC_PER_RUN
+    fails = done = empty = 0
+    for c in todo[:limit]:
+        try:
+            text = fetch_desc_dart(c, corp_map) if corp_map else fetch_desc(c)
             fails = 0
-        except Exception:
+            if text:
+                descs[c] = {"x": text[:450], "t": today.isoformat(), "s": src}
+                done += 1
+            else:
+                empty += 1
+        except Exception as e:
             fails += 1
+            DESC_DEBUG.setdefault("err", str(e)[:120])
             if fails >= 15:
                 print("회사 소개 사이트 접속이 계속 실패해서 이번 실행에서는 건너뜁니다.")
                 break
-        time.sleep(0.2)
-    print(f"회사 소개: 새로 {done}개, 보유 {sum(1 for c in codes if descs.get(c, {}).get('x'))}개 / 전체 {len(codes)}개")
+        time.sleep(0.2 if corp_map else 0.2)
+    print(f"회사 소개({src}): 새로 {done}개, 못 찾음 {empty}개, 보유 {sum(1 for c in codes if descs.get(c, {}).get('x'))}개 / 전체 {len(codes)}개")
+    if DESC_DEBUG:
+        print("회사 소개 진단:", "; ".join(f"{k}: {v}" for k, v in DESC_DEBUG.items()))
     CACHE.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(descs, ensure_ascii=False), encoding="utf-8")
     return {c: descs[c]["x"] for c in codes if c in descs}
@@ -575,6 +727,8 @@ def collect(days_all):
             adj[t] = dict(zip(dlist, c))
             pr = lambda k: round((c[-1] / c[-1 - k] - 1) * 100, 2) if len(c) > k and c[-1 - k] > 0 else None
             r["rt"] = {"1": pr(1), "10": pr(10), "M": pr(MONTH), "Q": pr(60), "Y": pr(250)}      # 수정주가 등락률
+            k20 = min(20, len(c))
+            r["tv"] = round(sum(x * y for x, y in zip(c[-k20:], vol[-k20:])) / k20 / 1e8, 1) if k20 else 0   # 20일 평균 거래대금(억)
             series[t] = (dlist, c, vol)
             last = c[-1]
             def pack(lst):
@@ -615,6 +769,18 @@ def collect(days_all):
         if r["sec"] and cnt.get(r["sec"], 0) < 5:
             r["sec"] = "기타"
     print(f"섹터: {len(set(r['sec'] for r in rows.values()))}개로 묶음")
+    global CYCLE
+    try:
+        CYCLE = sector_cycles(rows, series)
+    except Exception as e:
+        print(f"섹터 순환 주기 계산 중 문제가 생겨 건너뜁니다: {e}")
+        CYCLE = None
+    global CYCLE_REF
+    try:
+        CYCLE_REF = load_cycle_ref()
+    except Exception as e:
+        print(f"참고 사이클 표 처리 중 문제: {e}")
+        CYCLE_REF = None
     descs = load_descs(list(rows.keys()))
     for t, r in rows.items():
         r["desc"] = descs.get(t, "")
@@ -623,6 +789,171 @@ def collect(days_all):
 
 
 PATTERN = None
+CYCLE = None
+CYCLE_REF = None
+CYCLE_MONTHS = 24              # 섹터 순환 주기: 최근 몇 개월(완결된 달)로 볼지
+CYCLE_TOP = 10                 # 매달 등락률 상위·하위 몇 개 섹터를 TOP/최하위로 볼지
+CYCLE_SOON = 1                 # '다가옴/임박' 기준: 예상 시기가 지금부터 몇 개월 안이면 (지난 지 1개월 이내도 포함)
+CYCLE_SMALL = 15               # 종목 수가 이보다 적으면 '소형'
+
+
+def _num(x):
+    t = f"{x:.1f}"
+    return t[:-2] if t.endswith(".0") else t
+
+
+def _mfmt(k):
+    return f"{(k // 12) % 100:02d}.{k % 12 + 1:02d}"
+
+
+def _mwin(p, now):
+    """예상 시점(개월 단위 실수) → 표시용 창 {lo, hi, txt, st: past/now/future}"""
+    lo, hi = math.floor(p + 1e-9), math.ceil(p - 1e-9)
+    if hi < lo:
+        hi = lo
+    if lo == hi:
+        txt = _mfmt(lo)
+    elif lo // 12 == hi // 12:
+        txt = f"{_mfmt(lo)}~{hi % 12 + 1:02d}"
+    else:
+        txt = f"{_mfmt(lo)}~{_mfmt(hi)}"
+    st = "past" if hi < now else ("now" if lo <= now <= hi else "future")
+    return {"lo": lo, "hi": hi, "txt": txt, "st": st}
+
+
+def sector_cycles(rows, series):
+    """섹터별 월간 등락률 TOP/최하위 이력으로 재진입·전환·한 바퀴 주기를 계산하고 다음 시기를 예상한다."""
+    ym = lambda d: int(d[:4]) * 12 + int(d[4:6]) - 1
+    last_day = max((dl[-1] for dl, c, v in series.values() if dl), default=None)
+    if not last_day:
+        return None
+    now = ym(last_day)                                     # 지금 달 (진행 중이라 계산에서는 제외)
+    months = list(range(now - CYCLE_MONTHS, now))          # 완결된 최근 N개월
+    # 종목별 월말 종가(수정주가)
+    agg = {}                                               # 섹터 → 월 → [가중수익합, 가중치합]
+    for t, (dl, c, v) in series.items():
+        r = rows.get(t)
+        if not r or not r.get("sec") or not c or c[-1] <= 0:
+            continue
+        mend = {}
+        for d, x in zip(dl, c):
+            mend[ym(d)] = x                                # 그 달 마지막 거래일 종가로 덮어씀
+        for m in months:
+            a, b = mend.get(m - 1), mend.get(m)
+            if not a or not b or a <= 0:
+                continue
+            w = r["cap"] * a / c[-1]                       # 그때 시가총액 추정
+            g = agg.setdefault(r["sec"], {}).setdefault(m, [0.0, 0.0])
+            g[0] += (b / a - 1) * w
+            g[1] += w
+    secs = sorted(agg)
+    cnt = {}
+    for r in rows.values():
+        if r.get("sec"):
+            cnt[r["sec"]] = cnt.get(r["sec"], 0) + 1
+    tops, bots = {s_: [] for s_ in secs}, {s_: [] for s_ in secs}
+    for m in months:
+        rets = [(agg[s_][m][0] / agg[s_][m][1], s_) for s_ in secs if m in agg[s_] and agg[s_][m][1] > 0]
+        if len(rets) < CYCLE_TOP * 2:
+            continue
+        rets.sort(reverse=True)
+        for _, s_ in rets[:CYCLE_TOP]:
+            tops[s_].append(m)
+        for _, s_ in rets[-CYCLE_TOP:]:
+            bots[s_].append(m)
+    avg = lambda xs: sum(xs) / len(xs) if xs else None
+    gaps = lambda xs: [b - a for a, b in zip(xs, xs[1:])]
+    out = []
+    for s_ in secs:
+        T, B = tops[s_], bots[s_]
+        ev = sorted([(m, "T") for m in T] + [(m, "B") for m in B])
+        runs = []                                          # [종류, [달들]]
+        for m, k in ev:
+            if runs and runs[-1][0] == k:
+                runs[-1][1].append(m)
+            else:
+                runs.append([k, [m]])
+        starts = [(k, ms[0]) for k, ms in runs]
+        sw_n = max(0, len(runs) - 1)
+        sw_avg = avg([b[1] - a[1] for a, b in zip(starts, starts[1:])])
+        lap = avg(gaps([m for k, m in starts if k == "T"]) + gaps([m for k, m in starts if k == "B"]))
+        reT, reB = avg(gaps(T)), avg(gaps(B))
+        rec = {"sec": s_, "n": cnt.get(s_, 0), "tops": [[m for m in ms] for k, ms in runs if k == "T"],
+               "bots": [[m for m in ms] for k, ms in runs if k == "B"],
+               "tN": len(T), "bN": len(B), "reT": reT, "reB": reB, "swN": sw_n, "sw": sw_avg, "lap": lap}
+        small = cnt.get(s_, 0) < CYCLE_SMALL
+        if not runs:
+            continue
+        cur_k, cur_s = runs[-1][0], runs[-1][1][0]
+        rec["cur"] = {"k": cur_k, "start": _mfmt(cur_s)}
+        if sw_n == 0:
+            rec.update(label="판단 보류", why="전환 이력 없음, 주기 산출 불가", nextT=[], nextB=[])
+        else:
+            lastT, lastB = (T[-1] if T else None), (B[-1] if B else None)
+            lastTs = max([m for k, m in starts if k == "T"], default=None)
+            lastBs = max([m for k, m in starts if k == "B"], default=None)
+            def pred(kind):
+                res = []
+                last, re_, lasts = (lastT, reT, lastTs) if kind == "T" else (lastB, reB, lastBs)
+                if last is not None and re_:
+                    res.append(("재진입", f"{_mfmt(last)}+{_num(re_)}", _mwin(last + re_, now)))
+                if sw_avg:
+                    mult = 1 if cur_k != kind else 2
+                    res.append(("전환", f"{_mfmt(cur_s)}+{_num(sw_avg)}" + ("×2" if mult == 2 else ""), _mwin(cur_s + sw_avg * mult, now)))
+                if lasts is not None and lap:
+                    res.append(("한 바퀴", f"{_mfmt(lasts)}+{_num(lap)}", _mwin(lasts + lap, now)))
+                return res
+            nT, nB = pred("T"), pred("B")
+            futT = [w for _, _, w in nT if w["st"] != "past"]
+            futB = [w for _, _, w in nB if w["st"] != "past"]
+            overlap = any(a["lo"] <= b["hi"] and b["lo"] <= a["hi"] for a in futT for b in futB)
+            sw_win = next((w for nm, _, w in (nB if cur_k == "T" else nT) if nm == "전환"), None)
+            late = lambda w: w["st"] == "past" and now - w["hi"] > 1
+            soon = lambda w: (w["st"] == "past" and now - w["hi"] <= 1) or w["st"] == "now" or w["lo"] - now <= CYCLE_SOON
+            if cur_k == "B":
+                if sw_win is None:
+                    why = "TOP 전환 예상 불가"
+                elif late(sw_win):
+                    why = "TOP 전환 예상 지남, 지연 중"
+                elif soon(sw_win):
+                    why = "TOP 전환 다가옴"
+                else:
+                    why = "TOP 전환까지 시간 남음"
+            else:
+                tnext = min(futT, key=lambda w: w["lo"]) if futT else None
+                if sw_win is None:
+                    why = "최하위 전환 예상 불가"
+                elif late(sw_win):
+                    why = "최하위 전환 예상 지남"
+                elif soon(sw_win):
+                    why = "최하위 전환 임박"
+                elif tnext and tnext["lo"] <= sw_win["hi"] and sw_win["lo"] <= tnext["hi"]:
+                    why = "TOP 재진입이 최하위 전환과 겹침"
+                elif tnext and tnext["hi"] < sw_win["lo"]:
+                    why = "최하위 전환까지 여유, TOP 재진입 먼저"
+                else:
+                    why = "최하위 전환까지 여유"
+            good = why in ("TOP 전환 다가옴", "최하위 전환까지 여유, TOP 재진입 먼저")
+            label = "진입 검토" if good and not overlap else "관망"
+            if overlap:
+                why += " → 단, TOP·최하위 예상 겹침"
+            enc = lambda L: [{"nm": nm, "base": bs, "txt": w["txt"], "st": w["st"]} for nm, bs, w in L]
+            rec.update(label=label, why=why, nextT=enc(nT), nextB=enc(nB))
+        if small:
+            rec["label"] += " · 소형"
+            rec["why"] += f" / 종목 {cnt.get(s_, 0)}개 소형"
+        rec["tops"] = [[_mfmt(m) for m in ms] for ms in rec["tops"]]
+        rec["bots"] = [[_mfmt(m) for m in ms] for ms in rec["bots"]]
+        out.append(rec)
+    order = {"진입 검토": 0, "관망": 1, "판단 보류": 2}
+    out.sort(key=lambda x: (order.get(x["label"].split(" · ")[0], 3), -x["tN"], -x["n"]))
+    vals = lambda k: [x[k] for x in out if x.get(k) is not None]
+    med = lambda xs: (sorted(xs)[len(xs) // 2] if len(xs) % 2 else sum(sorted(xs)[len(xs) // 2 - 1:len(xs) // 2 + 1]) / 2) if xs else None
+    summ = {k: {"avg": avg(vals(k)), "med": med(vals(k))} for k in ("reT", "reB", "sw", "lap")}
+    summ["swN"] = sum(vals("swN"))
+    print(f"섹터 순환 주기: {len(out)}개 섹터, {_mfmt(months[0])}~{_mfmt(months[-1])}")
+    return {"from": _mfmt(months[0]), "to": _mfmt(months[-1]), "now": _mfmt(now), "months": len(months),
+            "top": CYCLE_TOP, "soon": CYCLE_SOON, "rows": out, "summ": summ, "nsec": len(secs)}
 
 
 def _z(x):
@@ -999,6 +1330,8 @@ def main():
     html = html.replace("__META__", json.dumps(meta, ensure_ascii=False))
     html = html.replace("__CHARTS__", json.dumps(CHARTS, separators=(",", ":")) if INLINE_CHARTS else "null")
     html = html.replace("__PATTERN__", json.dumps(PATTERN, ensure_ascii=False, separators=(",", ":")))
+    html = html.replace("__CYCLE__", json.dumps(CYCLE, ensure_ascii=False, separators=(",", ":")))
+    html = html.replace("__CYCREF__", json.dumps(CYCLE_REF, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__HIST__", json.dumps(HIST, separators=(",", ":")) if INLINE_CHARTS else "null")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(html, encoding="utf-8")
@@ -1047,6 +1380,28 @@ body.secv .nsec{display:none}
 .vtbl{min-width:700px}
 .vtbl tbody tr{cursor:default}
 .lift{font-weight:800}
+.ctbl{min-width:1800px}
+.rtbl{min-width:1100px}
+.ktbl{min-width:1300px}
+.ktbl td{white-space:normal;vertical-align:top}
+.ktbl td.nw{white-space:nowrap}
+.ktbl tr.first td{border-top:3px solid var(--olive)}
+.tot{font-weight:800;font-size:16px}
+.rtbl td{white-space:normal}
+.ctbl td{white-space:normal;vertical-align:top;font-size:14px}
+.ctbl td.nw{white-space:nowrap}
+.ctbl td:nth-child(5),.ctbl td:nth-child(6){min-width:220px}
+.ctbl td:nth-child(7){min-width:200px}
+.ctbl td:nth-child(8),.ctbl td:nth-child(10){min-width:170px}
+.tag{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap}
+.tag.go{background:var(--red);color:#fff}
+.tag.wait{background:#EEE;color:var(--ink)}
+.tag.hold{background:#fff;color:var(--gray);border:1px solid #CCC}
+.pred{margin:0;padding-left:0;list-style:none}
+.pred li{margin:1px 0}
+.pred .st{font-size:12px;color:var(--gray)}
+.pred .st.now{color:var(--red);font-weight:700}
+.hist{font-size:12px;color:var(--gray);margin-top:4px}
 .ptbl tbody tr{cursor:pointer}
 .ptbl tbody tr:nth-child(even) td{background:var(--pale)}
 .ptbl tbody tr:hover td{background:#F8DADA}
@@ -1239,6 +1594,23 @@ td.st{text-align:center;width:44px}
       <thead><tr id="secHead"></tr></thead>
       <tbody id="secRows"></tbody>
     </table></div>
+    <h2 class="ph" id="cycTitle">섹터 순환 주기</h2>
+    <p class="pnote" id="cycNote"></p>
+    <div class="tbl"><table class="ptbl ctbl">
+      <thead><tr><th>판단</th><th>섹터</th><th>종목 수</th><th>현재</th><th>다음 TOP 예상</th><th>다음 최하위 예상</th><th>사유</th>
+        <th>장기 사이클 (참고)</th><th>1년 관점 (참고)</th>
+        <th>TOP10 횟수</th><th>TOP10 재진입 평균</th><th>최하위10 횟수</th><th>최하위10 재진입 평균</th><th>전환 횟수</th><th>전환 평균</th><th>한 바퀴 평균</th></tr></thead>
+      <tbody id="cycRows"></tbody>
+    </table></div>
+    <h2 class="ph">진입 검토 섹터 후보 종목</h2>
+    <p class="pnote" id="pickNote"></p>
+    <div class="tbl"><table class="ptbl ktbl">
+      <thead><tr><th>섹터</th><th>순위</th><th>종목명</th><th>총점</th><th>수급 (40)</th><th>위치 (25)</th><th>실적 (15)</th><th>패턴 (10)</th><th>과열 회피 (10)</th><th>선별 이유</th></tr></thead>
+      <tbody id="pickRows"></tbody>
+    </table></div>
+    <h2 class="ph">참고: 장기 사이클 표 (직접 정리)</h2>
+    <p class="pnote" id="refNote"></p>
+    <div id="refBox"></div>
   </div>
 
   <div id="patView" hidden>
@@ -1291,6 +1663,11 @@ td.st{text-align:center;width:44px}
   <p class="legend"><span><i></i>지지선</span><span><i class="zone"></i>지지 구간</span><span><i class="res"></i>저항선</span><span><i class="zres"></i>저항 구간</span></p>
   <h3>지지·저항 구간 (S&amp;R Pro Toolkit 기준)</h3>
   <div id="dSr"></div>
+  <h3>매매 요약</h3>
+  <div class="tbl"><table class="small">
+    <thead><tr><th>항목</th><th id="hDay">전날</th><th id="h10">10일</th><th id="hMon">한달</th></tr></thead>
+    <tbody id="dSum"></tbody>
+  </table></div>
   <h3>일별 내역</h3>
   <div class="tbl"><table class="small">
     <thead><tr><th>날짜</th><th>외국인 순매수</th><th>외국인 수량</th><th>기관 순매수</th><th>기관 수량</th></tr></thead>
@@ -1300,11 +1677,6 @@ td.st{text-align:center;width:44px}
   <div class="chart" id="dChart"></div>
   <h3 id="dChartTitle2"></h3>
   <div class="chart" id="dChart2"></div>
-  <h3>매매 요약</h3>
-  <div class="tbl"><table class="small">
-    <thead><tr><th>항목</th><th id="hDay">전날</th><th id="h10">10일</th><th id="hMon">한달</th></tr></thead>
-    <tbody id="dSum"></tbody>
-  </table></div>
 </div></dialog>
 
 <script>
@@ -1314,6 +1686,10 @@ const CHARTS = __CHARTS__ || {};
 const HISTIN = __HIST__ || {};
 const HD = META.hist || [];
 const PAT = __PATTERN__;
+const CYC = __CYCLE__;
+const CREF = __CYCREF__;
+const REFBY = Object.fromEntries(((CREF && CREF.secs) || []).map(x => [x.sec.replace(/\s/g, ''), x]));
+const refOf = sec => REFBY[(sec || '').replace(/\s/g, '')];
 const DAYS = META.days, ND = DAYS.length;
 const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', asof:'', view:'rank', psel:null, fsel:null, ssort:'rt', sdir:-1};
 const RT = (r, p) => S.asof ? (r.h ? r.h.rt[p] : null) : (r.rt ? r.rt[p] : null);   // 기간 등락률
@@ -1657,7 +2033,131 @@ const SCOLS = [
   {k: 'fpct', t: '외국인/시총'}, {k: 'ipct', t: '기관/시총'}, {k: 'spct', t: '합산/시총'},
   {k: null, t: '가장 많이 오른 종목'}, {k: null, t: '외국인 순매수 1위'},
 ];
+function renderCycle(){
+  if (!CYC || !CYC.rows) { $('cycNote').textContent = '주기 데이터가 아직 없습니다. 다음 갱신 때 계산됩니다.'; $('cycRows').innerHTML = ''; return; }
+  $('cycTitle').textContent = `섹터 순환 주기 (${CYC.from} ~ ${CYC.to}, ${CYC.months}개월, ${CYC.nsec}개 섹터)`;
+  $('cycNote').textContent = `매달 섹터별 한달 등락률(시총 가중)로 순위를 매겨 상위 ${CYC.top}개를 TOP, 하위 ${CYC.top}개를 최하위로 기록했습니다. 재진입은 같은 명단에 다시 들어오기까지의 평균 개월, 전환은 한 구간이 시작된 뒤 반대쪽 구간이 시작되기까지의 평균, 한 바퀴는 같은 쪽 구간이 다시 시작되기까지의 평균입니다. 다음 시기는 기준 달에 평균을 더한 예상이고, 예상이 지금부터 ${CYC.soon}개월 안이면 "다가옴/임박", TOP과 최하위 예상이 한 달이라도 겹치면 "겹침"으로 봅니다. [진입 검토]는 TOP 전환이 다가오거나 최하위 전환 전에 TOP 재진입이 먼저 올 것으로 보이면서 겹침이 없는 섹터입니다. 과거 주기가 앞으로도 반복된다는 보장은 없고, 횟수가 적은 섹터일수록 평균이 흔들립니다. 지금 달(${CYC.now})은 진행 중이라 계산에서 뺐습니다.`;
+  const f1 = v => v === null || v === undefined ? '-' : fmt(v, 1).replace(/\.0$/, '');
+  const tag = l => `<span class="tag ${l.startsWith('진입') ? 'go' : l.startsWith('관망') ? 'wait' : 'hold'}">${esc(l)}</span>`;
+  const stTxt = st => st === 'past' ? '<span class="st">지남</span>' : st === 'now' ? '<span class="st now">이번 달</span>' : '';
+  const preds = L => L && L.length ? `<ul class="pred">${L.map(x => `<li><b>${x.txt}</b> ${stTxt(x.st)} <span class="st">(${x.nm}: ${x.base})</span></li>`).join('')}</ul>` : '-';
+  const hist = G => G.length ? G.map(g => '(' + g.join(', ') + ')').join(', ') : '';
+  $('cycRows').innerHTML = CYC.rows.map(x => `<tr data-sec="${esc(x.sec)}">
+    <td class="nw">${tag(x.label)}</td>
+    <td class="name nw">${esc(x.sec)}</td><td class="nw">${fmt(x.n)}</td>
+    <td class="nw">${x.cur ? (x.cur.k === 'T' ? 'TOP 구간' : '최하위 구간') + ` (${x.cur.start}~)` : '-'}</td>
+    <td>${preds(x.nextT)}</td><td>${preds(x.nextB)}</td><td>${esc(x.why)}</td>
+    <td>${refOf(x.sec) ? esc(refOf(x.sec).stage) + (refOf(x.sec).start ? `<div class="hist">${esc(refOf(x.sec).start)} 시작</div>` : '') : '<span class="muted">-</span>'}</td>
+    <td>${refOf(x.sec) ? esc(refOf(x.sec).view) : '<span class="muted">-</span>'}</td>
+    <td>${fmt(x.tN)}<div class="hist">${hist(x.tops)}</div></td><td class="nw">${f1(x.reT)}</td>
+    <td>${fmt(x.bN)}<div class="hist">${hist(x.bots)}</div></td><td class="nw">${f1(x.reB)}</td>
+    <td class="nw">${fmt(x.swN)}</td><td class="nw">${f1(x.sw)}</td><td class="nw">${f1(x.lap)}</td></tr>`).join('') +
+    `<tr><td></td><td class="name">전체 평균</td><td colspan="8"></td><td class="nw">${f1(CYC.summ.reT.avg)}</td><td></td><td class="nw">${f1(CYC.summ.reB.avg)}</td><td class="nw">${fmt(CYC.summ.swN)}</td><td class="nw">${f1(CYC.summ.sw.avg)}</td><td class="nw">${f1(CYC.summ.lap.avg)}</td></tr>` +
+    `<tr><td></td><td class="name">전체 중앙값</td><td colspan="8"></td><td class="nw">${f1(CYC.summ.reT.med)}</td><td></td><td class="nw">${f1(CYC.summ.reB.med)}</td><td></td><td class="nw">${f1(CYC.summ.sw.med)}</td><td class="nw">${f1(CYC.summ.lap.med)}</td></tr>`;
+}
+$('cycRows').addEventListener('click', e => {
+  const tr = e.target.closest('tr[data-sec]'); if (!tr) return;
+  S.sec = tr.dataset.sec; $('secf').value = S.sec; S.view = 'rank'; S.page = 1;
+  $('view').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === 'rank'));
+  render(); window.scrollTo({top: 0, behavior: 'smooth'});
+});
+function renderRef(){
+  if (!CREF || !CREF.secs || !CREF.secs.length) {
+    $('refNote').textContent = '참고 사이클 표를 불러오지 못했습니다. 구글 시트가 "링크가 있는 모든 사용자"로 공유돼 있는지 확인해 주세요.';
+    $('refBox').innerHTML = ''; return;
+  }
+  $('refNote').textContent = '구글 시트에 직접 정리해 둔 판단을 그대로 보여줍니다. 데이터로 계산한 값이 아니라서 위의 순환 주기 표와 결론이 다를 수 있습니다. 시트를 고치면 다음 갱신 때 여기에도 반영됩니다.';
+  const flows = CREF.flows && CREF.flows.length ? `<div class="tbl" style="margin-bottom:12px"><table class="ptbl vtbl"><thead><tr><th>큰 흐름</th><th>현재 위치</th><th>다음 단계</th></tr></thead><tbody>${
+    CREF.flows.map(f => `<tr><td class="name">${esc(f.flow)}</td><td>${esc(f.pos)}</td><td>${esc(f.nxt)}</td></tr>`).join('')}</tbody></table></div>` : '';
+  const have = new Set(DATA.map(r => (r.sec || '').replace(/\s/g, '')));
+  $('refBox').innerHTML = flows + `<div class="tbl"><table class="ptbl rtbl"><thead><tr><th>순위</th><th>섹터</th><th>현재 사이클</th><th>사이클 시작</th><th>최근 10년 대표 상승</th><th>다음 연결 섹터</th><th>향후 1년 진입 관점</th></tr></thead><tbody>${
+    CREF.secs.map(x => `<tr data-sec="${have.has(x.sec.replace(/\s/g, '')) ? esc(x.sec) : ''}"><td>${esc(x.rank)}</td><td class="name">${esc(x.sec)}</td><td>${esc(x.stage)}</td><td>${esc(x.start)}</td><td>${esc(x.rally)}</td><td>${esc(x.next)}</td><td>${esc(x.view)}</td></tr>`).join('')}</tbody></table></div>`;
+}
+$('refBox').addEventListener('click', e => {
+  const tr = e.target.closest('tr[data-sec]'); if (!tr || !tr.dataset.sec) return;
+  const sec = DATA.find(r => (r.sec || '').replace(/\s/g, '') === tr.dataset.sec.replace(/\s/g, ''));
+  if (!sec) return;
+  S.sec = sec.sec; $('secf').value = S.sec; S.view = 'rank'; S.page = 1;
+  $('view').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === 'rank'));
+  render(); window.scrollTo({top: 0, behavior: 'smooth'});
+});
+// ---- 진입 검토 섹터 후보 선별 (점수 기준은 가설: 수급 40, 위치 25, 실적 15, 패턴 10, 과열 회피 10) ----
+const PICK = {minCap: 1000, minTv: 10, maxQ: 50, perSec: 5};
+function pickStocks(){
+  if (!CYC || !CYC.rows) return [];
+  const goSecs = CYC.rows.filter(x => x.label.startsWith('진입 검토')).map(x => x.sec);
+  const patBy = Object.fromEntries(((PAT && PAT.match) || []).map(m => [m.code, m.score]));
+  const out = [];
+  const median = xs => { const a = xs.slice().sort((x, y) => x - y); return a.length ? (a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2) : null; };
+  const mean = xs => xs.length ? xs.reduce((x, y) => x + y, 0) / xs.length : null;
+  goSecs.forEach(sec => {
+    const all = DATA.filter(r => r.sec === sec);
+    const cand = all.filter(r => r.cap >= PICK.minCap && (r.tv || 0) >= PICK.minTv && r.rt && r.rt.Q !== null && r.rt.Q <= PICK.maxQ);
+    if (!cand.length) return;
+    const flowPct = r => r.a.M.pct + r.b.M.pct;
+    const sorted = cand.map(flowPct).sort((x, y) => x - y);
+    const pctRank = v => sorted.length > 1 ? sorted.filter(x => x <= v).length / sorted.length : 1;
+    const perMed = median(all.filter(r => r.eps > 0 && r.per > 0).map(r => r.per));
+    const yAvg = mean(all.filter(r => r.rt && r.rt.Y !== null).map(r => r.rt.Y));
+    const qAvg = mean(all.filter(r => r.rt && r.rt.Q !== null).map(r => r.rt.Q));
+    const scored = cand.map(r => {
+      const why = [];
+      // 수급 40
+      const fp = flowPct(r), f10 = r.a['10'].net + r.b['10'].net;
+      const days = r.d.map((x, i) => (x[0] - x[1]) + (r.di[i][0] - r.di[i][1]) > 0 ? 1 : 0);
+      const dayRatio = days.length ? days.reduce((x, y) => x + y, 0) / days.length : 0;
+      let flow = (fp > 0 ? pctRank(fp) * 25 : 0) + (f10 > 0 ? 7 : 0) + dayRatio * 8;
+      if (fp > 0) why.push(`외국인·기관 한달 순매수 시총의 ${plus(fp)}${fmt(fp, 2)}%`);
+      if (f10 > 0) why.push('10일도 순매수');
+      why.push(`한달 중 ${Math.round(dayRatio * days.length)}일 순매수`);
+      // 위치 25
+      let pos = 0; const sr = r.sr;
+      if (sr && sr.levels && sr.levels.length) {
+        if (sr.near) { pos += 15; why.push('지지 구간 안'); }
+        else if (sr.dist !== null) { const d = Math.abs(sr.dist); pos += 15 * Math.max(0, 1 - d / 20); if (d <= 10) why.push(`지지선까지 ${fmt(d, 1)}%`); }
+      }
+      const above = sr && sr.res ? sr.res.filter(lv => lv.top > r.price) : [];
+      if (!above.length) { pos += 10; why.push('위쪽 저항선 없음'); }
+      else {
+        const room = Math.max(0, Math.min(...above.map(lv => (lv.btm - r.price) / r.price * 100)));
+        pos += Math.min(10, room / 2); why.push(`저항까지 ${plus(room)}${fmt(room, 1)}%`);
+      }
+      // 실적 15
+      let earn = 0;
+      if (r.eps > 0) { earn += 10; if (perMed && r.per > 0 && r.per < perMed) { earn += 5; why.push(`PER ${fmt(r.per, 1)}배 (섹터 중간 ${fmt(perMed, 1)}배보다 낮음)`); } else why.push('흑자'); }
+      // 패턴 10
+      const ps = patBy[r.code]; const pat = ps ? Math.max(0, Math.min(1, (ps - 60) / 30)) * 10 : 0;
+      if (ps && pat >= 3) why.push(`급등 직전 패턴 유사도 ${fmt(ps, 1)}`);
+      // 과열 회피 10
+      let cool = 0;
+      if (yAvg !== null && r.rt.Y !== null && r.rt.Y < yAvg) cool += 5;
+      if (qAvg !== null && r.rt.Q < qAvg) cool += 5;
+      if (cool === 10) why.push('섹터 평균보다 덜 오름');
+      const total = flow + pos + earn + pat + cool;
+      return {r, sec, total, flow, pos, earn, pat, cool, why};
+    }).sort((x, y) => y.total - x.total).slice(0, PICK.perSec);
+    out.push(...scored);
+  });
+  return out;
+}
+function renderPicks(){
+  const list = pickStocks();
+  $('pickNote').textContent = `[진입 검토] 섹터 안에서 시총 ${fmt(PICK.minCap)}억 이상, 최근 20일 평균 거래대금 ${PICK.minTv}억 이상, 3달 등락률 +${PICK.maxQ}% 이하인 종목만 골라 점수를 매겼습니다. 수급 40점(외국인·기관 한달 합산 순매수의 시총 대비 섹터 내 순위, 10일 순매수 여부, 한달 중 순매수한 날 비율), 위치 25점(지지선과 가까울수록, 위쪽 저항선까지 여유가 클수록), 실적 15점(흑자, 섹터 중간보다 낮은 PER), 패턴 10점(급등 직전 패턴 유사도), 과열 회피 10점(1년·3달 등락률이 섹터 평균보다 낮음)이고 섹터마다 상위 ${PICK.perSec}개를 보여줍니다. 점수 기준은 제가 정한 가설이라 매수 추천이 아니며, 이 기준이 실제로 잘 맞았는지는 따로 검증되지 않았습니다.`;
+  if (!list.length) { $('pickRows').innerHTML = `<tr><td colspan="10" class="empty">조건에 맞는 후보가 없습니다.</td></tr>`; return; }
+  let prev = null, rank = 0;
+  $('pickRows').innerHTML = list.map(x => {
+    const first = x.sec !== prev; if (first) rank = 0; rank++; prev = x.sec;
+    return `<tr data-code="${x.r.code}" class="${first ? 'first' : ''}"><td class="name nw">${first ? esc(x.sec) : ''}</td><td class="nw">${rank}</td>
+      <td class="name nw">${esc(x.r.name)}</td><td class="nw"><span class="tot">${fmt(x.total, 0)}</span></td>
+      <td class="nw">${fmt(x.flow, 0)}</td><td class="nw">${fmt(x.pos, 0)}</td><td class="nw">${fmt(x.earn, 0)}</td><td class="nw">${fmt(x.pat, 0)}</td><td class="nw">${fmt(x.cool, 0)}</td>
+      <td>${esc(x.why.join(', '))}</td></tr>`;
+  }).join('');
+}
+$('pickRows').addEventListener('click', e => { const tr = e.target.closest('tr[data-code]'); if (tr) openDetail(tr.dataset.code); });
 function renderSec(){
+  renderCycle();
+  renderPicks();
+  renderRef();
   const q = S.q.trim().toLowerCase();
   const G = {};
   DATA.forEach(r => {
@@ -1976,18 +2476,11 @@ function renderFlows(r, fd, fi, days, capD){
     line('매수 금액', x => won(x.buy)),
     line('매도 금액', x => won(x.sell)),
     line('순매수 금액', x => won(x.net, true), null, c),
-    line('매수 수량', x => shares(x.bv)),
-    line('매도 수량', x => shares(x.sv)),
-    line('순매수 수량', x => shares(x.nv, true), null, c),
-    line('평균 매수단가', x => avg(x.buy, x.bv)),
-    line('평균 매도단가', x => avg(x.sell, x.sv)),
     line('순매수/시총', x => `${plus(x.pct)}${fmt(x.pct, 2)}%`, null, c),
     grp('기관'),
     iline('매수 금액', x => won(x.buy)),
     iline('매도 금액', x => won(x.sell)),
     iline('순매수 금액', x => won(x.net, true), null, c),
-    iline('순매수 수량', x => shares(x.nv, true), null, c),
-    iline('평균 매수단가', x => avg(x.buy, x.bv)),
     iline('순매수/시총', x => `${plus(x.pct)}${fmt(x.pct, 2)}%`, null, c),
     grp('외국인+기관 합산'),
     sline('순매수 금액', x => won(x.net, true), null, c),
