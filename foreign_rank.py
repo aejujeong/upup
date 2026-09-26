@@ -41,12 +41,12 @@ PAT_TOP = 10                   # 급등 종목 수
 PAT_MATCH = 200                # 저장할 유사 종목 수
 # 유사도 가중치: 주가 모양, 거래량 흐름, 외국인·기관 누적 순매수 흐름(모양), 외국인·기관 세기(3달 누적 순매수의 시총 대비 %)
 PAT_W = {"price": 0.40, "vol": 0.15, "f": 0.125, "i": 0.125, "fs": 0.10, "is": 0.10}
-PAT_VALID = 70                 # 검증: 항목 점수가 이 이상인 구간을 '그 항목이 비슷한 구간'으로 봄
+PAT_VALID_TOP = 0.10           # 검증: 항목마다 점수 상위 10% 구간을 '그 항목이 비슷한 구간'으로 봄 (항목끼리 표본 수를 같게)
 PAT_AUTO = True                # 과거 검증 결과로 비중을 자동으로 맞춤 (False면 위 PAT_W 그대로 사용)
 PAT_MIN_HITS = 20              # 검증 표본의 급등 사례가 이보다 적으면 자동 조정하지 않음
-PAT_SHRINK = 30                # 표본이 적은 항목이 우연히 튀지 않도록 평균 쪽으로 당기는 정도
+PAT_SHRINK = 200               # 표본이 적은 항목이 우연히 튀지 않도록 평균 쪽으로 당기는 정도
+PAT_MIN_ITEM_HITS = 5          # 항목별 급등 사례가 이보다 적으면 그 항목은 비중을 더 주지 않음
 PAT_FLOOR = 0.05               # 자동 조정 때 항목별 최소 비중
-PAT_BLEND = 0.5                # 검증 결과를 얼마나 반영할지 (0=기본 비중 그대로, 1=검증 결과만). 우연에 휘둘리지 않게 절반만 반영
 PAT_AFTER = 250                # '이후'를 몇 거래일로 볼지 (약 1년, 급등 TOP 10과 같은 기준)
 PAT_FAIL = 20.0                # 이후 1년 최고 상승률이 이 % 미만이면 '안 오른 사례'
 # '오른 사례'(통계용) 기준은 급등 TOP 10 중 가장 작은 바닥→고점 상승률로 자동 설정
@@ -271,6 +271,39 @@ def fetch_desc(code):
     return _clean("".join(f"<li>{x}</li>" for x in items))
 
 
+SECTOR_REFRESH_DAYS = 7        # 세부 업종 목록을 다시 받아오는 주기
+
+
+def load_sectors():
+    """네이버 증권 업종 분류(반도체와반도체장비, 전기제품 등 약 80개)로 종목코드 → 세부 업종 표를 만든다."""
+    f = CACHE / "sector.json"
+    today = dt.datetime.now(KST).date()
+    try:
+        saved = json.loads(f.read_text(encoding="utf-8"))
+        if (today - dt.date.fromisoformat(saved["t"])).days <= SECTOR_REFRESH_DAYS and saved["map"]:
+            return saved["map"]
+    except Exception:
+        saved = None
+    try:
+        t = _get("https://finance.naver.com/sise/sise_group.naver?type=upjong")
+        groups = re.findall(r'sise_group_detail\.naver\?type=upjong(?:&|&amp;)no=(\d+)"[^>]*>([^<]+)</a>', t)
+        mp = {}
+        for no, name in groups:
+            page = _get(f"https://finance.naver.com/sise/sise_group_detail.naver?type=upjong&no={no}")
+            for code in set(re.findall(r"/item/main\.naver\?code=(\d{6})", page)):
+                mp[code] = htmllib.unescape(name).strip()
+            time.sleep(0.2)
+        if len(mp) > 500:
+            CACHE.mkdir(parents=True, exist_ok=True)
+            f.write_text(json.dumps({"t": today.isoformat(), "map": mp}, ensure_ascii=False), encoding="utf-8")
+            print(f"세부 업종: {len(groups)}개 업종, {len(mp)}개 종목")
+            return mp
+        print("세부 업종 목록이 비어 있어 거래소 업종을 씁니다.")
+    except Exception as e:
+        print(f"세부 업종을 불러오지 못해 거래소 업종을 씁니다: {e}")
+    return (saved or {}).get("map") or {}
+
+
 def load_descs(codes):
     f = CACHE / "desc.json"
     try:
@@ -377,6 +410,7 @@ def collect(days_all):
                 "own": round(float(own.get(t, 0) or 0), 2),
                 "exh": round(float(exh.get(t, 0) or 0), 2),
                 "sec": sector.get(t) or "",
+                "sec0": sector.get(t) or "",                  # 거래소 업종 (큰 분류)
                 "eps": fval(t, "EPS"),
                 "per": fval(t, "PER"),
                 "pbr": fval(t, "PBR"),
@@ -443,6 +477,8 @@ def collect(days_all):
             fl = hn.get(t)
             save_chart(t, dlist, o, h, l, c, {"f": fl["f"][-NET_HISTORY:], "i": fl["i"][-NET_HISTORY:]} if fl else None)
             adj[t] = dict(zip(dlist, c))
+            pr = lambda k: round((c[-1] / c[-1 - k] - 1) * 100, 2) if len(c) > k and c[-1 - k] > 0 else None
+            r["rt"] = {"1": pr(1), "10": pr(10), "M": pr(MONTH), "Q": pr(60), "Y": pr(250)}      # 수정주가 등락률
             series[t] = (dlist, c, vol)
             last = c[-1]
             def pack(lst):
@@ -469,6 +505,10 @@ def collect(days_all):
     except Exception as e:
         print(f"패턴 찾기 중 문제가 생겨 이번에는 건너뜁니다: {e}")
         PATTERN = None
+    fine = load_sectors()
+    for t, r in rows.items():
+        if fine.get(t):
+            r["sec"] = fine[t]
     descs = load_descs(list(rows.keys()))
     for t, r in rows.items():
         r["desc"] = descs.get(t, "")
@@ -652,24 +692,29 @@ def find_patterns(rows, series, hn, days_net):
 
 
 def calibrate(valid):
-    """항목별로 '점수가 높았던 구간의 급등 비율 ÷ 전체 평균'을 구해서, 평균보다 잘 맞힌 만큼 비중을 준다."""
+    """항목별로 '점수 상위 구간의 급등 비율 ÷ 전체 평균'(배수)을 구해서, 기본 비중에 배수의 제곱을 곱해 조정한다.
+    평균보다 잘 맞힌 항목은 늘고 못 맞힌 항목은 줄지만, 한 항목에 몰리지 않게 완만하게 바뀐다."""
     if not valid or valid["hit"] < PAT_MIN_HITS or valid["base"] <= 0:
         return dict(PAT_W), {"auto": False, "why": f"검증 표본의 급등 사례가 {PAT_MIN_HITS}개 미만이라 기본 비중을 씁니다."}
     base = valid["base"] / 100
-    raw, lifts = {}, {}
+    lifts = {}
     for r in valid["rows"]:
-        rate = (r["hit"] + PAT_SHRINK * base) / (r["n"] + PAT_SHRINK)       # 표본이 적으면 평균 쪽으로
-        lifts[r["k"]] = rate / base
-        raw[r["k"]] = max(rate / base - 1, 0)
+        if r["hit"] < PAT_MIN_ITEM_HITS:
+            lifts[r["k"]] = 1.0                                               # 사례가 적으면 판단 보류
+        else:
+            rate = (r["hit"] + PAT_SHRINK * base) / (r["n"] + PAT_SHRINK)      # 표본이 적으면 평균 쪽으로
+            lifts[r["k"]] = rate / base
+    raw = {k: PAT_W[k] * lifts.get(k, 1.0) ** 2 for k in PAT_W}
     tot = sum(raw.values())
-    if tot <= 0:
-        return dict(PAT_W), {"auto": False, "why": "평균보다 급등을 잘 가려낸 항목이 없어 기본 비중을 씁니다.", "lift": lifts}
-    rest = 1 - PAT_FLOOR * len(raw)
-    w = {k: round((1 - PAT_BLEND) * PAT_W[k] + PAT_BLEND * (PAT_FLOOR + rest * v / tot), 4) for k, v in raw.items()}
+    w = {k: max(PAT_FLOOR, v / tot) for k, v in raw.items()}
+    tot = sum(w.values())
+    w = {k: round(v / tot, 4) for k, v in w.items()}
     names = {"price": "주가 모양", "vol": "거래량", "f": "외국인 흐름", "i": "기관 흐름", "fs": "외국인 세기", "is": "기관 세기"}
-    best = [names.get(k, k) for k in sorted(w, key=lambda k: -w[k])[:2]]
-    return w, {"auto": True, "lift": {k: round(v, 2) for k, v in lifts.items()},
-               "why": f"과거 검증에서 평균보다 급등을 잘 가려낸 만큼 비중을 줬고, 우연에 휘둘리지 않도록 기본 비중과 반반 섞었습니다. 가장 비중이 큰 항목은 {', '.join(best)}입니다."}
+    up = [names[k] for k in w if w[k] > PAT_W[k] + 0.005]
+    dn = [names[k] for k in w if w[k] < PAT_W[k] - 0.005]
+    why = "과거 검증에서 평균보다 잘 맞힌 항목은 비중을 늘리고 못 맞힌 항목은 줄였습니다."
+    why += (f" 늘어난 항목: {', '.join(up)}." if up else "") + (f" 줄어든 항목: {', '.join(dn)}." if dn else "")
+    return w, {"auto": True, "lift": {k: round(v, 2) for k, v in lifts.items()}, "why": why}
 
 
 def find_failures(rows, series, hn, didx, tmpls, tset, weights=None):
@@ -791,8 +836,10 @@ def find_failures(rows, series, hn, didx, tmpls, tset, weights=None):
         base = float(hit.mean()) if len(hit) else 0
         rowsv = []
         for k in allk:
-            sc = np.concatenate(samp_parts[k]); m = sc >= PAT_VALID
-            rowsv.append({"k": k, "n": int(m.sum()), "hit": int(hit[m].sum()),
+            sc = np.concatenate(samp_parts[k])
+            th = float(np.quantile(sc, 1 - PAT_VALID_TOP)) if len(sc) else 0
+            m = sc >= th
+            rowsv.append({"k": k, "n": int(m.sum()), "hit": int(hit[m].sum()), "th": round(th),
                           "rate": round(float(hit[m].mean()) * 100, 2) if m.any() else None})
         bins = []
         for lo_, hi_ in ((0, 60), (60, 70), (70, 80), (80, 101)):
@@ -800,7 +847,7 @@ def find_failures(rows, series, hn, didx, tmpls, tset, weights=None):
             bins.append({"lo": lo_, "hi": min(hi_, 100), "n": int(m.sum()), "hit": int(hit[m].sum()),
                          "rate": round(float(hit[m].mean()) * 100, 2) if m.any() else None})
         valid = {"n": int(len(hit)), "hit": int(hit.sum()), "base": round(base * 100, 2),
-                 "rows": rowsv, "bins": bins, "th": PAT_VALID, "hitPct": round(hit_pct, 1)}
+                 "rows": rowsv, "bins": bins, "top": PAT_VALID_TOP, "hitPct": round(hit_pct, 1)}
     stat = dict(stat or {}, valid=valid) if (stat or valid) else None
     print(f"패턴 찾기: 비슷했지만 안 오른 사례 {len(fails)}개, 통계 표본 {n_stat}개 중 {n_hit}개 상승")
     return fails, stat
@@ -887,6 +934,7 @@ h1{font-size:30px;font-weight:800;margin:0;letter-spacing:-.02em}
 .views button{font:inherit;font-size:16px;font-weight:700;padding:10px 20px;border:0;background:none;color:var(--gray);cursor:pointer;border-bottom:4px solid transparent;margin-bottom:-2px}
 .views button.on{color:var(--olive);border-bottom-color:var(--olive)}
 body.pat .rk{display:none}
+body.secv .nsec{display:none}
 .pnote{background:#fff;border:1px solid var(--olive);border-radius:8px;padding:12px 14px;font-size:14px;line-height:1.65;margin:0 0 6px}
 .ph{font-size:20px;margin:24px 0 10px}
 .ptbl{min-width:1300px}
@@ -933,7 +981,7 @@ button:focus-visible,select:focus-visible,input:focus-visible,th:focus-visible,t
 .info{color:var(--gray);font-size:13px;margin:0 0 8px}
 .tbl{overflow-x:auto;background:#fff;border-radius:6px}
 table{border-collapse:collapse;width:100%}
-#main{min-width:1600px}
+#main{min-width:1700px}
 th,td{border:1px solid var(--olive);padding:8px 10px;text-align:left;white-space:nowrap}
 th{background:var(--olive);color:#fff;font-weight:700;text-align:center}
 #main th{cursor:pointer;user-select:none}
@@ -1019,7 +1067,7 @@ td.st{text-align:center;width:44px}
   <p class="sub" id="sub"></p>
 
   <div class="views" id="view">
-    <button data-v="rank" class="on">순매수 순위</button><button data-v="pat">패턴 찾기</button>
+    <button data-v="rank" class="on">순매수 순위</button><button data-v="sec">섹터</button><button data-v="pat">패턴 찾기</button>
   </div>
   <div id="rankTop">
   <div class="tabs" id="per">
@@ -1050,7 +1098,7 @@ td.st{text-align:center;width:44px}
       <div class="seg" id="pf">
         <button data-v="ALL" class="on">전체</button><button data-v="P">흑자만</button><button data-v="L">적자만</button>
       </div></div>
-    <div class="field rk"><label>정렬 기준</label>
+    <div class="field rk nsec"><label>정렬 기준</label>
       <select id="sort">
         <option value="net">외국인 순매수 금액</option>
         <option value="inet">기관 순매수 금액</option>
@@ -1064,7 +1112,7 @@ td.st{text-align:center;width:44px}
         <option value="per">PER 낮은 순</option>
       </select></div>
     <div class="field"><label>시총 최소 (억)</label><input id="minCap" type="number" min="0" step="500" value="0"></div>
-    <div class="field rk"><label>한 페이지에</label>
+    <div class="field rk nsec"><label>한 페이지에</label>
       <select id="top"><option>30</option><option selected>100</option><option>300</option></select></div>
     <div class="field"><label>종목 찾기</label><input id="q" type="search" placeholder="종목명, 코드, 업종"></div>
   </div>
@@ -1076,6 +1124,15 @@ td.st{text-align:center;width:44px}
     <tbody id="body"></tbody>
   </table></div>
   <nav class="pager" id="pager" aria-label="페이지 이동"></nav>
+  </div>
+
+  <div id="secView" hidden>
+    <p class="pnote">네이버 증권 업종 분류(약 80개) 기준으로 묶었습니다. 등락률은 시가총액 가중 평균이고, 순매수와 시총 대비는 섹터 안 종목을 모두 더한 값입니다. 위의 전날·10일·한달 탭과 기준일, 시장·시총·실적 필터가 그대로 적용되고, 섹터를 누르면 그 섹터 종목 순위로 이동합니다.</p>
+    <p class="info" id="secInfo"></p>
+    <div class="tbl"><table class="ptbl" id="stbl">
+      <thead><tr id="secHead"></tr></thead>
+      <tbody id="secRows"></tbody>
+    </table></div>
   </div>
 
   <div id="patView" hidden>
@@ -1095,7 +1152,7 @@ td.st{text-align:center;width:44px}
     <h2 class="ph">어떤 항목이 실제로 급등을 잘 가려냈나 (과거 검증으로 비중 결정)</h2>
     <p class="pnote" id="validNote"></p>
     <div class="tbl"><table class="ptbl vtbl">
-      <thead><tr><th>항목</th><th>기본 비중</th><th>검증 후 비중</th><th>그 항목이 비슷했던 구간</th><th>그중 1년 안에 급등</th><th>급등 비율</th><th>전체 평균 대비</th></tr></thead>
+      <thead><tr><th>항목</th><th>기본 비중</th><th>검증 후 비중</th><th>그 항목이 가장 비슷했던 구간</th><th>그중 1년 안에 급등</th><th>급등 비율</th><th>전체 평균 대비</th></tr></thead>
       <tbody id="validRows"></tbody>
     </table></div>
     <div class="tbl" style="margin-top:10px"><table class="ptbl vtbl">
@@ -1152,7 +1209,8 @@ const HISTIN = __HIST__ || {};
 const HD = META.hist || [];
 const PAT = __PATTERN__;
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', asof:'', view:'rank', psel:null, fsel:null};
+const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', asof:'', view:'rank', psel:null, fsel:null, ssort:'rt', sdir:-1};
+const RT = (r, p) => S.asof ? (r.h ? r.h.rt[p] : null) : (r.rt ? r.rt[p] : null);   // 기간 등락률
 const AA = (r, p) => S.asof ? r.h.a[p] : r.a[p];   // 외국인 (기준일 반영)
 const BB = (r, p) => S.asof ? r.h.b[p] : r.b[p];   // 기관 (기준일 반영)
 const WKEY = 'upup-watchlist';
@@ -1199,6 +1257,7 @@ const COLS = [
   {k:null,   t:'시장'},
   {k:'sec',  t:'업종'},
   {k:'cap',  t:'시가총액(억)'},
+  {k:'rt',   t:'등락률'},
   {k:'own',  t:'외국인 보유율'},
   {k:'net',  t:'외국인 순매수'},
   {k:'pct',  t:'외국인/시총'},
@@ -1215,6 +1274,7 @@ const COLS = [
 ];
 const vcols = () => COLS.filter(c => !c.show || c.show());
 function val(r, k){
+  if (k === 'rt') return RT(r, S.per);
   if (k === 'net' || k === 'pct') return AA(r, S.per)[k];
   if (k === 'inet') return BB(r, S.per).net;
   if (k === 'sum') return AA(r, S.per).net + BB(r, S.per).net;
@@ -1299,6 +1359,8 @@ async function setAsof(d){
         a: {'1': mk(c, a1, 0), '10': mk(c, a10, 0), 'M': mk(c, aM, 0)},
         b: {'1': mk(c, a1, 1), '10': mk(c, a10, 1), 'M': mk(c, aM, 1)},
         ret: px ? (r.price / px - 1) * 100 : null,
+        rt: {'1': px && a1[2] ? (px / a1[2] - 1) * 100 : null, '10': px && a10[2] ? (px / a10[2] - 1) * 100 : null,
+             'M': px && aM[2] ? (px / aM[2] - 1) * 100 : null},
       };
     });
     S.asof = d;
@@ -1434,11 +1496,11 @@ function drawFail(){
 function renderValid(){
   const v = PAT.stat && PAT.stat.valid;
   if (!v) { $('validNote').textContent = '검증할 과거 구간이 아직 부족합니다.'; $('validRows').innerHTML = $('binRows').innerHTML = ''; return; }
-  $('validNote').textContent = `약 2년 전부터 1년 전 사이의 과거 구간 ${fmt(v.n)}개(겹치지 않게 20일 간격)를 급등 TOP 10의 급등 직전 패턴과 비교하고, 그 뒤 1년 안에 TOP 10 수준(바닥→고점 +${fmt(v.hitPct, 0)}% 이상)까지 오른 비율을 셌습니다. 전체 평균은 ${fmt(v.base, 2)}%입니다. 어떤 항목의 비율이 평균보다 뚜렷하게 높으면 그 항목이 급등 전 신호를 잘 잡는다는 뜻입니다. 다만 급등 사례 자체가 드물어서 구간 수가 적은 항목은 우연일 수 있어, 비중을 정할 때는 표본이 적은 항목을 평균 쪽으로 당겨서 계산합니다. ${PAT.calib ? PAT.calib.why : ''} 이 비중은 매일 새로 검증해서 다시 맞춥니다.`;
+  $('validNote').textContent = `약 2년 전부터 1년 전 사이의 과거 구간 ${fmt(v.n)}개(겹치지 않게 20일 간격)를 급등 TOP 10의 급등 직전 패턴과 비교하고, 그 뒤 1년 안에 TOP 10 수준(바닥→고점 +${fmt(v.hitPct, 0)}% 이상)까지 오른 비율을 셌습니다. 전체 평균은 ${fmt(v.base, 2)}%입니다. 어떤 항목의 비율이 평균보다 뚜렷하게 높으면 그 항목이 급등 전 신호를 잘 잡는다는 뜻입니다. 항목마다 점수가 가장 높았던 상위 ${fmt((v.top || 0.1) * 100, 0)}% 구간끼리 비교해서 표본 수를 맞췄고, 급등 사례가 ${5}개도 안 되는 항목은 우연일 수 있어 비중을 더 주지 않습니다. ${PAT.calib ? PAT.calib.why : ''} 이 비중은 매일 새로 검증해서 다시 맞춥니다.`;
   const lift = r => r === null || !v.base ? '-' : `<span class="lift ${r / v.base >= 1.3 ? 'pos' : r / v.base < 0.8 ? 'neg' : ''}">${fmt(r / v.base, 1)}배</span>`;
   $('validRows').innerHTML = v.rows.map(x => `<tr><td class="name">${PNAME2[x.k]}</td><td>${fmt(((PAT.w0 || PAT.w)[x.k] || 0) * 100, 1)}%</td>
     <td><b>${fmt((PAT.w[x.k] || 0) * 100, 1)}%</b></td>
-    <td>${fmt(x.n)}개 (점수 ${v.th} 이상)</td><td>${fmt(x.hit)}개</td><td>${x.rate === null ? '-' : fmt(x.rate, 2) + '%'}</td><td>${lift(x.rate)}</td></tr>`).join('');
+    <td>${fmt(x.n)}개 (상위 ${fmt((v.top || 0.1) * 100, 0)}%, 점수 ${x.th} 이상)</td><td>${fmt(x.hit)}개</td><td>${x.rate === null ? '-' : fmt(x.rate, 2) + '%'}</td><td>${lift(x.rate)}</td></tr>`).join('');
   $('binRows').innerHTML = v.bins.map(x => `<tr><td class="name">${x.lo} ~ ${x.hi}점</td><td>${fmt(x.n)}개</td><td>${fmt(x.hit)}개</td>
     <td>${x.rate === null ? '-' : fmt(x.rate, 2) + '%'}</td><td>${lift(x.rate)}</td></tr>`).join('');
 }
@@ -1472,11 +1534,7 @@ $('matchRows').addEventListener('click', e => {
   S.psel = tr.dataset.code; renderPat();
   $('cmpBox').scrollIntoView({block: 'nearest', behavior: 'smooth'});
 });
-function render(){
-  document.body.classList.toggle('pat', S.view === 'pat');
-  $('rankTop').hidden = $('rankBody').hidden = S.view === 'pat';
-  $('patView').hidden = S.view !== 'pat';
-  if (S.view === 'pat') { renderPat(); return; }
+function renderRange(){
   const DD = S.asof ? HD.slice(Math.max(0, HD.indexOf(S.asof) - ND + 1), HD.indexOf(S.asof) + 1) : DAYS, NN = DD.length;
   const n10 = Math.min(10, NN);
   $('range').textContent = S.per === '1'
@@ -1486,6 +1544,71 @@ function render(){
       : `${DD[0]} ~ ${DD[NN-1]}, ${NN}거래일 합계 기준`;
   $('asofNote').hidden = !S.asof;
   if (S.asof) $('asofNote').textContent = `과거 시점 보기: ${S.asof} 장 마감 기준 순위입니다. 오른쪽 끝 "기준일 이후 수익률"은 그날 종가에서 최신 종가까지의 변화입니다. 지지선, 실적, PER은 최신 기준이고, 상세 창은 이 날짜 기준으로 열립니다.`;
+}
+const SCOLS = [
+  {k: 'name', t: '섹터'}, {k: 'n', t: '종목 수'}, {k: 'cap', t: '시총 합(억)'}, {k: 'rt', t: '등락률'},
+  {k: 'up', t: '오른 종목 비율'}, {k: 'fnet', t: '외국인 순매수'}, {k: 'inet', t: '기관 순매수'},
+  {k: 'fpct', t: '외국인/시총'}, {k: 'ipct', t: '기관/시총'}, {k: 'spct', t: '합산/시총'},
+  {k: null, t: '가장 많이 오른 종목'}, {k: null, t: '외국인 순매수 1위'},
+];
+function renderSec(){
+  const q = S.q.trim().toLowerCase();
+  const G = {};
+  DATA.forEach(r => {
+    if (!r.sec) return;
+    if (!((S.mkt === 'ALL' || r.mkt === S.mkt) && r.cap >= S.minCap && (S.sr === 'ALL' || (r.sr && r.sr.near)) &&
+          (S.watch === 'ALL' || WATCH.has(r.code)) &&
+          (S.pf === 'ALL' || (S.pf === 'P' ? r.eps > 0 : (r.eps !== null && r.eps < 0))))) return;
+    const g = G[r.sec] || (G[r.sec] = {name: r.sec, n: 0, cap: 0, capR: 0, wr: 0, up: 0, nr: 0, fnet: 0, inet: 0, top: null, topv: -Infinity, ftop: null, ftopv: -Infinity});
+    const a = AA(r, S.per), b = BB(r, S.per), rt = RT(r, S.per);
+    g.n++; g.cap += r.cap; g.fnet += a.net; g.inet += b.net;
+    if (rt !== null && rt !== undefined) { g.capR += r.cap; g.wr += rt * r.cap; g.nr++; if (rt > 0) g.up++; if (rt > g.topv) { g.topv = rt; g.top = r; } }
+    if (a.net > g.ftopv) { g.ftopv = a.net; g.ftop = r; }
+  });
+  let list = Object.values(G).map(g => ({...g, rt: g.capR ? g.wr / g.capR : null, up: g.nr ? g.up / g.nr * 100 : null,
+    fpct: g.cap ? g.fnet / g.cap : 0, ipct: g.cap ? g.inet / g.cap : 0, spct: g.cap ? (g.fnet + g.inet) / g.cap : 0}));
+  if (q) list = list.filter(g => g.name.toLowerCase().includes(q));
+  list.sort((x, y) => {
+    const a = x[S.ssort], b = y[S.ssort];
+    if (S.ssort === 'name') return a.localeCompare(b, 'ko') * S.sdir;
+    if (a === null || b === null) return a === b ? 0 : (a === null ? 1 : -1);
+    return (a - b) * S.sdir;
+  });
+  $('secHead').innerHTML = SCOLS.map(c => c.k
+    ? `<th tabindex="0" data-k="${c.k}">${c.t}${S.ssort === c.k ? `<span class="arw">${S.sdir < 0 ? '▼' : '▲'}</span>` : ''}</th>`
+    : `<th class="nosort">${c.t}</th>`).join('');
+  $('secHead').querySelectorAll('th[data-k]').forEach(th => {
+    const go = () => { const k = th.dataset.k; if (S.ssort === k) S.sdir *= -1; else { S.ssort = k; S.sdir = k === 'name' ? 1 : -1; } renderSec(); };
+    th.onclick = go; th.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
+  });
+  $('secInfo').textContent = `${fmt(list.length)}개 섹터. 머리글을 누르면 정렬되고, 섹터를 누르면 그 섹터 종목 순위로 이동합니다.`;
+  const cc = v => v > 0 ? 'pos' : (v < 0 ? 'neg' : '');
+  const pctc = (v, d = 2) => v === null || v === undefined ? '<span class="muted">-</span>' : `<span class="${cc(v)}">${plus(v)}${fmt(v, d)}%</span>`;
+  $('secRows').innerHTML = list.length ? list.map(g => `<tr data-sec="${esc(g.name)}">
+    <td class="name">${esc(g.name)}</td><td>${fmt(g.n)}</td><td>${fmt(g.cap)}</td><td>${pctc(g.rt)}</td>
+    <td>${g.up === null ? '-' : fmt(g.up, 0) + '%'}</td>
+    <td class="${cc(g.fnet)}">${won(g.fnet, true)}</td><td class="${cc(g.inet)}">${won(g.inet, true)}</td>
+    <td>${pctc(g.fpct, 3)}</td><td>${pctc(g.ipct, 3)}</td><td>${pctc(g.spct, 3)}</td>
+    <td>${g.top ? `${esc(g.top.name)} <span class="${cc(g.topv)}">${plus(g.topv)}${fmt(g.topv, 1)}%</span>` : '-'}</td>
+    <td>${g.ftop && g.ftopv > 0 ? `${esc(g.ftop.name)} <span class="pos">${won(g.ftopv, true)}</span>` : '-'}</td></tr>`).join('')
+    : `<tr><td colspan="${SCOLS.length}" class="empty">조건에 맞는 섹터가 없습니다.</td></tr>`;
+}
+$('secRows').addEventListener('click', e => {
+  const tr = e.target.closest('tr[data-sec]'); if (!tr) return;
+  S.sec = tr.dataset.sec; $('secf').value = S.sec; S.view = 'rank'; S.page = 1;
+  $('view').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === 'rank'));
+  render(); window.scrollTo({top: 0, behavior: 'smooth'});
+});
+function render(){
+  document.body.classList.toggle('pat', S.view === 'pat');
+  document.body.classList.toggle('secv', S.view === 'sec');
+  $('rankTop').hidden = S.view === 'pat';
+  $('rankBody').hidden = S.view !== 'rank';
+  $('patView').hidden = S.view !== 'pat';
+  $('secView').hidden = S.view !== 'sec';
+  if (S.view === 'pat') { renderPat(); return; }
+  if (S.view === 'sec') { renderRange(); renderSec(); return; }
+  renderRange();
   const q = S.q.trim().toLowerCase();
   let rows = DATA.filter(r =>
     (S.watch === 'ALL' || WATCH.has(r.code)) &&
@@ -1526,6 +1649,7 @@ function render(){
       <td>${r.mkt}</td>
       <td class="sec" title="${esc(r.sec || '')}">${r.sec ? esc(r.sec) : '<span class="muted">-</span>'}</td>
       <td>${fmt(r.cap)}</td>
+      <td class="${cc(RT(r, S.per))}">${RT(r, S.per) === null || RT(r, S.per) === undefined ? '<span class="muted">-</span>' : plus(RT(r, S.per)) + fmt(RT(r, S.per), 2) + '%'}</td>
       <td>${fmt(r.own, 2)}%</td>
       <td class="${cls}">${won(a.net, true)}</td>
       <td class="${cls}">${plus(a.pct)}${fmt(a.pct, 2)}%</td>
@@ -1805,6 +1929,7 @@ function openDetail(code){
   const pl = r.eps === null || r.eps === undefined ? '-' : r.eps > 0 ? '흑자' : r.eps < 0 ? '적자' : '-';
   const cells = [
     ['종목코드', r.code], ['시장', r.mkt], ['업종', r.sec ? esc(r.sec) : '-'],
+    ['거래소 업종', r.sec0 ? esc(r.sec0) : '-'], ['1년 등락률', r.rt && r.rt.Y !== null ? plus(r.rt.Y) + fmt(r.rt.Y, 1) + '%' : '-'], ['3달 등락률', r.rt && r.rt.Q !== null ? plus(r.rt.Q) + fmt(r.rt.Q, 1) + '%' : '-'],
     ['종가', fmt(r.price) + '원'], ['시가총액', fmt(r.cap) + '억'], ['외국인 보유율', fmt(r.own, 2) + '%'],
     ['한도소진율', fmt(r.exh, 2) + '%'], ['실적', pl], ['EPS', r.eps === null || r.eps === undefined ? '-' : fmt(r.eps) + '원'],
     ['PER', r.eps > 0 && r.per > 0 ? fmt(r.per, 1) + '배' : '-'], ['PBR', r.pbr ? fmt(r.pbr, 2) + '배' : '-'], ['', ''],
