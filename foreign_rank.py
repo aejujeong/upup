@@ -603,6 +603,7 @@ def find_patterns(rows, series, hn, days_net):
             "code": t, "name": rows[t]["name"], "ret": round(ret, 1),
             "from": fmt_d(dl[lo_i - PAT_WIN + 1]), "low": fmt_d(dl[lo_i]), "high": fmt_d(dl[hi_i]),
             "runup": round((best - 1) * 100, 1),
+            "lr": round(c[lo_i] / c[-1], 4) if c[-1] > 0 else None,        # 바닥 가격 ÷ 현재 가격 (PER 추정용)
             "px": [round(x / base * 100, 2) for x in c[lo_i - PAT_WIN + 1:lo_i + 1]],
             "_ft": ft,
             "d": _desc(dl, c, v, hn.get(t), didx, lo_i - PAT_WIN + 1, lo_i, rows[t]["cap"]),
@@ -772,6 +773,7 @@ def find_failures(rows, series, hn, didx, tmpls, tset, weights=None):
                 "p": {x: round(float(parts[x][k, bi[k]]) * 100) for x in allk},
                 "from": fmt_d(dl[e - W + 1]), "to": fmt_d(dl[e]),
                 "fmax": round(float(fmax[k]), 1), "fret": round(float(fret[k]), 1),
+                "er": round(float(c[e] / c[-1]), 4),                       # 당시 가격 ÷ 현재 가격 (PER 추정용)
                 "px": [round(x / base * 100, 2) for x in c[e - W + 1:e + 1]],
                 "after": [round(x / base * 100, 2) for x in c[e + 1:e + 1 + H]],
                 "_e": e,
@@ -887,7 +889,7 @@ h1{font-size:30px;font-weight:800;margin:0;letter-spacing:-.02em}
 body.pat .rk{display:none}
 .pnote{background:#fff;border:1px solid var(--olive);border-radius:8px;padding:12px 14px;font-size:14px;line-height:1.65;margin:0 0 6px}
 .ph{font-size:20px;margin:24px 0 10px}
-.ptbl{min-width:1150px}
+.ptbl{min-width:1300px}
 .vtbl{min-width:700px}
 .vtbl tbody tr{cursor:default}
 .lift{font-weight:800}
@@ -1077,17 +1079,17 @@ td.st{text-align:center;width:44px}
   </div>
 
   <div id="patView" hidden>
-    <p class="pnote">최근 1년 동안 가장 많이 오른 종목들이 크게 오르기 직전 3달(60거래일) 동안 어떤 흐름이었는지를 기준 패턴으로 잡고, 모든 종목의 최근 3달 흐름과 비교합니다. 주가 모양, 거래량 흐름, 외국인·기관 누적 순매수 흐름을 함께 봅니다. 닮은 패턴이 같은 결과로 이어진다는 보장은 없으니 후보를 추리는 참고용으로 써 주세요.</p>
+    <p class="pnote">최근 1년 동안 가장 많이 오른 종목들이 크게 오르기 직전 3달(60거래일) 동안 어떤 흐름이었는지를 기준 패턴으로 잡고, 모든 종목의 최근 3달 흐름과 비교합니다. 주가 모양, 거래량 흐름, 외국인·기관 누적 순매수 흐름을 함께 봅니다. 닮은 패턴이 같은 결과로 이어진다는 보장은 없으니 후보를 추리는 참고용으로 써 주세요. PER은 직전 결산 연도 이익 기준이고, "급등 시작 때 PER"과 "당시 PER"은 이익이 그대로였다고 보고 그때 주가로 다시 계산한 추정치입니다.</p>
     <h2 class="ph">최근 1년 급등 TOP 10</h2>
     <div class="tbl"><table class="ptbl">
-      <thead><tr><th>순위</th><th>종목명</th><th>업종</th><th>1년 수익률</th><th>비교 구간 (급등 직전 3달)</th><th>급등 시작 (바닥)</th><th>고점</th><th>바닥 → 고점</th></tr></thead>
+      <thead><tr><th>순위</th><th>종목명</th><th>업종</th><th>1년 수익률</th><th>비교 구간 (급등 직전 3달)</th><th>급등 시작 (바닥)</th><th>고점</th><th>바닥 → 고점</th><th>실적</th><th>현재 PER</th><th>급등 시작 때 PER (추정)</th></tr></thead>
       <tbody id="tmplRows"></tbody>
     </table></div>
     <h2 class="ph">최근 3달 흐름이 급등 직전과 비슷한 종목</h2>
     <div class="cmpbox" id="cmpBox" hidden></div>
     <p class="info" id="patInfo"></p>
     <div class="tbl"><table class="ptbl" id="mtbl">
-      <thead><tr><th>관심</th><th>순위</th><th>종목명</th><th>시장</th><th>업종</th><th>시가총액(억)</th><th>유사도</th><th>닮은 급등 종목</th><th>특히 비슷한 점</th><th>주가 모양</th><th>거래량</th><th>외국인 흐름</th><th>기관 흐름</th><th>외국인 세기</th><th>기관 세기</th><th>지지선</th></tr></thead>
+      <thead><tr><th>관심</th><th>순위</th><th>종목명</th><th>시장</th><th>업종</th><th>시가총액(억)</th><th>유사도</th><th>닮은 급등 종목</th><th>특히 비슷한 점</th><th>주가 모양</th><th>거래량</th><th>외국인 흐름</th><th>기관 흐름</th><th>외국인 세기</th><th>기관 세기</th><th>실적</th><th>PER</th><th>지지선</th></tr></thead>
       <tbody id="matchRows"></tbody>
     </table></div>
     <h2 class="ph">어떤 항목이 실제로 급등을 잘 가려냈나 (과거 검증으로 비중 결정)</h2>
@@ -1104,7 +1106,7 @@ td.st{text-align:center;width:44px}
     <p class="pnote" id="failNote"></p>
     <div class="cmpbox" id="cmpBox2" hidden></div>
     <div class="tbl"><table class="ptbl">
-      <thead><tr><th>순위</th><th>종목명</th><th>업종</th><th>비슷했던 구간</th><th>유사도</th><th>닮은 급등 종목</th><th>특히 비슷한 점</th><th>주가 모양</th><th>거래량</th><th>외국인 흐름</th><th>기관 흐름</th><th>외국인 세기</th><th>기관 세기</th><th>이후 1년 최고</th><th>이후 1년 수익률</th></tr></thead>
+      <thead><tr><th>순위</th><th>종목명</th><th>업종</th><th>비슷했던 구간</th><th>유사도</th><th>닮은 급등 종목</th><th>특히 비슷한 점</th><th>주가 모양</th><th>거래량</th><th>외국인 흐름</th><th>기관 흐름</th><th>외국인 세기</th><th>기관 세기</th><th>당시 PER (추정)</th><th>이후 1년 최고</th><th>이후 1년 수익률</th></tr></thead>
       <tbody id="failRows"></tbody>
     </table></div>
   </div>
@@ -1306,16 +1308,24 @@ async function setAsof(d){
   }
   S.page = 1; render();
 }
+// PER 표시: ratio는 '그때 가격 ÷ 지금 가격'. 이익(EPS)이 그대로라고 보고 그때 PER을 추정한다
+function perTxt(r, ratio){
+  if (!r || r.eps === null || r.eps === undefined) return '<span class="muted">-</span>';
+  if (r.eps < 0) return '<span class="pl loss">적자</span>';
+  if (!(r.eps > 0 && r.per > 0) || !ratio) return '<span class="muted">-</span>';
+  return fmt(r.per * ratio, 1) + '배';
+}
 function renderPat(){
   if (!PAT || !PAT.tmpl || !PAT.tmpl.length) {
-    $('tmplRows').innerHTML = `<tr><td colspan="8" class="empty">패턴 데이터가 아직 없습니다. 다음 갱신 때 계산됩니다.</td></tr>`;
+    $('tmplRows').innerHTML = `<tr><td colspan="11" class="empty">패턴 데이터가 아직 없습니다. 다음 갱신 때 계산됩니다.</td></tr>`;
     $('matchRows').innerHTML = ''; $('patInfo').textContent = ''; return;
   }
   $('tmplRows').innerHTML = PAT.tmpl.map((tp, i) => {
     const r = BY[tp.code] || {};
     return `<tr data-code="${tp.code}"><td>${i + 1}</td><td class="name">${esc(tp.name)}</td>
       <td class="sec">${r.sec ? esc(r.sec) : '-'}</td><td class="pos">+${fmt(tp.ret, 1)}%</td>
-      <td>${tp.from} ~ ${tp.low}</td><td>${tp.low}</td><td>${tp.high}</td><td class="pos">+${fmt(tp.runup, 1)}%</td></tr>`;
+      <td>${tp.from} ~ ${tp.low}</td><td>${tp.low}</td><td>${tp.high}</td><td class="pos">+${fmt(tp.runup, 1)}%</td>
+      <td>${plCell(r)}</td><td>${perTxt(r, 1)}</td><td>${perTxt(r, tp.lr)}</td></tr>`;
   }).join('');
   const q = S.q.trim().toLowerCase();
   const list = PAT.match.filter(m => {
@@ -1333,8 +1343,8 @@ function renderPat(){
       <td class="st">${starBtn(m.code)}</td><td>${i + 1}</td><td class="name">${esc(r.name)}</td><td>${r.mkt}</td>
       <td class="sec">${r.sec ? esc(r.sec) : '-'}</td><td>${fmt(r.cap)}</td>
       <td><span class="score">${fmt(m.score, 1)}</span></td><td>${esc(tp.name)}</td><td>${simShort(m.p)}</td>
-      <td>${pc(m.p.price)}</td><td>${pc(m.p.vol)}</td><td>${pc(m.p.f)}</td><td>${pc(m.p.i)}</td><td>${pc(m.p.fs)}</td><td>${pc(m.p.is)}</td><td>${srCell(r)}</td></tr>`;
-  }).join('') : `<tr><td colspan="16" class="empty">조건에 맞는 종목이 없습니다.</td></tr>`;
+      <td>${pc(m.p.price)}</td><td>${pc(m.p.vol)}</td><td>${pc(m.p.f)}</td><td>${pc(m.p.i)}</td><td>${pc(m.p.fs)}</td><td>${pc(m.p.is)}</td><td>${plCell(r)}</td><td>${perTxt(r, 1)}</td><td>${srCell(r)}</td></tr>`;
+  }).join('') : `<tr><td colspan="18" class="empty">조건에 맞는 종목이 없습니다.</td></tr>`;
   $('wBtn').textContent = `관심종목 (${WATCH.size})`;
   drawCmp();
   renderFail();
@@ -1444,9 +1454,9 @@ function renderFail(){
     const r = BY[f.code] || {name: f.code}, tp = PAT.tmpl[f.t];
     return `<tr data-code="${f.code}" class="${S.fsel === f.code ? 'sel' : ''}"><td>${i + 1}</td><td class="name">${esc(r.name)}</td>
       <td class="sec">${r.sec ? esc(r.sec) : '-'}</td><td>${f.from} ~ ${f.to}</td><td><span class="score">${fmt(f.score, 1)}</span></td>
-      <td>${esc(tp.name)}</td><td>${simShort(f.p)}</td><td>${pc(f.p.price)}</td><td>${pc(f.p.vol)}</td><td>${pc(f.p.f)}</td><td>${pc(f.p.i)}</td><td>${pc(f.p.fs)}</td><td>${pc(f.p.is)}</td>
+      <td>${esc(tp.name)}</td><td>${simShort(f.p)}</td><td>${pc(f.p.price)}</td><td>${pc(f.p.vol)}</td><td>${pc(f.p.f)}</td><td>${pc(f.p.i)}</td><td>${pc(f.p.fs)}</td><td>${pc(f.p.is)}</td><td>${perTxt(r, f.er)}</td>
       <td class="${cc(f.fmax)}">${plus(f.fmax)}${fmt(f.fmax, 1)}%</td><td class="${cc(f.fret)}">${plus(f.fret)}${fmt(f.fret, 1)}%</td></tr>`;
-  }).join('') : `<tr><td colspan="15" class="empty">조건에 맞는 과거 사례를 찾지 못했습니다.</td></tr>`;
+  }).join('') : `<tr><td colspan="16" class="empty">조건에 맞는 과거 사례를 찾지 못했습니다.</td></tr>`;
   drawFail();
 }
 $('failRows').addEventListener('click', e => {
