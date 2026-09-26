@@ -282,14 +282,15 @@ def fetch_desc(code):
 
 # ---- 금융감독원 DART: 사업보고서의 '사업의 개요' (인증키가 있을 때 우선 사용) ----
 DART_KEY = os.environ.get("DART_KEY", "").strip()
-DART_PER_RUN = 400             # DART에서 한 번 실행할 때 받아올 회사 수 (사업보고서 파일이 커서 조금씩)
+DART_PER_RUN = 300             # DART에서 한 번 실행할 때 받아올 회사 수 (사업보고서 파일이 커서 조금씩)
+DESC_BUDGET_MIN = 12           # 회사 소개 받기에 한 번 실행당 쓸 최대 시간(분). 넘으면 멈추고 다음 실행 때 이어서
 
 
 def _dart_get(path, **params):
     from urllib.parse import urlencode
     url = f"https://opendart.fss.or.kr/api/{path}?" + urlencode(dict(crtfc_key=DART_KEY, **params))
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    return urllib.request.urlopen(req, timeout=30).read()
+    return urllib.request.urlopen(req, timeout=20).read()
 
 
 def _dart_corp_codes():
@@ -416,7 +417,7 @@ SECTOR_RULES = [
     ("컴퓨터·주변기기", ["컴퓨터 및 주변"]),
     ("의료기기", ["의료용 기기", "의료용품"]),
     ("제약·바이오", ["의약", "생물학적", "연구개발"]),
-    ("소프트웨어·게임", ["소프트웨어"]),
+    ("소프트웨어", ["소프트웨어"]),
     ("IT서비스·인터넷", ["컴퓨터 프로그래밍", "자료처리", "정보매개", "정보 서비스", "호스팅", "포털"]),
     ("통신서비스", ["전기 통신", "통신업"]),
     ("미디어·엔터", ["방송", "영화", "오디오물", "출판", "광고", "창작", "예술", "공연", "스포츠", "오락", "유원지"]),
@@ -451,6 +452,7 @@ PROD_RULES = [
     ("반도체", ["반도체", "웨이퍼", "포토마스크", "프로브카드", "HBM", "파운드리"]),
     ("2차전지", ["2차전지", "이차전지", "2차 전지", "양극재", "음극재", "전해액", "전해질", "분리막", "리튬", "배터리 소재"]),
     ("화장품", ["화장품"]),
+    ("게임", ["게임"]),
 ]
 
 
@@ -563,7 +565,11 @@ def load_descs(codes):
             print(f"DART 고유번호 목록을 받지 못해 기업정보 사이트로 시도합니다: {e}")
     limit = DART_PER_RUN if corp_map else DESC_PER_RUN
     fails = done = empty = 0
+    t0 = time.time()
     for c in todo[:limit]:
+        if time.time() - t0 > DESC_BUDGET_MIN * 60:
+            print(f"회사 소개: {DESC_BUDGET_MIN}분이 지나 이번 실행에서는 여기까지 받고 다음에 이어서 받습니다.")
+            break
         try:
             text = fetch_desc_dart(c, corp_map) if corp_map else fetch_desc(c)
             fails = 0
@@ -615,6 +621,7 @@ def collect(days_all):
     hn = {}      # 종목별 일별 순매수 (백만원) {"f": [...], "i": [...]}
     adj = {}     # 종목별 수정주가 종가 {날짜: 종가}
     series = {}  # 종목별 (날짜, 수정종가, 수정거래량) — 패턴 찾기용
+    frames_all = []   # 두 시장의 날짜별 일봉을 모아 두었다가 종목별로 한 번에 계산
     for m in MARKETS:
         print(f"[{m}] 시가총액·외국인 보유율 불러오는 중...")
         cap = stock.get_market_cap(base, market=m)
@@ -706,55 +713,61 @@ def collect(days_all):
             df = df[cols].copy()
             df["day"] = day
             frames.append(df)
-        if not frames:
+        frames_all.extend(frames)
+    # 코스닥→코스피 이전상장 종목도 이어지도록 두 시장 일봉을 합쳐서 종목별로 계산
+    allp = pd.concat(frames_all) if frames_all else pd.DataFrame(columns=["시가", "고가", "저가", "종가", "거래량", "등락률", "day"])
+    allp = allp[allp["고가"] > 0]           # 거래정지일 제외
+    allp = allp.reset_index().rename(columns={allp.index.name or "index": "code"})
+    allp = allp.drop_duplicates(subset=["code", "day"], keep="last").set_index("code")
+    tlog("시세·매매 데이터 받기 끝")
+    print("지지선 계산 중... (코스피·코스닥 합산)")
+    for t, g in allp.groupby(level=0, sort=False):
+        r = rows.get(t)
+        if not r or len(g) < 30:
             continue
-        allp = pd.concat(frames)
-        allp = allp[allp["고가"] > 0]           # 거래정지일 제외
-        print(f"[{m}] 지지선 계산 중...")
-        for t, g in allp.groupby(level=0, sort=False):
-            r = rows.get(t)
-            if not r or len(g) < 30:
-                continue
-            g = g.sort_values("day")
-            o, h, l, c = (g[x].astype(float).tolist() for x in ("시가", "고가", "저가", "종가"))
-            vol = g["거래량"].astype(float).tolist() if "거래량" in g.columns else [0.0] * len(c)
-            if "등락률" in g.columns:
-                o, h, l, c, vol = adjust_splits(o, h, l, c, g["등락률"].astype(float).tolist(), vol)
-            dlist = g["day"].tolist()
-            sups, ress = sr_levels(o, h, l, c)
-            fl = hn.get(t)
-            save_chart(t, dlist, o, h, l, c, {"f": fl["f"][-NET_HISTORY:], "i": fl["i"][-NET_HISTORY:]} if fl else None)
-            adj[t] = dict(zip(dlist, c))
-            pr = lambda k: round((c[-1] / c[-1 - k] - 1) * 100, 2) if len(c) > k and c[-1 - k] > 0 else None
-            r["rt"] = {"1": pr(1), "10": pr(10), "M": pr(MONTH), "Q": pr(60), "Y": pr(250)}      # 수정주가 등락률
-            k20 = min(20, len(c))
-            r["tv"] = round(sum(x * y for x, y in zip(c[-k20:], vol[-k20:])) / k20 / 1e8, 1) if k20 else 0   # 20일 평균 거래대금(억)
-            series[t] = (dlist, c, vol)
-            last = c[-1]
-            def pack(lst):
-                return [{
-                    "base": round(lv.base, 2), "top": round(lv.top, 2), "btm": round(lv.btm, 2),
-                    "since": f"{dlist[lv.start][:4]}-{dlist[lv.start][4:6]}-{dlist[lv.start][6:]}",
-                    "entries": lv.entries, "sweeps": lv.sweeps,
-                } for lv in lst]
-            lv_out, res_out = pack(sups), pack(ress)
-            near = any(lv.btm <= last <= lv.top for lv in sups)
-            # 현재가에서 지지선까지 거리 (%). 음수 = 그만큼 내려가야 지지선에 닿음
-            dist = max(((lv.base - last) / last * 100 for lv in sups if last > 0), default=None)
-            r["sr"] = {"near": near, "dist": None if dist is None else round(dist, 2), "levels": lv_out, "res": res_out}
+        g = g.sort_values("day")
+        o, h, l, c = (g[x].astype(float).tolist() for x in ("시가", "고가", "저가", "종가"))
+        vol = g["거래량"].astype(float).tolist() if "거래량" in g.columns else [0.0] * len(c)
+        if "등락률" in g.columns:
+            o, h, l, c, vol = adjust_splits(o, h, l, c, g["등락률"].astype(float).tolist(), vol)
+        dlist = g["day"].tolist()
+        sups, ress = sr_levels(o, h, l, c)
+        fl = hn.get(t)
+        save_chart(t, dlist, o, h, l, c, {"f": fl["f"][-NET_HISTORY:], "i": fl["i"][-NET_HISTORY:]} if fl else None)
+        adj[t] = dict(zip(dlist, c))
+        pr = lambda k: round((c[-1] / c[-1 - k] - 1) * 100, 2) if len(c) > k and c[-1 - k] > 0 else None
+        r["rt"] = {"1": pr(1), "10": pr(10), "M": pr(MONTH), "Q": pr(60), "Y": pr(250)}      # 수정주가 등락률
+        k20 = min(20, len(c))
+        r["tv"] = round(sum(x * y for x, y in zip(c[-k20:], vol[-k20:])) / k20 / 1e8, 1) if k20 else 0   # 20일 평균 거래대금(억)
+        series[t] = (dlist, c, vol)
+        last = c[-1]
+        def pack(lst):
+            return [{
+                "base": round(lv.base, 2), "top": round(lv.top, 2), "btm": round(lv.btm, 2),
+                "since": f"{dlist[lv.start][:4]}-{dlist[lv.start][4:6]}-{dlist[lv.start][6:]}",
+                "entries": lv.entries, "sweeps": lv.sweeps,
+            } for lv in lst]
+        lv_out, res_out = pack(sups), pack(ress)
+        near = any(lv.btm <= last <= lv.top for lv in sups)
+        # 현재가에서 지지선까지 거리 (%). 음수 = 그만큼 내려가야 지지선에 닿음
+        dist = max(((lv.base - last) / last * 100 for lv in sups if last > 0), default=None)
+        r["sr"] = {"near": near, "dist": None if dist is None else round(dist, 2), "levels": lv_out, "res": res_out}
 
     for t, r in rows.items():
         if r["name"] is None:
             r["name"] = stock.get_market_ticker_name(t)
         r["d"] = [x if x else [0, 0, 0, 0] for x in r["d"]]
         r["di"] = [x if x else [0, 0, 0, 0] for x in r["di"]]
+    tlog("지지선·차트 계산 끝")
     save_hist(rows, hn, adj, days_net)
+    tlog("과거 시점 파일 저장 끝")
     global PATTERN
     try:
         PATTERN = find_patterns(rows, series, hn, days_net)
     except Exception as e:
         print(f"패턴 찾기 중 문제가 생겨 이번에는 건너뜁니다: {e}")
         PATTERN = None
+    tlog("패턴 찾기 끝")
     fine, prod = load_sectors()
     grouped = bool(fine) and len(set(fine.values())) > 100          # KIND처럼 너무 잘게 나뉜 경우만 묶음
     for t, r in rows.items():
@@ -769,9 +782,19 @@ def collect(days_all):
         if r["sec"] and cnt.get(r["sec"], 0) < 5:
             r["sec"] = "기타"
     print(f"섹터: {len(set(r['sec'] for r in rows.values()))}개로 묶음")
-    global CYCLE
+    global CYCLE, CYCLE_HIST
     try:
-        CYCLE = sector_cycles(rows, series)
+        agg_m, first_m = sector_monthly(rows, series)
+        CYCLE = sector_cycles(rows, series, agg=agg_m)
+        # 기준일(과거 시점)용: 기준일로 고를 수 있는 기간의 달마다 그 달 기준 주기를 미리 계산
+        CYCLE_HIST = {}
+        now_m = _ym(max(days_net))
+        for m in range(_ym(days_net[-NET_HISTORY]), now_m):
+            if first_m is not None and m - CYCLE_MONTHS - 1 >= first_m:
+                res = sector_cycles(rows, series, now=m, agg=agg_m, quiet=True)
+                if res:
+                    CYCLE_HIST[_mfmt(m)] = res
+        print(f"섹터 순환 주기(과거 기준일용): {len(CYCLE_HIST)}개월")
     except Exception as e:
         print(f"섹터 순환 주기 계산 중 문제가 생겨 건너뜁니다: {e}")
         CYCLE = None
@@ -781,7 +804,9 @@ def collect(days_all):
     except Exception as e:
         print(f"참고 사이클 표 처리 중 문제: {e}")
         CYCLE_REF = None
+    tlog("섹터·주기 계산 끝")
     descs = load_descs(list(rows.keys()))
+    tlog("회사 소개 받기 끝")
     for t, r in rows.items():
         r["desc"] = descs.get(t, "")
     prune_cache(set(days_all))
@@ -790,6 +815,7 @@ def collect(days_all):
 
 PATTERN = None
 CYCLE = None
+CYCLE_HIST = {}
 CYCLE_REF = None
 CYCLE_MONTHS = 24              # 섹터 순환 주기: 최근 몇 개월(완결된 달)로 볼지
 CYCLE_TOP = 10                 # 매달 등락률 상위·하위 몇 개 섹터를 TOP/최하위로 볼지
@@ -821,31 +847,45 @@ def _mwin(p, now):
     return {"lo": lo, "hi": hi, "txt": txt, "st": st}
 
 
-def sector_cycles(rows, series):
-    """섹터별 월간 등락률 TOP/최하위 이력으로 재진입·전환·한 바퀴 주기를 계산하고 다음 시기를 예상한다."""
-    ym = lambda d: int(d[:4]) * 12 + int(d[4:6]) - 1
-    last_day = max((dl[-1] for dl, c, v in series.values() if dl), default=None)
-    if not last_day:
-        return None
-    now = ym(last_day)                                     # 지금 달 (진행 중이라 계산에서는 제외)
-    months = list(range(now - CYCLE_MONTHS, now))          # 완결된 최근 N개월
-    # 종목별 월말 종가(수정주가)
-    agg = {}                                               # 섹터 → 월 → [가중수익합, 가중치합]
+def _ym(d):
+    return int(d[:4]) * 12 + int(d[4:6]) - 1
+
+
+def sector_monthly(rows, series):
+    """섹터별 월간 등락률 재료: 섹터 → 월 → [가중수익합, 가중치합] (월말 수정주가, 그때 시총 가중)"""
+    agg, first = {}, None
     for t, (dl, c, v) in series.items():
         r = rows.get(t)
         if not r or not r.get("sec") or not c or c[-1] <= 0:
             continue
         mend = {}
         for d, x in zip(dl, c):
-            mend[ym(d)] = x                                # 그 달 마지막 거래일 종가로 덮어씀
-        for m in months:
-            a, b = mend.get(m - 1), mend.get(m)
-            if not a or not b or a <= 0:
+            mend[_ym(d)] = x                               # 그 달 마지막 거래일 종가로 덮어씀
+        ms = sorted(mend)
+        first = ms[0] if first is None else min(first, ms[0])
+        for m in ms[1:]:
+            a, b = mend.get(m - 1), mend[m]
+            if not a or a <= 0:
                 continue
             w = r["cap"] * a / c[-1]                       # 그때 시가총액 추정
             g = agg.setdefault(r["sec"], {}).setdefault(m, [0.0, 0.0])
             g[0] += (b / a - 1) * w
             g[1] += w
+    return agg, first
+
+
+def sector_cycles(rows, series, now=None, agg=None, quiet=False):
+    """섹터별 월간 등락률 TOP/최하위 이력으로 재진입·전환·한 바퀴 주기를 계산하고 다음 시기를 예상한다.
+    now: 기준 달(이 달은 진행 중으로 보고 빼고, 그 전 N개월로 계산). 없으면 가장 최근 달."""
+    ym = _ym
+    if agg is None:
+        agg, _ = sector_monthly(rows, series)
+    if now is None:
+        last_day = max((dl[-1] for dl, c, v in series.values() if dl), default=None)
+        if not last_day:
+            return None
+        now = ym(last_day)                                 # 지금 달 (진행 중이라 계산에서는 제외)
+    months = list(range(now - CYCLE_MONTHS, now))          # 완결된 최근 N개월
     secs = sorted(agg)
     cnt = {}
     for r in rows.values():
@@ -951,7 +991,8 @@ def sector_cycles(rows, series):
     med = lambda xs: (sorted(xs)[len(xs) // 2] if len(xs) % 2 else sum(sorted(xs)[len(xs) // 2 - 1:len(xs) // 2 + 1]) / 2) if xs else None
     summ = {k: {"avg": avg(vals(k)), "med": med(vals(k))} for k in ("reT", "reB", "sw", "lap")}
     summ["swN"] = sum(vals("swN"))
-    print(f"섹터 순환 주기: {len(out)}개 섹터, {_mfmt(months[0])}~{_mfmt(months[-1])}")
+    if not quiet:
+        print(f"섹터 순환 주기: {len(out)}개 섹터, {_mfmt(months[0])}~{_mfmt(months[-1])}")
     return {"from": _mfmt(months[0]), "to": _mfmt(months[-1]), "now": _mfmt(now), "months": len(months),
             "top": CYCLE_TOP, "soon": CYCLE_SOON, "rows": out, "summ": summ, "nsec": len(secs)}
 
@@ -1315,6 +1356,13 @@ def save_hist(rows, hn, adj, days_net):
             (HIST_DIR / f"{key}.json").write_text(json.dumps(snap, separators=(",", ":")), encoding="utf-8")
 
 
+T_START = time.time()
+
+
+def tlog(stage):
+    print(f"[시간] {stage}: 시작부터 {(time.time() - T_START) / 60:.1f}분")
+
+
 def main():
     end = sys.argv[1] if len(sys.argv) > 1 else dt.datetime.now(KST).strftime("%Y%m%d")
     days_all = trading_days(end, HISTORY)
@@ -1331,10 +1379,12 @@ def main():
     html = html.replace("__CHARTS__", json.dumps(CHARTS, separators=(",", ":")) if INLINE_CHARTS else "null")
     html = html.replace("__PATTERN__", json.dumps(PATTERN, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__CYCLE__", json.dumps(CYCLE, ensure_ascii=False, separators=(",", ":")))
+    html = html.replace("__CYCHIST__", json.dumps(CYCLE_HIST, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__CYCREF__", json.dumps(CYCLE_REF, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__HIST__", json.dumps(HIST, separators=(",", ":")) if INLINE_CHARTS else "null")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(html, encoding="utf-8")
+    tlog("전체 끝")
     print(f"완료: {OUT}  ({len(data)}개 종목, 지지선 근처 {sum(1 for r in data if r['sr'] and r['sr']['near'])}개)")
     if not os.environ.get("CI"):          # GitHub에서 돌 때는 브라우저를 열지 않는다
         webbrowser.open(OUT.resolve().as_uri())
@@ -1381,6 +1431,7 @@ body.secv .nsec{display:none}
 .vtbl tbody tr{cursor:default}
 .lift{font-weight:800}
 .ctbl{min-width:1800px}
+body:not(.asofmode) .asofc{display:none}
 .rtbl{min-width:1100px}
 .ktbl{min-width:1300px}
 .ktbl td{white-space:normal;vertical-align:top}
@@ -1598,14 +1649,14 @@ td.st{text-align:center;width:44px}
     <p class="pnote" id="cycNote"></p>
     <div class="tbl"><table class="ptbl ctbl">
       <thead><tr><th>판단</th><th>섹터</th><th>종목 수</th><th>현재</th><th>다음 TOP 예상</th><th>다음 최하위 예상</th><th>사유</th>
-        <th>장기 사이클 (참고)</th><th>1년 관점 (참고)</th>
+        <th id="mpHead">이번 달 진행</th><th class="asofc">기준일 이후 섹터 등락</th><th>장기 사이클 (참고)</th><th>1년 관점 (참고)</th>
         <th>TOP10 횟수</th><th>TOP10 재진입 평균</th><th>최하위10 횟수</th><th>최하위10 재진입 평균</th><th>전환 횟수</th><th>전환 평균</th><th>한 바퀴 평균</th></tr></thead>
       <tbody id="cycRows"></tbody>
     </table></div>
     <h2 class="ph">진입 검토 섹터 후보 종목</h2>
     <p class="pnote" id="pickNote"></p>
     <div class="tbl"><table class="ptbl ktbl">
-      <thead><tr><th>섹터</th><th>순위</th><th>종목명</th><th>총점</th><th>수급 (40)</th><th>위치 (25)</th><th>실적 (15)</th><th>패턴 (10)</th><th>과열 회피 (10)</th><th>선별 이유</th></tr></thead>
+      <thead><tr><th>섹터</th><th>순위</th><th>종목명</th><th>총점</th><th>수급 (40)</th><th>위치 (25)</th><th>실적 (15)</th><th>패턴 (10)</th><th>과열 회피 (10)</th><th class="asofc">기준일 이후</th><th>선별 이유</th></tr></thead>
       <tbody id="pickRows"></tbody>
     </table></div>
     <h2 class="ph">참고: 장기 사이클 표 (직접 정리)</h2>
@@ -1686,7 +1737,15 @@ const CHARTS = __CHARTS__ || {};
 const HISTIN = __HIST__ || {};
 const HD = META.hist || [];
 const PAT = __PATTERN__;
-const CYC = __CYCLE__;
+const CYC0 = __CYCLE__;
+const CYCH = __CYCHIST__ || {};
+// 기준일을 고르면 그 달 기준으로 계산해 둔 주기를 쓴다 (없으면 null)
+const curCyc = () => {
+  if (!S.asof) return CYC0;
+  const k = S.asof.slice(2, 7).replace('-', '.');
+  return (CYC0 && CYC0.now === k) ? CYC0 : (CYCH[k] || null);   // 이번 달이면 최신 주기와 같음
+};
+let CYC = CYC0;
 const CREF = __CYCREF__;
 const REFBY = Object.fromEntries(((CREF && CREF.secs) || []).map(x => [x.sec.replace(/\s/g, ''), x]));
 const refOf = sec => REFBY[(sec || '').replace(/\s/g, '')];
@@ -1819,11 +1878,12 @@ $('pager').addEventListener('click', e => {
   S.page = Number(b.dataset.p); render();
   $('main').scrollIntoView({block: 'start', behavior: 'smooth'});
 });
+const SNAPC = {};
 async function loadSnap(d){
   if (HISTIN[d]) return HISTIN[d];
-  const res = await fetch(`h/${d}.json`);
-  if (!res.ok) throw new Error(res.status);
-  return res.json();
+  if (SNAPC[d]) return SNAPC[d];
+  SNAPC[d] = fetch(`h/${d}.json`).then(res => { if (!res.ok) throw new Error(res.status); return res.json(); });
+  try { return await SNAPC[d]; } catch (e) { delete SNAPC[d]; throw e; }
 }
 async function setAsof(d){
   if (!d) { S.asof = ''; S.page = 1; render(); return; }
@@ -1833,6 +1893,10 @@ async function setAsof(d){
   try {
     const snaps = await Promise.all(idx.map(x => x < 0 ? Promise.resolve({}) : loadSnap(HD[x])));
     const [cur, p1, p10, pM] = snaps;
+    // 후보 선별용: 그날까지 20거래일 일별 순매수, 60·250거래일 전 가격
+    const dIdx = []; for (let k = ND; k >= 0; k--) dIdx.push(i - k);
+    const extra = await Promise.all(dIdx.concat([i - 60, i - 250]).map(x => x < 0 ? Promise.resolve(null) : loadSnap(HD[x]).catch(() => null)));
+    const dayS = extra.slice(0, dIdx.length), s60 = extra[dIdx.length], s250 = extra[dIdx.length + 1];
     DATA.forEach(r => {
       const z = [0, 0, null], c = cur[r.code] || z, a1 = p1[r.code] || z, a10 = p10[r.code] || z, aM = pM[r.code] || z;
       const px = c[2], capD = px && r.price ? r.cap * px / r.price : r.cap;
@@ -1843,7 +1907,16 @@ async function setAsof(d){
         ret: px ? (r.price / px - 1) * 100 : null,
         rt: {'1': px && a1[2] ? (px / a1[2] - 1) * 100 : null, '10': px && a10[2] ? (px / a10[2] - 1) * 100 : null,
              'M': px && aM[2] ? (px / aM[2] - 1) * 100 : null},
+        px, cap: capD,
       };
+      const q0 = s60 && s60[r.code] && s60[r.code][2], y0 = s250 && s250[r.code] && s250[r.code][2];
+      r.h.q = px && q0 ? (px / q0 - 1) * 100 : null;
+      r.h.y = px && y0 ? (px / y0 - 1) * 100 : null;
+      r.h.days = [];
+      for (let k = 1; k < dayS.length; k++) {
+        const x = dayS[k] && dayS[k][r.code], y = dayS[k - 1] && dayS[k - 1][r.code];
+        if (x && y) r.h.days.push((x[0] - y[0]) + (x[1] - y[1]));
+      }
     });
     S.asof = d;
   } catch (e) {
@@ -2033,10 +2106,65 @@ const SCOLS = [
   {k: 'fpct', t: '외국인/시총'}, {k: 'ipct', t: '기관/시총'}, {k: 'spct', t: '합산/시총'},
   {k: null, t: '가장 많이 오른 종목'}, {k: null, t: '외국인 순매수 1위'},
 ];
+// ---- 이번 달 진행 상황: 지난달 마지막 거래일 종가 → 기준일(없으면 최신) 종가, 섹터별 시총 가중 등락률 순위 ----
+const MP = {key: null, data: null, loading: null};
+function mpBaseDay(dateStr){
+  const ym = dateStr.slice(0, 7);
+  const prev = HD.filter(d => d.slice(0, 7) < ym);
+  return prev.length ? prev[prev.length - 1] : null;
+}
+function ensureMonthProgress(){
+  const date = S.asof || DAYS[ND - 1];
+  if (MP.key === date && (MP.data || MP.loading)) return;
+  MP.key = date; MP.data = null;
+  const base = mpBaseDay(date);
+  if (!base) { MP.data = {none: true}; return; }
+  MP.loading = loadSnap(base).then(snap => {
+    if (MP.key !== date) return;
+    const G = {};
+    DATA.forEach(r => {
+      if (!r.sec) return;
+      const b = snap[r.code] && snap[r.code][2];
+      const now = S.asof ? (r.h && r.h.px) : r.price;
+      if (!b || !now) return;
+      const w = r.cap * b / r.price;               // 지난달 말 시총 추정
+      const g = G[r.sec] || (G[r.sec] = [0, 0]);
+      g[0] += (now / b - 1) * 100 * w; g[1] += w;
+    });
+    const list = Object.entries(G).filter(([, g]) => g[1] > 0).map(([sec, g]) => ({sec, ret: g[0] / g[1]})).sort((a, b) => b.ret - a.ret);
+    const by = {}; list.forEach((x, i) => by[x.sec] = {ret: x.ret, rank: i + 1});
+    MP.data = {by, n: list.length, from: base, to: date};
+    MP.loading = null;
+    if (S.view === 'sec') renderCycle();
+  }).catch(() => { MP.data = {none: true}; MP.loading = null; });
+}
+function mpCell(sec){
+  const d = MP.data;
+  if (!d) return '<span class="muted">계산 중</span>';
+  if (d.none || !d.by[sec]) return '<span class="muted">-</span>';
+  const x = d.by[sec], top = CYC ? CYC.top : 10;
+  const tag = x.rank <= top ? `<b class="pos">TOP ${x.rank}위</b>` : x.rank > d.n - top ? `<b class="neg">최하위 ${d.n - x.rank + 1}위</b>` : `<span class="muted">${x.rank}위</span>`;
+  return `${tag} <span class="${x.ret > 0 ? 'pos' : x.ret < 0 ? 'neg' : ''}">${plus(x.ret)}${fmt(x.ret, 1)}%</span>`;
+}
+function secRetSince(sec){
+  let w = 0, s = 0;
+  DATA.forEach(r => { if (r.sec === sec && r.h && r.h.ret !== null && r.h.cap) { w += r.h.cap; s += r.h.ret * r.h.cap; } });
+  return w ? s / w : null;
+}
 function renderCycle(){
-  if (!CYC || !CYC.rows) { $('cycNote').textContent = '주기 데이터가 아직 없습니다. 다음 갱신 때 계산됩니다.'; $('cycRows').innerHTML = ''; return; }
-  $('cycTitle').textContent = `섹터 순환 주기 (${CYC.from} ~ ${CYC.to}, ${CYC.months}개월, ${CYC.nsec}개 섹터)`;
-  $('cycNote').textContent = `매달 섹터별 한달 등락률(시총 가중)로 순위를 매겨 상위 ${CYC.top}개를 TOP, 하위 ${CYC.top}개를 최하위로 기록했습니다. 재진입은 같은 명단에 다시 들어오기까지의 평균 개월, 전환은 한 구간이 시작된 뒤 반대쪽 구간이 시작되기까지의 평균, 한 바퀴는 같은 쪽 구간이 다시 시작되기까지의 평균입니다. 다음 시기는 기준 달에 평균을 더한 예상이고, 예상이 지금부터 ${CYC.soon}개월 안이면 "다가옴/임박", TOP과 최하위 예상이 한 달이라도 겹치면 "겹침"으로 봅니다. [진입 검토]는 TOP 전환이 다가오거나 최하위 전환 전에 TOP 재진입이 먼저 올 것으로 보이면서 겹침이 없는 섹터입니다. 과거 주기가 앞으로도 반복된다는 보장은 없고, 횟수가 적은 섹터일수록 평균이 흔들립니다. 지금 달(${CYC.now})은 진행 중이라 계산에서 뺐습니다.`;
+  CYC = curCyc();
+  ensureMonthProgress();
+  {
+    const date = S.asof || DAYS[ND - 1], d = MP.data;
+    $('mpHead').textContent = d && d.from ? `이번 달 진행 (${date.slice(5, 7)}월 1일~${date.slice(8)}일)` : '이번 달 진행';
+  }
+  if (!CYC || !CYC.rows) {
+    $('cycNote').textContent = S.asof ? `${S.asof}는 24개월 주기를 계산할 만큼 과거 데이터가 없어서 이 날짜 기준 주기는 보여드릴 수 없습니다.` : '주기 데이터가 아직 없습니다. 다음 갱신 때 계산됩니다.';
+    $('cycRows').innerHTML = ''; return;
+  }
+  $('cycTitle').textContent = `섹터 순환 주기 (${CYC.from} ~ ${CYC.to}, ${CYC.months}개월, ${CYC.nsec}개 섹터)` + (S.asof ? ` · 기준일 ${S.asof}` : '');
+  document.body.classList.toggle('asofmode', !!S.asof);
+  $('cycNote').textContent = `매달 섹터별 한달 등락률(시총 가중)로 순위를 매겨 상위 ${CYC.top}개를 TOP, 하위 ${CYC.top}개를 최하위로 기록했습니다. 재진입은 같은 명단에 다시 들어오기까지의 평균 개월, 전환은 한 구간이 시작된 뒤 반대쪽 구간이 시작되기까지의 평균, 한 바퀴는 같은 쪽 구간이 다시 시작되기까지의 평균입니다. 다음 시기는 기준 달에 평균을 더한 예상이고, 예상이 지금부터 ${CYC.soon}개월 안이면 "다가옴/임박", TOP과 최하위 예상이 한 달이라도 겹치면 "겹침"으로 봅니다. [진입 검토]는 TOP 전환이 다가오거나 최하위 전환 전에 TOP 재진입이 먼저 올 것으로 보이면서 겹침이 없는 섹터입니다. 과거 주기가 앞으로도 반복된다는 보장은 없고, 횟수가 적은 섹터일수록 평균이 흔들립니다. 지금 달(${CYC.now})은 진행 중이라 주기 계산에서는 뺐고, 대신 "이번 달 진행" 칸에 지난달 마지막 거래일부터 오늘까지의 섹터 등락률 순위를 따로 보여줍니다(TOP ${CYC.top}·최하위 ${CYC.top} 안이면 표시).`;
   const f1 = v => v === null || v === undefined ? '-' : fmt(v, 1).replace(/\.0$/, '');
   const tag = l => `<span class="tag ${l.startsWith('진입') ? 'go' : l.startsWith('관망') ? 'wait' : 'hold'}">${esc(l)}</span>`;
   const stTxt = st => st === 'past' ? '<span class="st">지남</span>' : st === 'now' ? '<span class="st now">이번 달</span>' : '';
@@ -2047,13 +2175,15 @@ function renderCycle(){
     <td class="name nw">${esc(x.sec)}</td><td class="nw">${fmt(x.n)}</td>
     <td class="nw">${x.cur ? (x.cur.k === 'T' ? 'TOP 구간' : '최하위 구간') + ` (${x.cur.start}~)` : '-'}</td>
     <td>${preds(x.nextT)}</td><td>${preds(x.nextB)}</td><td>${esc(x.why)}</td>
+    <td class="nw">${mpCell(x.sec)}</td>
+    <td class="asofc nw">${(() => { const v = S.asof ? secRetSince(x.sec) : null; return v === null ? '-' : `<span class="${v > 0 ? 'pos' : v < 0 ? 'neg' : ''}">${plus(v)}${fmt(v, 1)}%</span>`; })()}</td>
     <td>${refOf(x.sec) ? esc(refOf(x.sec).stage) + (refOf(x.sec).start ? `<div class="hist">${esc(refOf(x.sec).start)} 시작</div>` : '') : '<span class="muted">-</span>'}</td>
     <td>${refOf(x.sec) ? esc(refOf(x.sec).view) : '<span class="muted">-</span>'}</td>
     <td>${fmt(x.tN)}<div class="hist">${hist(x.tops)}</div></td><td class="nw">${f1(x.reT)}</td>
     <td>${fmt(x.bN)}<div class="hist">${hist(x.bots)}</div></td><td class="nw">${f1(x.reB)}</td>
     <td class="nw">${fmt(x.swN)}</td><td class="nw">${f1(x.sw)}</td><td class="nw">${f1(x.lap)}</td></tr>`).join('') +
-    `<tr><td></td><td class="name">전체 평균</td><td colspan="8"></td><td class="nw">${f1(CYC.summ.reT.avg)}</td><td></td><td class="nw">${f1(CYC.summ.reB.avg)}</td><td class="nw">${fmt(CYC.summ.swN)}</td><td class="nw">${f1(CYC.summ.sw.avg)}</td><td class="nw">${f1(CYC.summ.lap.avg)}</td></tr>` +
-    `<tr><td></td><td class="name">전체 중앙값</td><td colspan="8"></td><td class="nw">${f1(CYC.summ.reT.med)}</td><td></td><td class="nw">${f1(CYC.summ.reB.med)}</td><td></td><td class="nw">${f1(CYC.summ.sw.med)}</td><td class="nw">${f1(CYC.summ.lap.med)}</td></tr>`;
+    `<tr><td></td><td class="name">전체 평균</td><td colspan="10"></td><td class="nw">${f1(CYC.summ.reT.avg)}</td><td></td><td class="nw">${f1(CYC.summ.reB.avg)}</td><td class="nw">${fmt(CYC.summ.swN)}</td><td class="nw">${f1(CYC.summ.sw.avg)}</td><td class="nw">${f1(CYC.summ.lap.avg)}</td></tr>` +
+    `<tr><td></td><td class="name">전체 중앙값</td><td colspan="10"></td><td class="nw">${f1(CYC.summ.reT.med)}</td><td></td><td class="nw">${f1(CYC.summ.reB.med)}</td><td></td><td class="nw">${f1(CYC.summ.sw.med)}</td><td class="nw">${f1(CYC.summ.lap.med)}</td></tr>`;
 }
 $('cycRows').addEventListener('click', e => {
   const tr = e.target.closest('tr[data-sec]'); if (!tr) return;
@@ -2091,33 +2221,38 @@ function pickStocks(){
   const median = xs => { const a = xs.slice().sort((x, y) => x - y); return a.length ? (a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2) : null; };
   const mean = xs => xs.length ? xs.reduce((x, y) => x + y, 0) / xs.length : null;
   goSecs.forEach(sec => {
-    const all = DATA.filter(r => r.sec === sec);
-    const cand = all.filter(r => r.cap >= PICK.minCap && (r.tv || 0) >= PICK.minTv && r.rt && r.rt.Q !== null && r.rt.Q <= PICK.maxQ);
+    const H = !!S.asof;   // 기준일 모드: 그날 기준 데이터로 계산 (위치·패턴은 그날 기준 값이 없어서 제외)
+    const Q = r => H ? r.h.q : (r.rt ? r.rt.Q : null), Y = r => H ? r.h.y : (r.rt ? r.rt.Y : null);
+    const CAP = r => H ? (r.h.cap || r.cap) : r.cap;
+    const A = (r, p) => H ? r.h.a[p] : r.a[p], Bq = (r, p) => H ? r.h.b[p] : r.b[p];
+    const all = DATA.filter(r => r.sec === sec && (!H || r.h));
+    const cand = all.filter(r => CAP(r) >= PICK.minCap && (r.tv || 0) >= PICK.minTv && Q(r) !== null && Q(r) !== undefined && Q(r) <= PICK.maxQ);
     if (!cand.length) return;
-    const flowPct = r => r.a.M.pct + r.b.M.pct;
+    const flowPct = r => A(r, 'M').pct + Bq(r, 'M').pct;
     const sorted = cand.map(flowPct).sort((x, y) => x - y);
     const pctRank = v => sorted.length > 1 ? sorted.filter(x => x <= v).length / sorted.length : 1;
     const perMed = median(all.filter(r => r.eps > 0 && r.per > 0).map(r => r.per));
-    const yAvg = mean(all.filter(r => r.rt && r.rt.Y !== null).map(r => r.rt.Y));
-    const qAvg = mean(all.filter(r => r.rt && r.rt.Q !== null).map(r => r.rt.Q));
+    const yAvg = mean(all.map(Y).filter(v => v !== null && v !== undefined));
+    const qAvg = mean(all.map(Q).filter(v => v !== null && v !== undefined));
     const scored = cand.map(r => {
       const why = [];
       // 수급 40
-      const fp = flowPct(r), f10 = r.a['10'].net + r.b['10'].net;
-      const days = r.d.map((x, i) => (x[0] - x[1]) + (r.di[i][0] - r.di[i][1]) > 0 ? 1 : 0);
+      const fp = flowPct(r), f10 = A(r, '10').net + Bq(r, '10').net;
+      const days = H ? (r.h.days || []).map(v => v > 0 ? 1 : 0) : r.d.map((x, i) => (x[0] - x[1]) + (r.di[i][0] - r.di[i][1]) > 0 ? 1 : 0);
       const dayRatio = days.length ? days.reduce((x, y) => x + y, 0) / days.length : 0;
       let flow = (fp > 0 ? pctRank(fp) * 25 : 0) + (f10 > 0 ? 7 : 0) + dayRatio * 8;
       if (fp > 0) why.push(`외국인·기관 한달 순매수 시총의 ${plus(fp)}${fmt(fp, 2)}%`);
       if (f10 > 0) why.push('10일도 순매수');
       why.push(`한달 중 ${Math.round(dayRatio * days.length)}일 순매수`);
       // 위치 25
-      let pos = 0; const sr = r.sr;
+      let pos = 0; const sr = H ? null : r.sr;
       if (sr && sr.levels && sr.levels.length) {
         if (sr.near) { pos += 15; why.push('지지 구간 안'); }
         else if (sr.dist !== null) { const d = Math.abs(sr.dist); pos += 15 * Math.max(0, 1 - d / 20); if (d <= 10) why.push(`지지선까지 ${fmt(d, 1)}%`); }
       }
       const above = sr && sr.res ? sr.res.filter(lv => lv.top > r.price) : [];
-      if (!above.length) { pos += 10; why.push('위쪽 저항선 없음'); }
+      if (H) {}
+      else if (!above.length) { pos += 10; why.push('위쪽 저항선 없음'); }
       else {
         const room = Math.max(0, Math.min(...above.map(lv => (lv.btm - r.price) / r.price * 100)));
         pos += Math.min(10, room / 2); why.push(`저항까지 ${plus(room)}${fmt(room, 1)}%`);
@@ -2126,15 +2261,15 @@ function pickStocks(){
       let earn = 0;
       if (r.eps > 0) { earn += 10; if (perMed && r.per > 0 && r.per < perMed) { earn += 5; why.push(`PER ${fmt(r.per, 1)}배 (섹터 중간 ${fmt(perMed, 1)}배보다 낮음)`); } else why.push('흑자'); }
       // 패턴 10
-      const ps = patBy[r.code]; const pat = ps ? Math.max(0, Math.min(1, (ps - 60) / 30)) * 10 : 0;
+      const ps = H ? null : patBy[r.code]; const pat = ps ? Math.max(0, Math.min(1, (ps - 60) / 30)) * 10 : 0;
       if (ps && pat >= 3) why.push(`급등 직전 패턴 유사도 ${fmt(ps, 1)}`);
       // 과열 회피 10
       let cool = 0;
-      if (yAvg !== null && r.rt.Y !== null && r.rt.Y < yAvg) cool += 5;
-      if (qAvg !== null && r.rt.Q < qAvg) cool += 5;
+      if (yAvg !== null && Y(r) !== null && Y(r) !== undefined && Y(r) < yAvg) cool += 5;
+      if (qAvg !== null && Q(r) < qAvg) cool += 5;
       if (cool === 10) why.push('섹터 평균보다 덜 오름');
-      const total = flow + pos + earn + pat + cool;
-      return {r, sec, total, flow, pos, earn, pat, cool, why};
+      const total = H ? (flow + earn + cool) / 65 * 100 : flow + pos + earn + pat + cool;   // 기준일 모드는 65점 만점을 100점으로 환산
+      return {r, sec, total, flow, pos, earn, pat, cool, why, ret: H ? r.h.ret : null};
     }).sort((x, y) => y.total - x.total).slice(0, PICK.perSec);
     out.push(...scored);
   });
@@ -2142,14 +2277,16 @@ function pickStocks(){
 }
 function renderPicks(){
   const list = pickStocks();
-  $('pickNote').textContent = `[진입 검토] 섹터 안에서 시총 ${fmt(PICK.minCap)}억 이상, 최근 20일 평균 거래대금 ${PICK.minTv}억 이상, 3달 등락률 +${PICK.maxQ}% 이하인 종목만 골라 점수를 매겼습니다. 수급 40점(외국인·기관 한달 합산 순매수의 시총 대비 섹터 내 순위, 10일 순매수 여부, 한달 중 순매수한 날 비율), 위치 25점(지지선과 가까울수록, 위쪽 저항선까지 여유가 클수록), 실적 15점(흑자, 섹터 중간보다 낮은 PER), 패턴 10점(급등 직전 패턴 유사도), 과열 회피 10점(1년·3달 등락률이 섹터 평균보다 낮음)이고 섹터마다 상위 ${PICK.perSec}개를 보여줍니다. 점수 기준은 제가 정한 가설이라 매수 추천이 아니며, 이 기준이 실제로 잘 맞았는지는 따로 검증되지 않았습니다.`;
-  if (!list.length) { $('pickRows').innerHTML = `<tr><td colspan="10" class="empty">조건에 맞는 후보가 없습니다.</td></tr>`; return; }
+  const asofTxt = S.asof ? ` 지금은 기준일 ${S.asof} 모드라서 그날 기준 주기의 [진입 검토] 섹터와 그날까지의 수급·등락률로 다시 골랐고, 그날 기준 값이 없는 위치(지지·저항)와 패턴 점수는 빼고 나머지 65점을 100점으로 환산했습니다. 실적은 최신 결산 기준이고, "기준일 이후"는 그날 종가에서 최신 종가까지의 등락입니다.` : '';
+  $('pickNote').textContent = `[진입 검토] 섹터 안에서 시총 ${fmt(PICK.minCap)}억 이상, 최근 20일 평균 거래대금 ${PICK.minTv}억 이상, 3달 등락률 +${PICK.maxQ}% 이하인 종목만 골라 점수를 매겼습니다. 수급 40점(외국인·기관 한달 합산 순매수의 시총 대비 섹터 내 순위, 10일 순매수 여부, 한달 중 순매수한 날 비율), 위치 25점(지지선과 가까울수록, 위쪽 저항선까지 여유가 클수록), 실적 15점(흑자, 섹터 중간보다 낮은 PER), 패턴 10점(급등 직전 패턴 유사도), 과열 회피 10점(1년·3달 등락률이 섹터 평균보다 낮음)이고 섹터마다 상위 ${PICK.perSec}개를 보여줍니다. 점수 기준은 제가 정한 가설이라 매수 추천이 아니며, 이 기준이 실제로 잘 맞았는지는 따로 검증되지 않았습니다.` + asofTxt;
+  if (!list.length) { $('pickRows').innerHTML = `<tr><td colspan="11" class="empty">조건에 맞는 후보가 없습니다.</td></tr>`; return; }
   let prev = null, rank = 0;
   $('pickRows').innerHTML = list.map(x => {
     const first = x.sec !== prev; if (first) rank = 0; rank++; prev = x.sec;
     return `<tr data-code="${x.r.code}" class="${first ? 'first' : ''}"><td class="name nw">${first ? esc(x.sec) : ''}</td><td class="nw">${rank}</td>
       <td class="name nw">${esc(x.r.name)}</td><td class="nw"><span class="tot">${fmt(x.total, 0)}</span></td>
-      <td class="nw">${fmt(x.flow, 0)}</td><td class="nw">${fmt(x.pos, 0)}</td><td class="nw">${fmt(x.earn, 0)}</td><td class="nw">${fmt(x.pat, 0)}</td><td class="nw">${fmt(x.cool, 0)}</td>
+      <td class="nw">${fmt(x.flow, 0)}</td><td class="nw">${S.asof ? '-' : fmt(x.pos, 0)}</td><td class="nw">${fmt(x.earn, 0)}</td><td class="nw">${S.asof ? '-' : fmt(x.pat, 0)}</td><td class="nw">${fmt(x.cool, 0)}</td>
+      <td class="asofc nw">${x.ret === null || x.ret === undefined ? '-' : `<span class="${x.ret > 0 ? 'pos' : x.ret < 0 ? 'neg' : ''}">${plus(x.ret)}${fmt(x.ret, 1)}%</span>`}</td>
       <td>${esc(x.why.join(', '))}</td></tr>`;
   }).join('');
 }
