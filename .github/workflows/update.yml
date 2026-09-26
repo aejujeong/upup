@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - uses: actions/cache@v4          # 지난 날짜 데이터를 저장해 두고 다음 실행 때 재사용
+      - uses: actions/cache@v4          # 지난 날짜 시세를 저장해 두고 다음 실행 때 재사용
         with:
           path: cache
           key: krx-${{ github.run_id }}
@@ -33,6 +33,7 @@ jobs:
           OUT_FILE: site/index.html
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
+          DART_KEY: ${{ secrets.DART_KEY }}      # 없어도 동작함 (있으면 DART 사업보고서로 회사 소개)
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
