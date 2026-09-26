@@ -39,7 +39,14 @@ PAT_WIN = 60                   # 패턴 비교 구간 (거래일, 약 3개월)
 PAT_YEAR = 250                 # '1년 수익률' 기준 거래일
 PAT_TOP = 10                   # 급등 종목 수
 PAT_MATCH = 200                # 저장할 유사 종목 수
-PAT_W = {"price": 0.5, "vol": 0.2, "f": 0.15, "i": 0.15}   # 유사도 가중치
+# 유사도 가중치: 주가 모양, 거래량 흐름, 외국인·기관 누적 순매수 흐름(모양), 외국인·기관 세기(3달 누적 순매수의 시총 대비 %)
+PAT_W = {"price": 0.40, "vol": 0.15, "f": 0.125, "i": 0.125, "fs": 0.10, "is": 0.10}
+PAT_VALID = 70                 # 검증: 항목 점수가 이 이상인 구간을 '그 항목이 비슷한 구간'으로 봄
+PAT_AUTO = True                # 과거 검증 결과로 비중을 자동으로 맞춤 (False면 위 PAT_W 그대로 사용)
+PAT_MIN_HITS = 20              # 검증 표본의 급등 사례가 이보다 적으면 자동 조정하지 않음
+PAT_SHRINK = 30                # 표본이 적은 항목이 우연히 튀지 않도록 평균 쪽으로 당기는 정도
+PAT_FLOOR = 0.05               # 자동 조정 때 항목별 최소 비중
+PAT_BLEND = 0.5                # 검증 결과를 얼마나 반영할지 (0=기본 비중 그대로, 1=검증 결과만). 우연에 휘둘리지 않게 절반만 반영
 PAT_AFTER = 250                # '이후'를 몇 거래일로 볼지 (약 1년, 급등 TOP 10과 같은 기준)
 PAT_FAIL = 20.0                # 이후 1년 최고 상승률이 이 % 미만이면 '안 오른 사례'
 # '오른 사례'(통계용) 기준은 급등 TOP 10 중 가장 작은 바닥→고점 상승률로 자동 설정
@@ -478,8 +485,25 @@ def _z(x):
     return None if not np.isfinite(s) or s < 1e-9 else (x - x.mean()) / s
 
 
-def _features(dlist, c, vol, flows, didx, lo, hi):
-    """lo~hi(포함) 구간의 특징: 주가 모양, 거래량 흐름, 외국인·기관 누적 순매수 흐름 (모두 표준화)"""
+def _cap_at(cap_now, c, k):
+    """k번째 봉 시점의 시가총액(억) 추정: 현재 시총 × 그때 주가 / 현재 주가"""
+    return cap_now * c[k] / c[-1] if c[-1] > 0 else cap_now
+
+
+def _strength(x, y):
+    """시총 대비 누적 순매수(%) 두 값이 얼마나 가까운지 (결과 -1~1).
+    같은 방향이면 배수 차이로 판단: 같으면 1, 2배 차이면 0.5, 4배 차이면 0, 16배 이상이면 -1. 반대 방향이면 -1."""
+    if x is None or y is None:
+        return None
+    if abs(x) < 1e-6 and abs(y) < 1e-6:
+        return 1.0
+    if x * y <= 0:
+        return -1.0
+    return float(np.clip(1 - abs(np.log2(abs(x) / abs(y))) / 2, -1, 1))
+
+
+def _features(dlist, c, vol, flows, didx, lo, hi, cap_now=None):
+    """lo~hi(포함) 구간의 특징: 주가 모양, 거래량 흐름, 외국인·기관 누적 순매수 흐름(표준화)과 세기(시총 대비 %)"""
     cc = np.asarray(c[lo:hi + 1], dtype=float)
     if len(cc) != PAT_WIN or (cc <= 0).any():
         return None
@@ -494,18 +518,54 @@ def _features(dlist, c, vol, flows, didx, lo, hi):
                 break
             vals.append((x[0] - x[1]) if x else 0)
         ft[k] = _z(np.cumsum(vals)) if vals else None
+        cap = _cap_at(cap_now, c, hi) if cap_now else None
+        ft[k + "sv"] = (sum(vals) / cap) if vals and cap else None      # 백만원/억 = %
     return ft
 
 
-def _sim(a, b):
+def _desc(dl, c, v, flows, didx, lo, hi, cap_now=None):
+    """비교 구간의 특징을 사람이 읽을 수 있는 숫자로 요약 (유사 이유 설명용)"""
+    cc, vv = c[lo:hi + 1], v[lo:hi + 1]
+    k = min(20, len(cc) - 1)
+    out = {
+        "p": round((cc[-1] / cc[0] - 1) * 100, 1),                 # 3달 등락률
+        "pl": round((cc[-1] / cc[-1 - k] - 1) * 100, 1),           # 마지막 한 달 등락률
+        "vr": round(float(np.mean(vv[-k:])) / max(1.0, float(np.mean(vv[:-k]))), 2),   # 거래량 배수
+    }
+    for key in ("f", "i"):
+        tot = last = 0
+        ok = bool(flows)
+        for n_, d in enumerate(dl[lo:hi + 1]):
+            j = didx.get(d)
+            if not flows or j is None:
+                ok = False
+                break
+            x = flows[key][j]
+            net = (x[0] - x[1]) if x else 0
+            tot += net
+            if n_ >= len(cc) - k:
+                last += net
+        cap = _cap_at(cap_now, c, hi) if cap_now else None
+        out[key] = [tot, last, round(tot / cap, 3) if cap else None, round(last / cap, 3) if cap else None] if ok else None
+    return out                                                       # [3달 누적(백만원), 마지막 한 달, 3달 %, 한 달 %]
+
+
+def _sim(a, b, W=None):
+    W = W or PAT_W
     parts, tot = {}, 0.0
-    for k, w in PAT_W.items():
-        if a.get(k) is not None and b.get(k) is not None:
-            parts[k] = float(np.mean(a[k] * b[k]))      # 표준화 벡터의 평균곱 = 상관계수
+    for k, w in W.items():
+        if k in ("fs", "is"):
+            v = _strength(a.get(k[0] + "sv"), b.get(k[0] + "sv"))
+        elif a.get(k) is not None and b.get(k) is not None:
+            v = float(np.mean(a[k] * b[k]))              # 표준화 벡터의 평균곱 = 상관계수
+        else:
+            v = None
+        if v is not None:
+            parts[k] = v
             tot += w
     if not parts or "price" not in parts:
         return None, parts
-    s = sum(PAT_W[k] * v for k, v in parts.items()) / tot
+    s = sum(W[k] * v for k, v in parts.items()) / tot
     return (s + 1) * 50, parts                            # 0~100 점
 
 
@@ -533,7 +593,7 @@ def find_patterns(rows, series, hn, days_net):
                 best, lo_i, hi_i = c[k] / mn, mn_i, k
         if lo_i is None or lo_i - PAT_WIN + 1 < 0:
             continue
-        ft = _features(dl, c, v, hn.get(t), didx, lo_i - PAT_WIN + 1, lo_i)
+        ft = _features(dl, c, v, hn.get(t), didx, lo_i - PAT_WIN + 1, lo_i, rows[t]["cap"])
         if not ft or ft["price"] is None:
             continue
         base = c[lo_i - PAT_WIN + 1]
@@ -545,20 +605,29 @@ def find_patterns(rows, series, hn, days_net):
             "runup": round((best - 1) * 100, 1),
             "px": [round(x / base * 100, 2) for x in c[lo_i - PAT_WIN + 1:lo_i + 1]],
             "_ft": ft,
+            "d": _desc(dl, c, v, hn.get(t), didx, lo_i - PAT_WIN + 1, lo_i, rows[t]["cap"]),
         })
     print(f"패턴 찾기: 급등 종목 {len(tmpls)}개 기준으로 비교")
-    # 3) 모든 종목의 최근 3달과 비교
     tset = {x["code"] for x in tmpls}
+    # 과거 검증으로 비중 정하기: 기본 비중으로 한 번 검증 → 결과로 비중 조정 → 조정된 비중으로 최종 계산
+    weights, calib, valid0 = dict(PAT_W), {"auto": False, "why": "기본 비중을 씁니다."}, None
+    if PAT_AUTO:
+        _, st0 = find_failures(rows, series, hn, didx, tmpls, tset, PAT_W)
+        valid0 = (st0 or {}).get("valid")
+        weights, calib = calibrate(valid0)
+        print(f"패턴 찾기: 비중 {'자동 조정' if calib['auto'] else '기본값'} " +
+              ", ".join(f"{k} {v * 100:.0f}%" for k, v in weights.items()))
+    # 3) 모든 종목의 최근 3달과 비교
     res = []
     for t, (dl, c, v) in series.items():
         if t in tset or len(c) < PAT_WIN:
             continue
-        ft = _features(dl, c, v, hn.get(t), didx, len(c) - PAT_WIN, len(c) - 1)
+        ft = _features(dl, c, v, hn.get(t), didx, len(c) - PAT_WIN, len(c) - 1, rows[t]["cap"])
         if not ft or ft["price"] is None or ft["vol"] is None:
             continue
         best = None
         for ti, tp in enumerate(tmpls):
-            sc, parts = _sim(ft, tp["_ft"])
+            sc, parts = _sim(ft, tp["_ft"], weights)
             if sc is not None and (best is None or sc > best[0]):
                 best = (sc, ti, parts)
         if best:
@@ -568,24 +637,62 @@ def find_patterns(rows, series, hn, days_net):
                 "p": {k: round(x * 100) for k, x in best[2].items()},
                 "px": [round(x / base * 100, 2) for x in c[-PAT_WIN:]],
                 "from": fmt_d(dl[-PAT_WIN]),
+                "d": _desc(dl, c, v, hn.get(t), didx, len(c) - PAT_WIN, len(c) - 1, rows[t]["cap"]),
             })
     res.sort(key=lambda x: -x["score"])
-    fails, stat = find_failures(rows, series, hn, didx, tmpls, tset)
+    fails, stat = find_failures(rows, series, hn, didx, tmpls, tset, weights)
+    if valid0 and stat:
+        stat["valid"] = valid0          # 화면에는 비중을 정할 때 쓴 검증 결과를 보여줌
     for tp in tmpls:
         tp.pop("_ft")
-    return {"win": PAT_WIN, "after": PAT_AFTER, "tmpl": tmpls, "match": res[:PAT_MATCH], "w": PAT_W,
+    return {"win": PAT_WIN, "after": PAT_AFTER, "tmpl": tmpls, "match": res[:PAT_MATCH], "w": weights,
+            "w0": PAT_W, "calib": calib,
             "fail": fails, "stat": stat, "failPct": PAT_FAIL, "statScore": PAT_STAT_SCORE}
 
 
-def find_failures(rows, series, hn, didx, tmpls, tset):
+def calibrate(valid):
+    """항목별로 '점수가 높았던 구간의 급등 비율 ÷ 전체 평균'을 구해서, 평균보다 잘 맞힌 만큼 비중을 준다."""
+    if not valid or valid["hit"] < PAT_MIN_HITS or valid["base"] <= 0:
+        return dict(PAT_W), {"auto": False, "why": f"검증 표본의 급등 사례가 {PAT_MIN_HITS}개 미만이라 기본 비중을 씁니다."}
+    base = valid["base"] / 100
+    raw, lifts = {}, {}
+    for r in valid["rows"]:
+        rate = (r["hit"] + PAT_SHRINK * base) / (r["n"] + PAT_SHRINK)       # 표본이 적으면 평균 쪽으로
+        lifts[r["k"]] = rate / base
+        raw[r["k"]] = max(rate / base - 1, 0)
+    tot = sum(raw.values())
+    if tot <= 0:
+        return dict(PAT_W), {"auto": False, "why": "평균보다 급등을 잘 가려낸 항목이 없어 기본 비중을 씁니다.", "lift": lifts}
+    rest = 1 - PAT_FLOOR * len(raw)
+    w = {k: round((1 - PAT_BLEND) * PAT_W[k] + PAT_BLEND * (PAT_FLOOR + rest * v / tot), 4) for k, v in raw.items()}
+    names = {"price": "주가 모양", "vol": "거래량", "f": "외국인 흐름", "i": "기관 흐름", "fs": "외국인 세기", "is": "기관 세기"}
+    best = [names.get(k, k) for k in sorted(w, key=lambda k: -w[k])[:2]]
+    return w, {"auto": True, "lift": {k: round(v, 2) for k, v in lifts.items()},
+               "why": f"과거 검증에서 평균보다 급등을 잘 가려낸 만큼 비중을 줬고, 우연에 휘둘리지 않도록 기본 비중과 반반 섞었습니다. 가장 비중이 큰 항목은 {', '.join(best)}입니다."}
+
+
+def find_failures(rows, series, hn, didx, tmpls, tset, weights=None):
+    weights = weights or PAT_W
     """과거에 급등 직전 패턴과 비슷했지만(주가·거래량·외국인·기관 모두 비교) 이후 1년 동안 오르지 않은 사례"""
     from numpy.lib.stride_tricks import sliding_window_view as swv
     fmt_d = lambda d: f"{d[:4]}-{d[4:6]}-{d[6:]}"
     keys = ("price", "vol", "f", "i")
-    tp_ok = [k for k, tp in enumerate(tmpls) if all(tp["_ft"].get(x) is not None for x in keys)]
+    allk = tuple(PAT_W.keys())
+    tp_ok = [k for k, tp in enumerate(tmpls)
+             if all(tp["_ft"].get(x) is not None for x in keys + ("fsv", "isv"))]
     if not tp_ok:
         return [], None
     TM = {x: np.stack([tmpls[k]["_ft"][x] for k in tp_ok]) for x in keys}      # (템플릿 수, 60)
+    TS = {x: np.array([tmpls[k]["_ft"][x + "sv"] for k in tp_ok]) for x in ("f", "i")}   # 템플릿 세기 (%)
+
+    def strength_mat(a, b):          # a: (구간 수,), b: (템플릿 수,) → (구간 수, 템플릿 수)
+        A, B = a[:, None], b[None, :]
+        same = A * B > 0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            r = np.clip(1 - np.abs(np.log2(np.where(same, np.abs(A) / np.where(same, np.abs(B), 1), 1))) / 2, -1, 1)
+        return np.where(same, r, np.where((abs(A) < 1e-6) & (abs(B) < 1e-6), 1.0, -1.0))
+
+    samp_parts = {k: [] for k in allk}; samp_total = []; samp_hit = []
     W, H = PAT_WIN, PAT_AFTER
 
     def zrows(M):
@@ -630,9 +737,13 @@ def find_failures(rows, series, hn, didx, tmpls, tset):
         ok = okp & okv & okf & oki
         if not ok.any():
             continue
+        capE = rows[t]["cap"] * c[ends] / c[-1]                                    # 구간 끝 시점 시총(억) 추정
+        Cf, Ci = np.concatenate([[0], np.cumsum(fn)]), np.concatenate([[0], np.cumsum(inn)])
+        fsv = (Cf[ends + 1] - Cf[st]) / capE; isv = (Ci[ends + 1] - Ci[st]) / capE      # 3달 누적 / 시총 (%)
         parts = {"price": Zp @ TM["price"].T / W, "vol": Zv @ TM["vol"].T / W,
-                 "f": Zf @ TM["f"].T / W, "i": Zi @ TM["i"].T / W}
-        tot = sum(PAT_W[k] * parts[k] for k in keys) / sum(PAT_W.values())
+                 "f": Zf @ TM["f"].T / W, "i": Zi @ TM["i"].T / W,
+                 "fs": strength_mat(fsv, TS["f"]), "is": strength_mat(isv, TS["i"])}
+        tot = sum(weights[k] * parts[k] for k in allk) / sum(weights.values())
         score = (tot + 1) * 50                                   # (구간 수, 템플릿 수)
         bi = score.argmax(1); bs = score[np.arange(len(ends)), bi]
         fut = swv(c, H)[ends + 1]                                # 각 구간 끝 다음 H일
@@ -641,6 +752,13 @@ def find_failures(rows, series, hn, didx, tmpls, tset):
         # 통계: 겹치지 않게 20일 간격 구간만
         sel = ok & (bs >= PAT_STAT_SCORE) & (((n - 1 - ends) % 20) == 0)
         n_stat += int(sel.sum()); n_hit += int((sel & (fmax >= hit_pct)).sum())
+        # 검증용 표본: 겹치지 않게 20일 간격, 가장 닮은 급등 종목 기준 항목 점수
+        smp = ok & (((n - 1 - ends) % 20) == 0)
+        if smp.any():
+            ix = np.where(smp)[0]
+            for k in allk:
+                samp_parts[k].append(parts[k][ix, bi[ix]] * 100)
+            samp_total.append(bs[ix]); samp_hit.append(fmax[ix] >= hit_pct)
         fail = ok & (fmax < PAT_FAIL)
         if not fail.any():
             continue
@@ -651,14 +769,37 @@ def find_failures(rows, series, hn, didx, tmpls, tset):
             base = c[e - W + 1]
             best_fail[t] = {
                 "code": t, "score": round(float(bs[k]), 1), "t": ti,
-                "p": {x: round(float(parts[x][k, bi[k]]) * 100) for x in keys},
+                "p": {x: round(float(parts[x][k, bi[k]]) * 100) for x in allk},
                 "from": fmt_d(dl[e - W + 1]), "to": fmt_d(dl[e]),
                 "fmax": round(float(fmax[k]), 1), "fret": round(float(fret[k]), 1),
                 "px": [round(x / base * 100, 2) for x in c[e - W + 1:e + 1]],
                 "after": [round(x / base * 100, 2) for x in c[e + 1:e + 1 + H]],
+                "_e": e,
             }
     fails = sorted(best_fail.values(), key=lambda x: -x["score"])[:10]
+    for f in fails:
+        dl, c, v = series[f["code"]]
+        e = f.pop("_e")
+        f["d"] = _desc(dl, c, v, hn.get(f["code"]), didx, e - W + 1, e, rows[f["code"]]["cap"])
     stat = {"n": n_stat, "hit": n_hit, "hitPct": round(hit_pct, 1)} if n_stat else None
+    # 항목별 검증: 그 항목 점수가 높았던 구간이 실제로 1년 안에 TOP 10 수준까지 오른 비율
+    valid = None
+    if samp_total:
+        hit = np.concatenate(samp_hit); tot_s = np.concatenate(samp_total)
+        base = float(hit.mean()) if len(hit) else 0
+        rowsv = []
+        for k in allk:
+            sc = np.concatenate(samp_parts[k]); m = sc >= PAT_VALID
+            rowsv.append({"k": k, "n": int(m.sum()), "hit": int(hit[m].sum()),
+                          "rate": round(float(hit[m].mean()) * 100, 2) if m.any() else None})
+        bins = []
+        for lo_, hi_ in ((0, 60), (60, 70), (70, 80), (80, 101)):
+            m = (tot_s >= lo_) & (tot_s < hi_)
+            bins.append({"lo": lo_, "hi": min(hi_, 100), "n": int(m.sum()), "hit": int(hit[m].sum()),
+                         "rate": round(float(hit[m].mean()) * 100, 2) if m.any() else None})
+        valid = {"n": int(len(hit)), "hit": int(hit.sum()), "base": round(base * 100, 2),
+                 "rows": rowsv, "bins": bins, "th": PAT_VALID, "hitPct": round(hit_pct, 1)}
+    stat = dict(stat or {}, valid=valid) if (stat or valid) else None
     print(f"패턴 찾기: 비슷했지만 안 오른 사례 {len(fails)}개, 통계 표본 {n_stat}개 중 {n_hit}개 상승")
     return fails, stat
 
@@ -746,7 +887,10 @@ h1{font-size:30px;font-weight:800;margin:0;letter-spacing:-.02em}
 body.pat .rk{display:none}
 .pnote{background:#fff;border:1px solid var(--olive);border-radius:8px;padding:12px 14px;font-size:14px;line-height:1.65;margin:0 0 6px}
 .ph{font-size:20px;margin:24px 0 10px}
-.ptbl{min-width:1000px}
+.ptbl{min-width:1150px}
+.vtbl{min-width:700px}
+.vtbl tbody tr{cursor:default}
+.lift{font-weight:800}
 .ptbl tbody tr{cursor:pointer}
 .ptbl tbody tr:nth-child(even) td{background:var(--pale)}
 .ptbl tbody tr:hover td{background:#F8DADA}
@@ -756,6 +900,11 @@ body.pat .rk{display:none}
 .cmpbox h3{margin:0 0 4px;font-size:17px}
 .cmpbox .sub2{color:var(--gray);font-size:13px;margin:0 0 10px}
 .cmpbox svg{display:block;width:100%;max-width:980px;height:auto}
+.why{margin-top:14px;border-top:1px solid #EEE;padding-top:12px;font-size:14px;line-height:1.65}
+.why p{margin:4px 0}
+.why ul{margin:6px 0 0;padding-left:18px}
+.why li{margin:3px 0}
+.why .wk{font-weight:800;color:var(--red);margin-right:4px}
 .cmpbox .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px}
 .lg{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--gray);margin-right:14px}
 .lg i{display:inline-block;width:18px;height:0;border-top:3px solid}
@@ -938,14 +1087,24 @@ td.st{text-align:center;width:44px}
     <div class="cmpbox" id="cmpBox" hidden></div>
     <p class="info" id="patInfo"></p>
     <div class="tbl"><table class="ptbl" id="mtbl">
-      <thead><tr><th>관심</th><th>순위</th><th>종목명</th><th>시장</th><th>업종</th><th>시가총액(억)</th><th>유사도</th><th>닮은 급등 종목</th><th>주가 모양</th><th>거래량</th><th>외국인</th><th>기관</th><th>지지선</th></tr></thead>
+      <thead><tr><th>관심</th><th>순위</th><th>종목명</th><th>시장</th><th>업종</th><th>시가총액(억)</th><th>유사도</th><th>닮은 급등 종목</th><th>특히 비슷한 점</th><th>주가 모양</th><th>거래량</th><th>외국인 흐름</th><th>기관 흐름</th><th>외국인 세기</th><th>기관 세기</th><th>지지선</th></tr></thead>
       <tbody id="matchRows"></tbody>
+    </table></div>
+    <h2 class="ph">어떤 항목이 실제로 급등을 잘 가려냈나 (과거 검증으로 비중 결정)</h2>
+    <p class="pnote" id="validNote"></p>
+    <div class="tbl"><table class="ptbl vtbl">
+      <thead><tr><th>항목</th><th>기본 비중</th><th>검증 후 비중</th><th>그 항목이 비슷했던 구간</th><th>그중 1년 안에 급등</th><th>급등 비율</th><th>전체 평균 대비</th></tr></thead>
+      <tbody id="validRows"></tbody>
+    </table></div>
+    <div class="tbl" style="margin-top:10px"><table class="ptbl vtbl">
+      <thead><tr><th>종합 유사도</th><th>구간 수</th><th>그중 1년 안에 급등</th><th>급등 비율</th><th>전체 평균 대비</th></tr></thead>
+      <tbody id="binRows"></tbody>
     </table></div>
     <h2 class="ph">비슷했지만 1년 동안 오르지 않은 과거 사례 10개</h2>
     <p class="pnote" id="failNote"></p>
     <div class="cmpbox" id="cmpBox2" hidden></div>
     <div class="tbl"><table class="ptbl">
-      <thead><tr><th>순위</th><th>종목명</th><th>업종</th><th>비슷했던 구간</th><th>유사도</th><th>닮은 급등 종목</th><th>주가 모양</th><th>거래량</th><th>외국인</th><th>기관</th><th>이후 1년 최고</th><th>이후 1년 수익률</th></tr></thead>
+      <thead><tr><th>순위</th><th>종목명</th><th>업종</th><th>비슷했던 구간</th><th>유사도</th><th>닮은 급등 종목</th><th>특히 비슷한 점</th><th>주가 모양</th><th>거래량</th><th>외국인 흐름</th><th>기관 흐름</th><th>외국인 세기</th><th>기관 세기</th><th>이후 1년 최고</th><th>이후 1년 수익률</th></tr></thead>
       <tbody id="failRows"></tbody>
     </table></div>
   </div>
@@ -1173,12 +1332,44 @@ function renderPat(){
     return `<tr data-code="${m.code}" class="${S.psel === m.code ? 'sel' : ''}">
       <td class="st">${starBtn(m.code)}</td><td>${i + 1}</td><td class="name">${esc(r.name)}</td><td>${r.mkt}</td>
       <td class="sec">${r.sec ? esc(r.sec) : '-'}</td><td>${fmt(r.cap)}</td>
-      <td><span class="score">${fmt(m.score, 1)}</span></td><td>${esc(tp.name)}</td>
-      <td>${pc(m.p.price)}</td><td>${pc(m.p.vol)}</td><td>${pc(m.p.f)}</td><td>${pc(m.p.i)}</td><td>${srCell(r)}</td></tr>`;
-  }).join('') : `<tr><td colspan="13" class="empty">조건에 맞는 종목이 없습니다.</td></tr>`;
+      <td><span class="score">${fmt(m.score, 1)}</span></td><td>${esc(tp.name)}</td><td>${simShort(m.p)}</td>
+      <td>${pc(m.p.price)}</td><td>${pc(m.p.vol)}</td><td>${pc(m.p.f)}</td><td>${pc(m.p.i)}</td><td>${pc(m.p.fs)}</td><td>${pc(m.p.is)}</td><td>${srCell(r)}</td></tr>`;
+  }).join('') : `<tr><td colspan="16" class="empty">조건에 맞는 종목이 없습니다.</td></tr>`;
   $('wBtn').textContent = `관심종목 (${WATCH.size})`;
   drawCmp();
   renderFail();
+}
+const PNAME2 = {price: '주가 모양', vol: '거래량', f: '외국인 흐름', i: '기관 흐름', fs: '외국인 세기', is: '기관 세기'};
+function shapeWord(d){
+  if (d.p <= -10) return d.pl >= 3 ? '하락 뒤 막판 반등' : '꾸준한 하락';
+  if (d.p >= 10) return d.pl <= -3 ? '상승 뒤 조정' : '꾸준한 상승';
+  return d.pl >= 3 ? '횡보 뒤 반등' : d.pl <= -3 ? '횡보 뒤 약세' : '옆으로 횡보';
+}
+const lvWord = x => x >= 70 ? '매우 비슷' : x >= 40 ? '비슷' : x >= 10 ? '조금 비슷' : '다른 편';
+function topParts(p){
+  return Object.keys(PNAME2).filter(k => p[k] !== undefined).sort((a, b) => p[b] - p[a]);
+}
+function simShort(p){ return topParts(p).slice(0, 2).map(k => PNAME2[k]).join(', '); }
+// 두 구간의 특징을 비교해서 '왜 비슷하다고 봤는지' 문장으로 만든다
+function reasonHtml(p, a, b, an, bn){
+  if (!a || !b) return '';
+  const pc = x => `${plus(x)}${fmt(x, 1)}%`;
+  const sp = v => v === null || v === undefined ? '' : `, 시총의 ${plus(v)}${fmt(v, 2)}%`;
+  const fl = x => x ? `3달 누적 ${won(x[0], true)}${sp(x[2])} (마지막 한 달 ${won(x[1], true)}${sp(x[3])})` : '데이터 없음';
+  const fsv = x => x && x[2] !== null && x[2] !== undefined ? `시총의 ${plus(x[2])}${fmt(x[2], 2)}%` : '데이터 없음';
+  const items = {
+    price: `${an}은(는) 3달 ${pc(a.p)}, 마지막 한 달 ${pc(a.pl)}로 "${shapeWord(a)}", ${bn}은(는) ${pc(b.p)}, ${pc(b.pl)}로 "${shapeWord(b)}" 흐름이었습니다.`,
+    vol: `마지막 한 달 거래량이 앞 두 달보다 ${an} ${fmt(a.vr, 1)}배, ${bn} ${fmt(b.vr, 1)}배였습니다.`,
+    f: `${an} ${fl(a.f)}, ${bn} ${fl(b.f)}.`,
+    i: `${an} ${fl(a.i)}, ${bn} ${fl(b.i)}.`,
+    fs: `외국인 3달 누적 순매수가 ${an} ${fsv(a.f)}, ${bn} ${fsv(b.f)}입니다.`,
+    is: `기관 3달 누적 순매수가 ${an} ${fsv(a.i)}, ${bn} ${fsv(b.i)}입니다.`,
+  };
+  const order = topParts(p), best = order.slice(0, 2).map(k => PNAME2[k]), worst = order.filter(k => p[k] < 10).map(k => PNAME2[k]);
+  const head = `가장 닮은 항목은 ${best.join(', ')}입니다.` + (worst.length ? ` ${worst.join(', ')}은(는) 차이가 있습니다.` : '');
+  return `<div class="why"><b>비슷하다고 본 이유</b><p>${head}</p><ul>${order.map(k =>
+    `<li><span class="wk">${PNAME2[k]} ${p[k]}점, ${lvWord(p[k])}</span> ${items[k]}</li>`).join('')}</ul>
+    <p class="note">주가·거래량·흐름 점수는 두 흐름의 모양이 얼마나 같이 움직였는지(상관계수×100)이고, 세기 점수는 3달 누적 순매수의 시총 대비 %가 얼마나 가까운지입니다(같으면 100, 2배 차이면 50, 4배 차이면 0, 방향이 반대면 -100). 모두 100에 가까울수록 닮았습니다.</p></div>`;
 }
 function cmpSvg(tp, cand, candAfter){
   const Wn = PAT.win, A = PAT.after || 250;
@@ -1211,7 +1402,8 @@ function drawCmp(){
     ${cmpSvg(tp, m.px, null)}
     <div class="row"><span class="lg"><i style="border-color:#C62828"></i>${esc(r.name)} (${m.from} ~ 최근)</span>
       <span class="lg"><i style="border-color:#9A9A9A"></i>${esc(tp.name)} (${tp.from} ~ ${tp.low}, 이후 점선)</span>
-      <button class="mbtn" id="cmpOpen">${esc(r.name)} 상세 보기</button><button class="mbtn" id="cmpOpen2">${esc(tp.name)} 상세 보기</button></div>`;
+      <button class="mbtn" id="cmpOpen">${esc(r.name)} 상세 보기</button><button class="mbtn" id="cmpOpen2">${esc(tp.name)} 상세 보기</button></div>
+    ${reasonHtml(m.p, m.d, tp.d, esc(r.name), esc(tp.name))}`;
   $('cmpOpen').onclick = () => openDetail(m.code);
   $('cmpOpen2').onclick = () => { openDetail(tp.code); $('dDate').value = HD.includes(tp.low) ? tp.low : ''; DET.pendingMark = tp.low; };
 }
@@ -1225,12 +1417,25 @@ function drawFail(){
     ${cmpSvg(tp, f.px, f.after)}
     <div class="row"><span class="lg"><i style="border-color:#C62828"></i>${esc(r.name)} (${f.from} ~ ${f.to}, 이후 점선)</span>
       <span class="lg"><i style="border-color:#9A9A9A"></i>${esc(tp.name)} (${tp.from} ~ ${tp.low}, 이후 점선)</span>
-      <button class="mbtn" id="failOpen">${esc(r.name)} 상세 보기</button></div>`;
+      <button class="mbtn" id="failOpen">${esc(r.name)} 상세 보기</button></div>
+    ${reasonHtml(f.p, f.d, tp.d, esc(r.name), esc(tp.name))}`;
   $('failOpen').onclick = () => { openDetail(f.code); $('dDate').value = HD.includes(f.to) ? f.to : ''; DET.pendingMark = null; };
 }
+function renderValid(){
+  const v = PAT.stat && PAT.stat.valid;
+  if (!v) { $('validNote').textContent = '검증할 과거 구간이 아직 부족합니다.'; $('validRows').innerHTML = $('binRows').innerHTML = ''; return; }
+  $('validNote').textContent = `약 2년 전부터 1년 전 사이의 과거 구간 ${fmt(v.n)}개(겹치지 않게 20일 간격)를 급등 TOP 10의 급등 직전 패턴과 비교하고, 그 뒤 1년 안에 TOP 10 수준(바닥→고점 +${fmt(v.hitPct, 0)}% 이상)까지 오른 비율을 셌습니다. 전체 평균은 ${fmt(v.base, 2)}%입니다. 어떤 항목의 비율이 평균보다 뚜렷하게 높으면 그 항목이 급등 전 신호를 잘 잡는다는 뜻입니다. 다만 급등 사례 자체가 드물어서 구간 수가 적은 항목은 우연일 수 있어, 비중을 정할 때는 표본이 적은 항목을 평균 쪽으로 당겨서 계산합니다. ${PAT.calib ? PAT.calib.why : ''} 이 비중은 매일 새로 검증해서 다시 맞춥니다.`;
+  const lift = r => r === null || !v.base ? '-' : `<span class="lift ${r / v.base >= 1.3 ? 'pos' : r / v.base < 0.8 ? 'neg' : ''}">${fmt(r / v.base, 1)}배</span>`;
+  $('validRows').innerHTML = v.rows.map(x => `<tr><td class="name">${PNAME2[x.k]}</td><td>${fmt(((PAT.w0 || PAT.w)[x.k] || 0) * 100, 1)}%</td>
+    <td><b>${fmt((PAT.w[x.k] || 0) * 100, 1)}%</b></td>
+    <td>${fmt(x.n)}개 (점수 ${v.th} 이상)</td><td>${fmt(x.hit)}개</td><td>${x.rate === null ? '-' : fmt(x.rate, 2) + '%'}</td><td>${lift(x.rate)}</td></tr>`).join('');
+  $('binRows').innerHTML = v.bins.map(x => `<tr><td class="name">${x.lo} ~ ${x.hi}점</td><td>${fmt(x.n)}개</td><td>${fmt(x.hit)}개</td>
+    <td>${x.rate === null ? '-' : fmt(x.rate, 2) + '%'}</td><td>${lift(x.rate)}</td></tr>`).join('');
+}
 function renderFail(){
+  renderValid();
   const st = PAT.stat, fl = PAT.fail || [];
-  $('failNote').textContent = (st
+  $('failNote').textContent = (st && st.n
     ? `급등 직전 패턴과 유사도 ${fmt(PAT.statScore)}점 이상이었던 과거 구간 ${fmt(st.n)}개 중, 이후 1년 안에 급등 TOP 10 수준(바닥→고점 +${fmt(st.hitPct, 0)}% 이상)까지 오른 건 ${fmt(st.hit)}개(${fmt(st.hit / st.n * 100, 1)}%)였습니다. `
     : '') + `아래는 주가·거래량·외국인·기관 흐름이 모두 비슷했지만, 급등 TOP 10과 같은 1년 기준으로 봤을 때 이후 1년 동안 최고 상승률이 +${fmt(PAT.failPct)}%도 안 된 사례입니다.`;
   const pc = v => v === undefined ? '<span class="muted">-</span>' : `<span class="${v >= 50 ? 'pos' : v < 0 ? 'neg' : ''}">${v}</span>`;
@@ -1239,9 +1444,9 @@ function renderFail(){
     const r = BY[f.code] || {name: f.code}, tp = PAT.tmpl[f.t];
     return `<tr data-code="${f.code}" class="${S.fsel === f.code ? 'sel' : ''}"><td>${i + 1}</td><td class="name">${esc(r.name)}</td>
       <td class="sec">${r.sec ? esc(r.sec) : '-'}</td><td>${f.from} ~ ${f.to}</td><td><span class="score">${fmt(f.score, 1)}</span></td>
-      <td>${esc(tp.name)}</td><td>${pc(f.p.price)}</td><td>${pc(f.p.vol)}</td><td>${pc(f.p.f)}</td><td>${pc(f.p.i)}</td>
+      <td>${esc(tp.name)}</td><td>${simShort(f.p)}</td><td>${pc(f.p.price)}</td><td>${pc(f.p.vol)}</td><td>${pc(f.p.f)}</td><td>${pc(f.p.i)}</td><td>${pc(f.p.fs)}</td><td>${pc(f.p.is)}</td>
       <td class="${cc(f.fmax)}">${plus(f.fmax)}${fmt(f.fmax, 1)}%</td><td class="${cc(f.fret)}">${plus(f.fret)}${fmt(f.fret, 1)}%</td></tr>`;
-  }).join('') : `<tr><td colspan="12" class="empty">조건에 맞는 과거 사례를 찾지 못했습니다.</td></tr>`;
+  }).join('') : `<tr><td colspan="15" class="empty">조건에 맞는 과거 사례를 찾지 못했습니다.</td></tr>`;
   drawFail();
 }
 $('failRows').addEventListener('click', e => {
