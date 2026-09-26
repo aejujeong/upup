@@ -350,7 +350,18 @@ SECTOR_RULES = [
 ]
 
 
-def group_sector(name):
+# 주요 제품에 이 단어가 있으면 산업분류보다 먼저 이 섹터로 보낸다 (장비·소재 회사를 제 섹터로 모으기 위함)
+PROD_RULES = [
+    ("반도체", ["반도체", "웨이퍼", "포토마스크", "프로브카드", "HBM", "파운드리"]),
+    ("2차전지", ["2차전지", "이차전지", "2차 전지", "양극재", "음극재", "전해액", "전해질", "분리막", "리튬", "배터리 소재"]),
+    ("화장품", ["화장품"]),
+]
+
+
+def group_sector(name, prod=""):
+    for g, keys in PROD_RULES:
+        if prod and any(k in prod for k in keys):
+            return g
     for g, keys in SECTOR_RULES:
         if any(k in name for k in keys):
             return g
@@ -595,7 +606,7 @@ def collect(days_all):
     for t, r in rows.items():
         if fine.get(t):
             r["sec1"] = fine[t]                                       # 세부 산업 (상세 창에 표시)
-            r["sec"] = group_sector(fine[t]) if grouped else fine[t]
+            r["sec"] = group_sector(fine[t], prod.get(t, "")) if grouped else fine[t]
         r["prod"] = (prod.get(t) or "")[:120]
     cnt = {}
     for r in rows.values():
@@ -1222,7 +1233,7 @@ td.st{text-align:center;width:44px}
   </div>
 
   <div id="secView" hidden>
-    <p class="pnote">세부 업종 기준으로 약 35개 섹터로 묶었습니다(거래소 산업분류를 반도체, 2차전지, 제약·바이오 같은 투자 섹터로 다시 묶은 것). 등락률은 시가총액 가중 평균이고, 순매수와 시총 대비는 섹터 안 종목을 모두 더한 값입니다. 위의 전날·10일·한달 탭과 기준일, 시장·시총·실적 필터가 그대로 적용되고, 섹터를 누르면 그 섹터 종목 순위로 이동합니다.</p>
+    <p class="pnote">거래소 산업분류를 반도체, 2차전지, 제약·바이오 같은 투자 섹터 약 35개로 다시 묶었습니다. 주요 제품에 반도체·웨이퍼, 양극재·분리막·리튬, 화장품 같은 단어가 있으면 장비·소재 회사라도 그 섹터로 모읍니다. 등락률은 시가총액 가중 평균이고, 순매수와 시총 대비는 섹터 안 종목을 모두 더한 값입니다. 위의 전날·10일·한달 탭과 기준일, 시장·시총·실적 필터가 그대로 적용되고, 섹터를 누르면 그 섹터 종목 순위로 이동합니다.</p>
     <p class="info" id="secInfo"></p>
     <div class="tbl"><table class="ptbl" id="stbl">
       <thead><tr id="secHead"></tr></thead>
