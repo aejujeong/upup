@@ -274,34 +274,73 @@ def fetch_desc(code):
 SECTOR_REFRESH_DAYS = 7        # 세부 업종 목록을 다시 받아오는 주기
 
 
+def _sectors_naver():
+    """네이버 증권 업종 분류 (반도체와반도체장비, 전기제품, 디스플레이장비및부품 등 약 80개)"""
+    t = _get("https://finance.naver.com/sise/sise_group.naver?type=upjong")
+    groups = re.findall(r'sise_group_detail\.naver\?type=upjong(?:&|&amp;)no=(\d+)"[^>]*>([^<]+)</a>', t)
+    print(f"세부 업종(네이버): 업종 {len(groups)}개 찾음")
+    mp = {}
+    for no, name in groups:
+        page = _get(f"https://finance.naver.com/sise/sise_group_detail.naver?type=upjong&no={no}")
+        for code in set(re.findall(r"code=(\d{6})", page)):
+            mp[code] = htmllib.unescape(name).strip()
+        time.sleep(0.2)
+    return mp, {}
+
+
+def _sectors_kind():
+    """한국거래소 KIND 상장법인목록의 업종(통계청 산업분류: 반도체 제조업, 전자부품 제조업 등)과 주요 제품"""
+    t = _get("https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13")
+    heads = [re.sub(r"<[^>]+>", "", h).strip() for h in re.findall(r"<th[^>]*>(.*?)</th>", t, re.S)]
+    ix = {h: k for k, h in enumerate(heads)}
+    if "종목코드" not in ix or "업종" not in ix:
+        raise ValueError(f"표 머리글을 찾지 못함: {heads[:10]}")
+    mp, prod = {}, {}
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", t, re.S):
+        cells = [htmllib.unescape(re.sub(r"<[^>]+>", "", c)).strip() for c in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)]
+        if len(cells) <= max(ix["종목코드"], ix["업종"]):
+            continue
+        code = re.sub(r"\D", "", cells[ix["종목코드"]]).zfill(6)
+        name = re.sub(r"\s*제조업$", "", cells[ix["업종"]])
+        name = re.sub(r"(서비스|공급|도매|소매|임대|개발|중개)업$", r"\1", name)
+        if code and name:
+            mp[code] = name
+            if "주요제품" in ix and len(cells) > ix["주요제품"]:
+                prod[code] = cells[ix["주요제품"]]
+    print(f"세부 업종(KIND): {len(set(mp.values()))}개 업종")
+    return mp, prod
+
+
 def load_sectors():
-    """네이버 증권 업종 분류(반도체와반도체장비, 전기제품 등 약 80개)로 종목코드 → 세부 업종 표를 만든다."""
+    """세부 업종: 네이버 → 거래소 KIND 순서로 시도하고, 둘 다 안 되면 거래소 큰 업종을 그대로 쓴다."""
     f = CACHE / "sector.json"
     today = dt.datetime.now(KST).date()
     try:
         saved = json.loads(f.read_text(encoding="utf-8"))
         if (today - dt.date.fromisoformat(saved["t"])).days <= SECTOR_REFRESH_DAYS and saved["map"]:
-            return saved["map"]
+            print(f"세부 업종: 저장된 목록 사용 ({saved.get('src')}, {len(saved['map'])}개 종목)")
+            return saved["map"], saved.get("prod", {})
     except Exception:
         saved = None
-    try:
-        t = _get("https://finance.naver.com/sise/sise_group.naver?type=upjong")
-        groups = re.findall(r'sise_group_detail\.naver\?type=upjong(?:&|&amp;)no=(\d+)"[^>]*>([^<]+)</a>', t)
-        mp = {}
-        for no, name in groups:
-            page = _get(f"https://finance.naver.com/sise/sise_group_detail.naver?type=upjong&no={no}")
-            for code in set(re.findall(r"/item/main\.naver\?code=(\d{6})", page)):
-                mp[code] = htmllib.unescape(name).strip()
-            time.sleep(0.2)
-        if len(mp) > 500:
-            CACHE.mkdir(parents=True, exist_ok=True)
-            f.write_text(json.dumps({"t": today.isoformat(), "map": mp}, ensure_ascii=False), encoding="utf-8")
-            print(f"세부 업종: {len(groups)}개 업종, {len(mp)}개 종목")
-            return mp
-        print("세부 업종 목록이 비어 있어 거래소 업종을 씁니다.")
-    except Exception as e:
-        print(f"세부 업종을 불러오지 못해 거래소 업종을 씁니다: {e}")
-    return (saved or {}).get("map") or {}
+    for src, fn in (("네이버", _sectors_naver), ("KIND", _sectors_kind)):
+        try:
+            mp, prod = fn()
+            if len(mp) > 500:
+                if src == "네이버":
+                    try:
+                        prod = _sectors_kind()[1]     # 주요 제품은 KIND에서 따로 받아 둔다
+                    except Exception:
+                        pass
+                CACHE.mkdir(parents=True, exist_ok=True)
+                f.write_text(json.dumps({"t": today.isoformat(), "src": src, "map": mp, "prod": prod},
+                                        ensure_ascii=False), encoding="utf-8")
+                print(f"세부 업종: {src} 기준 {len(set(mp.values()))}개 업종, {len(mp)}개 종목")
+                return mp, prod
+            print(f"세부 업종({src}): 종목이 {len(mp)}개뿐이라 건너뜀")
+        except Exception as e:
+            print(f"세부 업종({src})을 불러오지 못했습니다: {e}")
+    print("세부 업종을 모두 실패해서 거래소 업종을 씁니다.")
+    return (saved or {}).get("map") or {}, (saved or {}).get("prod") or {}
 
 
 def load_descs(codes):
@@ -505,10 +544,11 @@ def collect(days_all):
     except Exception as e:
         print(f"패턴 찾기 중 문제가 생겨 이번에는 건너뜁니다: {e}")
         PATTERN = None
-    fine = load_sectors()
+    fine, prod = load_sectors()
     for t, r in rows.items():
         if fine.get(t):
             r["sec"] = fine[t]
+        r["prod"] = (prod.get(t) or "")[:120]
     descs = load_descs(list(rows.keys()))
     for t, r in rows.items():
         r["desc"] = descs.get(t, "")
@@ -1127,7 +1167,7 @@ td.st{text-align:center;width:44px}
   </div>
 
   <div id="secView" hidden>
-    <p class="pnote">네이버 증권 업종 분류(약 80개) 기준으로 묶었습니다. 등락률은 시가총액 가중 평균이고, 순매수와 시총 대비는 섹터 안 종목을 모두 더한 값입니다. 위의 전날·10일·한달 탭과 기준일, 시장·시총·실적 필터가 그대로 적용되고, 섹터를 누르면 그 섹터 종목 순위로 이동합니다.</p>
+    <p class="pnote">세부 업종 기준으로 묶었습니다(네이버 증권 업종 약 80개, 안 되면 거래소 KIND 업종). 등락률은 시가총액 가중 평균이고, 순매수와 시총 대비는 섹터 안 종목을 모두 더한 값입니다. 위의 전날·10일·한달 탭과 기준일, 시장·시총·실적 필터가 그대로 적용되고, 섹터를 누르면 그 섹터 종목 순위로 이동합니다.</p>
     <p class="info" id="secInfo"></p>
     <div class="tbl"><table class="ptbl" id="stbl">
       <thead><tr id="secHead"></tr></thead>
@@ -1921,8 +1961,8 @@ function openDetail(code){
   const r = BY[code]; if (!r) return;
   const d = r.a['1'], t = r.a['10'], m = r.a['M'], di = r.b['1'], ti = r.b['10'], mi = r.b['M'];
   $('dName').textContent = r.name;
-  $('dDesc').textContent = r.desc || '회사 소개를 아직 불러오지 못했습니다. 다음 갱신 때 채워집니다.';
-  $('dDesc').classList.toggle('none', !r.desc);
+  $('dDesc').textContent = (r.desc || (r.prod ? '' : '회사 소개를 아직 불러오지 못했습니다. 다음 갱신 때 채워집니다.')) + (r.prod ? `${r.desc ? ' ' : ''}주요 제품: ${r.prod}` : '');
+  $('dDesc').classList.toggle('none', !r.desc && !r.prod);
   const ds = () => { const on = WATCH.has(r.code); $('dStar').textContent = on ? '★ 관심종목' : '☆ 관심종목 추가'; $('dStar').classList.toggle('on', on); };
   ds();
   $('dStar').onclick = () => { toggleWatch(r.code); ds(); render(); };
