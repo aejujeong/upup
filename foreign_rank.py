@@ -1646,6 +1646,7 @@ body.secv .nsec{display:none}
 .vtbl{min-width:700px}
 .vtbl tbody tr{cursor:default}
 .lift{font-weight:800}
+select.retto{width:auto;font-size:12px;padding:2px 4px;margin-top:4px;color:var(--ink)}
 .infobar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:0 0 8px}
 .infobar .info{margin:0}
 .topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}
@@ -1901,7 +1902,7 @@ td.st{text-align:center;width:44px}
     <p class="pnote" id="cycNote"></p>
     <div class="tbl"><table class="ptbl ctbl">
       <thead><tr><th>판단</th><th>섹터</th><th>종목 수</th><th>현재</th><th>다음 TOP 예상</th><th>다음 최하위 예상</th><th>사유</th>
-        <th id="mpHead">이번 달 진행</th><th class="asofc">기준일 이후 섹터 등락</th><th>장기 사이클 (참고)</th><th>1년 관점 (참고)</th>
+        <th id="mpHead">이번 달 진행</th><th class="asofc">기준일 이후 섹터 등락<br><select class="retto" aria-label="등락 비교 끝날"></select></th><th>장기 사이클 (참고)</th><th>1년 관점 (참고)</th>
         <th>TOP10 횟수</th><th>TOP10 재진입 평균</th><th>최하위10 횟수</th><th>최하위10 재진입 평균</th><th>전환 횟수</th><th>전환 평균</th><th>한 바퀴 평균</th></tr></thead>
       <tbody id="cycRows"></tbody>
     </table></div>
@@ -1914,7 +1915,7 @@ td.st{text-align:center;width:44px}
     <h2 class="ph">단기·선진입 섹터 후보 종목</h2>
     <p class="pnote" id="pickNote"></p>
     <div class="tbl"><table class="ptbl ktbl">
-      <thead><tr><th>섹터</th><th>순위</th><th>종목명</th><th>총점</th><th>수급 (40)</th><th>위치 (25)</th><th>실적 (15)</th><th>패턴 (10)</th><th>과열 회피 (10)</th><th class="asofc">기준일 이후</th><th>선별 이유</th></tr></thead>
+      <thead><tr><th>섹터</th><th>순위</th><th>종목명</th><th>총점</th><th>수급 (40)</th><th>위치 (25)</th><th>실적 (15)</th><th>패턴 (10)</th><th>과열 회피 (10)</th><th class="asofc">기준일 이후<br><select class="retto" aria-label="등락 비교 끝날"></select></th><th>선별 이유</th></tr></thead>
       <tbody id="pickRows"></tbody>
     </table></div>
     <h2 class="ph">참고: 장기 사이클 표 (직접 정리)</h2>
@@ -2146,7 +2147,7 @@ const COLS = [
   {k:'per',  t:'PER', cell: (r) => `<td>${r.eps > 0 && r.per > 0 ? fmt(r.per, 1) + '배' : '<span class="muted">-</span>'}</td>`},
   {k:'dist', t:'지지선', cell: (r) => `<td>${srCell(r)}</td>`},
   {k:'tspct', t:'오늘 기준 한달 합산/시총', show: () => !!S.asof, cell: (r) => pctTd(r.a.M.pct + r.b.M.pct, 'cmp ')},
-  {k:'ret',  t:'기준일 이후 수익률', show: () => !!S.asof, cell: (r, x) => x.rt === null || x.rt === undefined ? '<td><span class="muted">-</span></td>' : `<td class="${x.rt > 0 ? 'pos' : x.rt < 0 ? 'neg' : ''}">${plus(x.rt)}${fmt(x.rt, 1)}%</td>`},
+  {k:'ret',  t:() => `기준일 이후 수익률 (~${retEndLabel()})`, show: () => !!S.asof, cell: (r, x) => x.rt === null || x.rt === undefined ? '<td><span class="muted">-</span></td>' : `<td class="${x.rt > 0 ? 'pos' : x.rt < 0 ? 'neg' : ''}">${plus(x.rt)}${fmt(x.rt, 1)}%</td>`},
 ];
 const vcols = () => COLS.filter(c => (!c.show || c.show()) && (c.grp !== 'fd' || S.flowOpen) && (c.grp !== 'fc' || !S.flowOpen));
 function val(r, k){
@@ -2162,7 +2163,7 @@ function val(r, k){
   if (k === 'oipct') return BB(r, OTHER[S.per]).pct;
   if (k === 'ospct') return AA(r, OTHER[S.per]).pct + BB(r, OTHER[S.per]).pct;
   if (k === 'tspct') return r.a.M.pct + r.b.M.pct;          // 기준일과 상관없이 최신 한달 합산/시총
-  if (k === 'ret') return S.asof && r.h.ret !== null ? r.h.ret : null;
+  if (k === 'ret') return S.asof ? retSince(r) : null;
   if (k === 'eps') return r.eps;
   if (k === 'per') return r.eps > 0 && r.per > 0 ? r.per : null;
   if (k === 'dist') return r.sr && r.sr.dist !== null ? Math.abs(r.sr.dist) : null;
@@ -2229,6 +2230,33 @@ $('pager').addEventListener('click', e => {
   $('main').scrollIntoView({block: 'start', behavior: 'smooth'});
 });
 const SNAPC = {};
+// ---- 기준일 이후 등락을 어느 날까지로 볼지 (0 = 최신, 20 = 1개월 뒤 …) ----
+const RETTO = {n: 0, date: null, snap: null};
+const RET_OPTS = [[0, '최신'], [20, '1개월 뒤'], [40, '2개월 뒤'], [60, '3개월 뒤'], [120, '6개월 뒤']];
+function retEndDate(n){ const i = HD.indexOf(S.asof); return i < 0 || !n || i + n >= HD.length - 1 ? null : HD[i + n]; }
+function retEndLabel(){ return RETTO.n && RETTO.date ? RETTO.date.slice(5) : '최신'; }
+function retSince(r){
+  if (!r.h) return null;
+  if (!RETTO.n || !RETTO.date || !RETTO.snap) return r.h.ret;
+  const e = RETTO.snap[r.code] && RETTO.snap[r.code][2];
+  return e && r.h.px ? (e / r.h.px - 1) * 100 : null;
+}
+function fillRetTo(){
+  document.querySelectorAll('select.retto').forEach(sel => {
+    sel.innerHTML = RET_OPTS.map(([n, t]) => {
+      const d = n ? retEndDate(n) : null, off = n && !d;
+      return `<option value="${n}"${off ? ' disabled' : ''}>~${t}${d ? ` (${d.slice(5)})` : off ? ' (데이터 없음)' : ''}</option>`;
+    }).join('');
+    sel.value = String(RETTO.n);
+  });
+}
+async function setRetTo(n){
+  n = Number(n); const d = n ? retEndDate(n) : null;
+  RETTO.n = d ? n : 0; RETTO.date = d; RETTO.snap = null;
+  if (d) { try { RETTO.snap = await loadSnap(d); } catch (e) { RETTO.n = 0; RETTO.date = null; alert('그날 데이터를 불러오지 못했습니다.'); } }
+  render();
+}
+document.addEventListener('change', e => { const sel = e.target.closest('select.retto'); if (sel) setRetTo(sel.value); });
 async function loadSnap(d){
   if (HISTIN[d]) return HISTIN[d];
   if (SNAPC[d]) return SNAPC[d];
@@ -2236,6 +2264,7 @@ async function loadSnap(d){
   try { return await SNAPC[d]; } catch (e) { delete SNAPC[d]; throw e; }
 }
 async function setAsof(d){
+  RETTO.n = 0; RETTO.date = null; RETTO.snap = null;
   if (!d) { S.asof = ''; S.page = 1; render(); return; }
   const i = HD.indexOf(d);
   const idx = [i, i - 1, i - 10, i - ND].map(x => Math.max(-1, x));
@@ -2448,7 +2477,7 @@ function renderRange(){
       ? `${DD[NN - n10]} ~ ${DD[NN-1]}, ${n10}거래일 합계 기준`
       : `${DD[0]} ~ ${DD[NN-1]}, ${NN}거래일 합계 기준`;
   $('asofNote').hidden = !S.asof;
-  if (S.asof) $('asofNote').textContent = `과거 시점 보기: ${S.asof} 장 마감 기준 순위입니다. 오른쪽 끝 "기준일 이후 수익률"은 그날 종가에서 최신 종가까지의 변화입니다. 지지선, 실적, PER은 최신 기준이고, 상세 창은 이 날짜 기준으로 열립니다.`;
+  if (S.asof) $('asofNote').textContent = `과거 시점 보기: ${S.asof} 장 마감 기준 순위입니다. 오른쪽 끝 "기준일 이후 수익률"은 그날 종가에서 고른 끝날(기본은 최신) 종가까지의 변화입니다. 지지선, 실적, PER은 최신 기준이고, 상세 창은 이 날짜 기준으로 열립니다.`;
 }
 const SCOLS = [
   {k: 'name', t: '섹터'}, {k: 'n', t: '종목 수'}, {k: 'cap', t: '시총 합(억)'}, {k: 'rt', t: '등락률'},
@@ -2498,7 +2527,7 @@ function mpCell(sec){
 }
 function secRetSince(sec){
   let w = 0, s = 0;
-  DATA.forEach(r => { if (r.sec === sec && r.h && r.h.ret !== null && r.h.cap) { w += r.h.cap; s += r.h.ret * r.h.cap; } });
+  DATA.forEach(r => { const v = r.h ? retSince(r) : null; if (r.sec === sec && v !== null && r.h.cap) { w += r.h.cap; s += v * r.h.cap; } });
   return w ? s / w : null;
 }
 // 선진입: 이번 달 진행 순위가 최하위권이고, 다음 TOP 예상이 1~2개월 뒤에 시작되면 [진입 검토 · 선진입]
@@ -2647,7 +2676,7 @@ function pickStocks(){
       if (qAvg !== null && Q(r) < qAvg) cool += 5;
       if (cool === 10) why.push('섹터 평균보다 덜 오름');
       const total = H ? (flow + earn + cool) / 65 * 100 : flow + pos + earn + pat + cool;   // 기준일 모드는 65점 만점을 100점으로 환산
-      return {r, sec, total, flow, pos, earn, pat, cool, why, ret: H ? r.h.ret : null, lab: secLab[sec]};
+      return {r, sec, total, flow, pos, earn, pat, cool, why, ret: H ? retSince(r) : null, lab: secLab[sec]};
     }).sort((x, y) => y.total - x.total).slice(0, PICK.perSec);
     out.push(...scored);
   });
@@ -2655,7 +2684,7 @@ function pickStocks(){
 }
 function renderPicks(){
   const list = pickStocks();
-  const asofTxt = S.asof ? ` 지금은 기준일 ${S.asof} 모드라서 그날 기준 주기의 [단기]·[선진입] 섹터와 그날까지의 수급·등락률로 다시 골랐고, 그날 기준 값이 없는 위치(지지·저항)와 패턴 점수는 빼고 나머지 65점을 100점으로 환산했습니다. 실적은 최신 결산 기준이고, "기준일 이후"는 그날 종가에서 최신 종가까지의 등락입니다.` : '';
+  const asofTxt = S.asof ? ` 지금은 기준일 ${S.asof} 모드라서 그날 기준 주기의 [단기]·[선진입] 섹터와 그날까지의 수급·등락률로 다시 골랐고, 그날 기준 값이 없는 위치(지지·저항)와 패턴 점수는 빼고 나머지 65점을 100점으로 환산했습니다. 실적은 최신 결산 기준이고, "기준일 이후"는 그날 종가에서 고른 끝날(기본은 최신) 종가까지의 등락입니다.` : '';
   $('pickNote').textContent = `[단기]와 [선진입] 섹터 안에서 시총 ${fmt(PICK.minCap)}억 이상, 최근 20일 평균 거래대금 ${PICK.minTv}억 이상, 3달 등락률 +${PICK.maxQ}% 이하인 종목만 골라 점수를 매겼습니다. 수급 40점(외국인·기관 한달 합산 순매수의 시총 대비 섹터 내 순위, 10일 순매수 여부, 한달 중 순매수한 날 비율), 위치 25점(지지선과 가까울수록, 위쪽 저항선까지 여유가 클수록), 실적 15점(흑자, 섹터 중간보다 낮은 PER), 패턴 10점(급등 직전 패턴 유사도), 과열 회피 10점(1년·3달 등락률이 섹터 평균보다 낮음)이고 섹터마다 상위 ${PICK.perSec}개를 보여줍니다. 점수 기준은 제가 정한 가설이라 매수 추천이 아니며, 이 기준이 실제로 잘 맞았는지는 따로 검증되지 않았습니다.` + asofTxt;
   if (!list.length) { $('pickRows').innerHTML = `<tr><td colspan="11" class="empty">조건에 맞는 후보가 없습니다.</td></tr>`; return; }
   let prev = null, rank = 0;
@@ -2752,6 +2781,7 @@ $('secRows').addEventListener('click', e => {
 });
 $('flowBtn').onclick = () => { S.flowOpen = !S.flowOpen; render(); };
 function render(){
+  if (S.asof) fillRetTo();
   document.body.classList.toggle('pat', S.view === 'pat');
   document.body.classList.toggle('secv', S.view === 'sec');
   $('rankTop').hidden = S.view === 'pat';
@@ -2795,7 +2825,7 @@ function render(){
     const a = AA(r, S.per), b = BB(r, S.per), cls = cc(a.net), icls = cc(b.net);
     const sn = a.net + b.net, sp = a.pct + b.pct, scls = cc(sn);
     const o = AA(r, OTHER[S.per]), oi = BB(r, OTHER[S.per]);
-    const rt = S.asof ? r.h.ret : null;
+    const rt = S.asof ? retSince(r) : null;
     const ctx = {rank: off + i + 1, a, b, sn, sp, o, oi, rt};
     return `<tr tabindex="0" data-code="${r.code}">${vcols().map(c => c.cell(r, ctx)).join('')}</tr>`;
   }).join('') : `<tr><td colspan="${vcols().length}" class="empty">${S.watch === 'W' && !WATCH.size ? '관심종목이 없습니다. 종목 왼쪽의 ☆를 눌러 추가해 보세요.' : '조건에 맞는 종목이 없습니다. 시총 최소값을 낮추거나 검색어를 지워 보세요.'}</td></tr>`;
