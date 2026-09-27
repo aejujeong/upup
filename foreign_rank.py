@@ -1962,6 +1962,8 @@ td.st{text-align:center;width:44px}
       <div class="seg" id="mkt">
         <button data-v="ALL" class="on">전체</button><button data-v="코스피">코스피</button><button data-v="코스닥">코스닥</button>
       </div></div>
+    <div class="field"><label>수급</label>
+      <div class="seg" id="allf"><button data-v="ALL" class="on">전체</button><button data-v="POS" title="외국인·기관 모두, 이 기간과 비교 기간 모두 순매수">모두 순매수</button></div></div>
     <div class="field"><label>지지선</label>
       <div class="seg" id="srf">
         <button data-v="ALL" class="on">전체</button><button data-v="AT">근접만</button><button data-v="IN">구간 안</button><button data-v="APP">접근 포함</button>
@@ -2126,7 +2128,7 @@ const CREF = __CYCREF__;
 const REFBY = Object.fromEntries(((CREF && CREF.secs) || []).map(x => [x.sec.replace(/\s/g, ''), x]));
 const refOf = sec => REFBY[(sec || '').replace(/\s/g, '')];
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:false, myMin:2, myMax:12, view:'rank', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
+const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', allf:'ALL', flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:false, myMin:2, myMax:12, view:'rank', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
 const RT = (r, p) => S.asof ? (r.h ? r.h.rt[p] : null) : (r.rt ? r.rt[p] : null);   // 기간 등락률
 const AA = (r, p) => S.asof ? r.h.a[p] : r.a[p];   // 외국인 (기준일 반영)
 const BB = (r, p) => S.asof ? r.h.b[p] : r.b[p];   // 기관 (기준일 반영)
@@ -2312,6 +2314,12 @@ function plCell(r){
   return r.eps > 0 ? '<span class="pl">흑자</span>' : '<span class="pl loss">적자</span>';
 }
 // 지지선 상태: at 지지선 근접 / in 지지 구간 안 / app 구간 접근 (모두 최신 종가 기준)
+// 수급 모두 순매수: 외국인·기관 모두, 지금 보는 기간과 비교 기간(한달 또는 전날) 모두 플러스 (표의 수급 칸이 전부 빨간색)
+function allPos(r){
+  if (S.allf !== 'POS') return true;
+  const o = OTHER[S.per];
+  return AA(r, S.per).net > 0 && BB(r, S.per).net > 0 && AA(r, o).net > 0 && BB(r, o).net > 0;
+}
 function srOk(r){
   if (S.sr === 'ALL') return true;
   if (S.asof && !(r.h && r.h.sr)) return true;         // 그날 기준 지지선 기록이 없으면 거르지 않음
@@ -2455,7 +2463,7 @@ function renderPat(){
     const r = BY[m.code]; if (!r) return false;
     return (S.watch === 'ALL' || WATCH.has(r.code)) && (!S.sec || r.sec === S.sec) &&
       (S.pf === 'ALL' || (S.pf === 'P' ? r.eps > 0 : (r.eps !== null && r.eps < 0))) &&
-      (S.mkt === 'ALL' || r.mkt === S.mkt) && srOk(r) && r.cap >= S.minCap &&
+      (S.mkt === 'ALL' || r.mkt === S.mkt) && srOk(r) && r.cap >= S.minCap && allPos(r) &&
       (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q));
   });
   $('patInfo').textContent = `유사도 상위 ${fmt(PAT.match.length)}개 중 조건에 맞는 ${fmt(list.length)}개. 종목을 누르면 위에 비교 차트가 나옵니다.`;
@@ -3130,7 +3138,7 @@ function render(){
     (!S.sub || (r.sub || '미분류') === S.sub) &&
     (S.pf === 'ALL' || (S.pf === 'P' ? r.eps > 0 : (r.eps !== null && r.eps < 0))) &&
     (S.mkt === 'ALL' || r.mkt === S.mkt) &&
-    srOk(r) &&
+    srOk(r) && allPos(r) &&
     r.cap >= S.minCap &&
     (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q)));
   const total = rows.length;
@@ -3523,6 +3531,7 @@ function fillSubSelect(){
 }
 $('subf').onchange = e => { S.sub = e.target.value; S.page = 1; render(); };
 seg($('srf'), v => S.sr = v);
+seg($('allf'), v => S.allf = v);
 $('sort').onchange = e => { S.sort = e.target.value; S.dir = (S.sort === 'dist' || S.sort === 'per') ? 1 : -1; S.page = 1; render(); };
 $('minCap').oninput = e => { S.minCap = Number(e.target.value) || 0; S.page = 1; render(); };
 $('top').onchange = e => { S.top = Number(e.target.value); S.page = 1; render(); };
