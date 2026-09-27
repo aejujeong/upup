@@ -1195,21 +1195,15 @@ def sector_cycles(rows, series, now=None, agg=None, quiet=False):
             late = lambda w: w["st"] == "past" and now - w["hi"] > 1
             soon = lambda w: (w["st"] == "past" and now - w["hi"] <= 1) or w["st"] == "now" or w["lo"] - now <= CYCLE_SOON
             soon_top = lambda w: w["st"] == "now" or (w["st"] == "future" and w["lo"] - now <= CYCLE_SOON)   # TOP 쪽은 지난 예상에 여유 없음
-            if neutral:                                     # 중립: 예상 세 가지를 다 세서 이번 달~다음 달 방향을 봄
-                win = lambda L: [w for _, _, w in L if w["st"] != "past" and w["lo"] <= now + CYCLE_SOON]
-                ct, cb = len(win(nT)), len(win(nB))
-                prevname = "TOP" if cur_k == "T" else "최하위"
-                why = (f"중립({prevname} 이후 {gap}개월): 가까운 TOP 예상 {ct}개 > 최하위 예상 {cb}개" if ct >= 2 and ct > cb
-                       else f"중립({prevname} 이후 {gap}개월): 뚜렷한 방향 없음 (가까운 TOP 예상 {ct}개, 최하위 예상 {cb}개)")
-            elif cur_k == "B":
-                if sw_win is None:
-                    why = "TOP 전환 예상 불가"
-                elif sw_win["st"] == "past":
-                    why = "TOP 전환 예상 지남, 지연 중"
-                elif soon_top(sw_win):
-                    why = "TOP 전환 다가옴"
-                else:
-                    why = "TOP 전환까지 시간 남음"
+            countwise = neutral or cur_k == "B"
+            if countwise:                                   # 최하위 구간·중립: 재진입·전환·한 바퀴 예상을 모두 세서 이번 달~다음 달 방향을 봄
+                win = lambda L: [(nm, w) for nm, _, w in L if w["st"] != "past" and w["lo"] <= now + CYCLE_SOON and w["hi"] >= now]
+                wt, wb = win(nT), win(nB)
+                ct, cb = len(wt), len(wb)
+                lst = lambda W: ", ".join(f"{w['txt']}({nm})" for nm, w in W) or "없음"
+                head = f"중립({'TOP' if cur_k == 'T' else '최하위'} 이후 {gap}개월)" if neutral else "최하위 구간"
+                why = (f"{head}: 이번 달~다음 달 TOP 예상 {ct}개 > 최하위 예상 {cb}개 (TOP {lst(wt)} / 최하위 {lst(wb)})" if ct >= 1 and ct > cb
+                       else f"{head}: 가까운 TOP 예상 {ct}개, 최하위 예상 {cb}개로 뚜렷하지 않음")
             else:
                 tnext = min(futT, key=lambda w: w["lo"]) if futT else None
                 if sw_win is None:
@@ -1224,13 +1218,17 @@ def sector_cycles(rows, series, now=None, agg=None, quiet=False):
                     why = "최하위 전환까지 여유, TOP 재진입 먼저"
                 else:
                     why = "최하위 전환까지 여유"
-            good = why in ("TOP 전환 다가옴", "최하위 전환까지 여유, TOP 재진입 먼저") or (neutral and "> 최하위" in why)
-            first_t = min((w["lo"] for w in futT), default=None)
-            first_b = min((w["lo"] for w in futB), default=None)
-            if good and first_t is None:
-                good = False; why += " → 단, 앞으로 올 TOP 예상 없음"
-            elif good and first_b is not None and first_b < first_t:
-                good = False; why += " → 단, 최하위 예상이 TOP보다 먼저"
+            if countwise:
+                good = "> 최하위" in why
+                overlap = False                              # 개수로 TOP이 더 많으면 겹침으로 막지 않음
+            else:
+                good = why == "최하위 전환까지 여유, TOP 재진입 먼저"
+                first_t = min((w["lo"] for w in futT), default=None)
+                first_b = min((w["lo"] for w in futB), default=None)
+                if good and first_t is None:
+                    good = False; why += " → 단, 앞으로 올 TOP 예상 없음"
+                elif good and first_b is not None and first_b < first_t:
+                    good = False; why += " → 단, 최하위 예상이 TOP보다 먼저"
             label = "단기" if good and not overlap else ("관망 · 겹침" if good and overlap else "관망")
             if overlap:
                 why += " → 단, TOP·최하위 예상 겹침"
@@ -2731,7 +2729,7 @@ function renderCycle(){
   }
   $('cycTitle').textContent = `섹터 순환 주기 (${CYC.from} ~ ${CYC.to}, ${CYC.months}개월, ${CYC.nsec}개 섹터)` + (S.asof ? ` · 기준일 ${S.asof}` : '');
   document.body.classList.toggle('asofmode', !!S.asof);
-  $('cycNote').textContent = `매달 섹터별 한달 등락률(시총 가중)로 순위를 매겨 상위 ${CYC.top}개를 TOP, 하위 ${CYC.top}개를 최하위로 기록했습니다. 재진입은 같은 명단에 다시 들어오기까지의 평균 개월, 전환은 한 구간이 시작된 뒤 반대쪽 구간이 시작되기까지의 평균, 한 바퀴는 같은 쪽 구간이 다시 시작되기까지의 평균입니다. 다음 시기는 기준 달에 평균을 더한 예상이고, 예상이 지금부터 ${CYC.soon}개월 안이면 "다가옴/임박", TOP과 최하위 예상이 지금부터 3개월 안에서 한 달이라도 겹치면 "겹침"으로 봅니다(그보다 먼 훗날의 겹침은 보지 않음). 마지막으로 TOP이나 최하위에 든 뒤 2개월 이상 중간권에만 있던 섹터는 [중립]으로 보고, 재진입·전환·한 바퀴 예상 중 이번 달~다음 달에 걸린 TOP 예상이 2개 이상이고 최하위 예상보다 많을 때만 단기로 봅니다. 단기 조건은 맞는데 겹침 때문에 빠진 섹터는 [관망 · 겹침]으로 따로 표시해서, 겹침이 정말 피해야 할 신호인지 검증 표에서 확인할 수 있게 했습니다. [단기]는 TOP 전환이 곧 오거나 최하위 전환 전에 TOP 재진입이 먼저 올 것으로 보이는 섹터로 짧게 보는 매매용이며(TOP 구간이면 10일 평균 순위가 한 달 전보다 나빠지는 중이 아니어야 함), [선진입]은 미리 들어가는 용도로, 섹터 순위(하루하루의 최근 20거래일 등락률 순위를 기준일까지 10거래일 동안 평균 낸 것)가 최하위 ${(CYC.pre || {}).bottom || 10}위 안으로 눌려 있고, 이번 달~다다음 달에 걸친 TOP 예상 개수가 최하위 예상 개수보다 많을 때입니다. 지금 TOP 구간이면 재진입 예상만으로는 안 되고 전환이나 한 바퀴 예상도 그 기간에 있어야 합니다. 그리고 이 순위가 한 달 전(20거래일 전, 같은 방식으로 10거래일 평균)보다 나아졌어야 합니다(하락이 둔화되는 중). 하루 튄 날에 판단이 흔들리지 않게 평균을 씁니다. 섹터 전체의 외국인+기관 한달 순매수가 플러스면 "수급 ✓"를 붙이고, 위의 "수급 조건: 거르기"를 고르면 순매도인 섹터는 [관망 · 수급 약함]으로 뺍니다. TOP 예상(재진입·전환·한 바퀴) 중 두 가지 이상이 들어오면 ★. 이번 달 최하위권인데 이 조건에 못 미치면 [관망 · 하락 주의]로 표시합니다. [추세 지속]은 주기상으로는 관망이지만 지금 TOP 구간이고 이번 달도 상위 절반이며, 구글 시트의 1년 관점이 별 2개 이상인 섹터입니다(큰 흐름을 탄 섹터를 주기 규칙이 놓치지 않도록). 별점은 지금 시점의 판단이라 기준일(과거 날짜) 모드에서는 쓰지 않습니다. 과거 주기가 앞으로도 반복된다는 보장은 없고, 횟수가 적은 섹터일수록 평균이 흔들립니다. 지금 달(${CYC.now})은 진행 중이라 주기 계산에서는 뺐고, 대신 "이번 달 진행" 칸에 지난달 마지막 거래일부터 오늘까지의 섹터 등락률 순위를 따로 보여줍니다(TOP ${CYC.top}·최하위 ${CYC.top} 안이면 표시).`;
+  $('cycNote').textContent = `매달 섹터별 한달 등락률(시총 가중)로 순위를 매겨 상위 ${CYC.top}개를 TOP, 하위 ${CYC.top}개를 최하위로 기록했습니다. 재진입은 같은 명단에 다시 들어오기까지의 평균 개월, 전환은 한 구간이 시작된 뒤 반대쪽 구간이 시작되기까지의 평균, 한 바퀴는 같은 쪽 구간이 다시 시작되기까지의 평균입니다. 다음 시기는 기준 달에 평균을 더한 예상이고, 예상이 지금부터 ${CYC.soon}개월 안이면 "다가옴/임박", TOP과 최하위 예상이 지금부터 3개월 안에서 한 달이라도 겹치면 "겹침"으로 봅니다(그보다 먼 훗날의 겹침은 보지 않음). 마지막으로 TOP이나 최하위에 든 뒤 2개월 이상 중간권에만 있던 섹터는 [중립]으로 봅니다. 최하위 구간과 중립 섹터는 재진입·전환·한 바퀴 예상을 모두 세서, 이번 달~다음 달에 걸린 TOP 예상이 1개 이상이고 최하위 예상보다 많으면 단기로 봅니다(이때는 겹침으로 막지 않음). 단기 조건은 맞는데 겹침 때문에 빠진 섹터는 [관망 · 겹침]으로 따로 표시해서, 겹침이 정말 피해야 할 신호인지 검증 표에서 확인할 수 있게 했습니다. [단기]는 TOP 예상이 곧 오거나(최하위 구간·중립) 최하위 전환 전에 TOP 재진입이 먼저 올 것으로 보이는(TOP 구간) 섹터로 짧게 보는 매매용이며(TOP 구간이면 10일 평균 순위가 한 달 전보다 나빠지는 중이 아니어야 함), [선진입]은 미리 들어가는 용도로, 섹터 순위(하루하루의 최근 20거래일 등락률 순위를 기준일까지 10거래일 동안 평균 낸 것)가 최하위 ${(CYC.pre || {}).bottom || 10}위 안으로 눌려 있고, 이번 달~다다음 달에 걸친 TOP 예상 개수가 최하위 예상 개수보다 많을 때입니다. 지금 TOP 구간이면 재진입 예상만으로는 안 되고 전환이나 한 바퀴 예상도 그 기간에 있어야 합니다. 그리고 이 순위가 한 달 전(20거래일 전, 같은 방식으로 10거래일 평균)보다 나아졌어야 합니다(하락이 둔화되는 중). 하루 튄 날에 판단이 흔들리지 않게 평균을 씁니다. 섹터 전체의 외국인+기관 한달 순매수가 플러스면 "수급 ✓"를 붙이고, 위의 "수급 조건: 거르기"를 고르면 순매도인 섹터는 [관망 · 수급 약함]으로 뺍니다. TOP 예상(재진입·전환·한 바퀴) 중 두 가지 이상이 들어오면 ★. 이번 달 최하위권인데 이 조건에 못 미치면 [관망 · 하락 주의]로 표시합니다. [추세 지속]은 주기상으로는 관망이지만 지금 TOP 구간이고 이번 달도 상위 절반이며, 구글 시트의 1년 관점이 별 2개 이상인 섹터입니다(큰 흐름을 탄 섹터를 주기 규칙이 놓치지 않도록). 별점은 지금 시점의 판단이라 기준일(과거 날짜) 모드에서는 쓰지 않습니다. 과거 주기가 앞으로도 반복된다는 보장은 없고, 횟수가 적은 섹터일수록 평균이 흔들립니다. 지금 달(${CYC.now})은 진행 중이라 주기 계산에서는 뺐고, 대신 "이번 달 진행" 칸에 지난달 마지막 거래일부터 오늘까지의 섹터 등락률 순위를 따로 보여줍니다(TOP ${CYC.top}·최하위 ${CYC.top} 안이면 표시).`;
   const f1 = v => v === null || v === undefined ? '-' : fmt(v, 1).replace(/\.0$/, '');
   const tag = l => `<span class="tag ${l.startsWith('선진입') ? 'pre' : l.startsWith('단기') ? 'go' : l.startsWith('추세 지속') ? 'trend' : l.includes('하락 주의') ? 'warn' : l.startsWith('관망') ? 'wait' : 'hold'}">${esc(l)}</span>`;
   const stTxt = st => st === 'past' ? '<span class="st">지남</span>' : st === 'now' ? '<span class="st now">이번 달</span>' : '';
