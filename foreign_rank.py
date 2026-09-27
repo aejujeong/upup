@@ -1779,6 +1779,7 @@ body:not(.asofmode) .asofc{display:none}
 .mktwarn{background:#1A1A1A;color:#fff;border-radius:8px;padding:10px 14px;font-size:14px;font-weight:600;margin:0 0 8px}
 .flowok{display:inline-block;font-size:11px;font-weight:800;color:var(--sup);border:1px solid var(--sup);border-radius:999px;padding:1px 7px;margin-left:4px;vertical-align:middle}
 tr.morerow td{text-align:center;background:#fff !important;padding:10px}
+.tag.preweak{background:#fff;color:#1A1A1A;border:1px solid #1A1A1A}
 .tag.goweak{background:#fff;color:var(--red);border:1px solid var(--red)}
 .tag.warn{background:#fff;color:var(--red);border:1px solid var(--red)}
 .tag.wait{background:#EEE;color:var(--ink)}
@@ -2001,7 +2002,7 @@ td.st{text-align:center;width:44px}
     <h2 class="ph" id="cycTitle">섹터 순환 주기</h2>
     <div class="flowopt"><span>수급 조건</span><div class="seg" id="flowOpt"><button data-v="strict" class="on">거르기</button><button data-v="show">표시만</button></div>
       <span>추천 안정도</span><div class="seg" id="stabOpt"><button data-v="0" class="on">전체</button><button data-v="6">6일 이상</button></div>
-      <span class="note">거르기(기본): 섹터 외국인+기관 한달 순매도면 단기는 [단기 · 수급 약함]으로 아래에 두고, 선진입은 [관망 · 수급 약함]으로 뺌 / 표시만: 그대로 두고 순매수면 "수급 ✓"만 표시</span></div>
+      <span class="note">거르기(기본): 섹터 외국인+기관 한달 순매도면 [단기 · 수급 약함] / [선진입 · 수급 약함]으로 따로 표시해 추천 중 맨 아래에 둠 / 표시만: 그대로 두고 순매수면 "수급 ✓"만 표시</span></div>
     <p class="mktwarn" id="mktWarn" hidden></p>
     <p class="pnote" id="cycNote"></p>
     <div class="tbl"><table class="ptbl ctbl">
@@ -2742,9 +2743,9 @@ function secLabel(x){
   const pv = R.prev && R.prev.by[x.sec], worse = pv ? rk.rank >= pv.rank : false;   // 4) 한 달 전(20거래일 전) 평균 순위보다 나아졌어야 함
   // 5) 수급 확인: 섹터 전체 외국인+기관 한달(20거래일) 순매수가 플러스여야 함 (기준일 모드면 그날 기준)
   const SF = secFlow(x.sec), fnet = SF.net, flowTxt = SF.txt;
-  if (S.flowStrict && t.length > b.length && !onlyRe && !worse && fnet <= 0) {
-    return {label: '관망 · 수급 약함' + small, pre: false, weak: true,
-            why: `수급 약함: 선진입 조건은 맞지만 ${flowTxt}로 돈이 들어오지 않음 / ${lowTxt} / 원래 판단: [${x.label}] ${x.why}`};
+  if (S.flowStrict && t.length > b.length && !onlyRe && !worse && fnet <= 0) {     // 빼지 않고 '선진입 · 수급 약함'으로 남겨 정렬만 아래로
+    return {label: '선진입 · 수급 약함' + small, pre: true, weakPre: true,
+            why: `선진입 · 수급 약함: 선진입 조건은 맞지만 ${flowTxt} / ${lowTxt}, 이번 달~다다음 달 TOP 예상 ${list(t)} / 최하위 예상 ${list(b)} / 원래 판단: [${x.label}] ${x.why}`};
   }
   if (t.length > b.length && !onlyRe && !worse) {                        // 2) TOP 예상 > 최하위 예상, 3) TOP 구간이면 재진입만으로는 안 됨
     return {label: '선진입' + (t.length >= 2 ? ' ★' : '') + small, pre: true, strong: t.length >= 2, flow: fnet > 0,
@@ -2831,7 +2832,7 @@ function ensureStability(){
 const stabOf = sec => STAB.data && STAB.data.cnt ? (STAB.data.cnt[sec] || 0) : null;
 function cycRowsView(){
   // 과거 검증 성적순: 추세 지속 → 단기 → 선진입 ★ → 선진입 → 관망 …
-  const order = l => l.startsWith('추세 지속') ? 0 : l.startsWith('단기 · 수급 약함') ? 3.5 : l.startsWith('단기') ? 1 : l.startsWith('선진입 ★') ? 2 : l.startsWith('선진입') ? 3 : l.startsWith('관망 · 하락 주의') ? 5 : l.startsWith('관망 · 수급 약함') ? 4.5 : l.startsWith('관망') ? 4 : 6;
+  const order = l => l.startsWith('추세 지속') ? 0 : l.startsWith('단기 · 수급 약함') ? 3.5 : l.startsWith('선진입 · 수급 약함') ? 3.6 : l.startsWith('단기') ? 1 : l.startsWith('선진입 ★') ? 2 : l.startsWith('선진입') ? 3 : l.startsWith('관망 · 하락 주의') ? 5 : l.startsWith('관망 · 수급 약함') ? 4.5 : l.startsWith('관망') ? 4 : 6;
   return CYC.rows.map(x => ({...x, ...secLabel2(x)})).map((x, i) => ({x, i}))
     .sort((a, b) => order(a.x.label) - order(b.x.label) || (b.x.stars ?? -1) - (a.x.stars ?? -1) || a.i - b.i).map(o => o.x);
 }
@@ -2854,9 +2855,9 @@ function renderCycle(){
   }
   $('cycTitle').textContent = `섹터 순환 주기 (${CYC.from} ~ ${CYC.to}, ${CYC.months}개월, ${CYC.nsec}개 섹터)` + (S.asof ? ` · 기준일 ${S.asof}` : '');
   document.body.classList.toggle('asofmode', !!S.asof);
-  $('cycNote').textContent = `매달 섹터별 한달 등락률(시총 가중)로 순위를 매겨 상위 ${CYC.top}개를 TOP, 하위 ${CYC.top}개를 최하위로 기록했습니다. 재진입은 같은 명단에 다시 들어오기까지의 평균 개월, 전환은 한 구간이 시작된 뒤 반대쪽 구간이 시작되기까지의 평균, 한 바퀴는 같은 쪽 구간이 다시 시작되기까지의 평균입니다. 다음 시기는 기준 달에 평균을 더한 예상이고, 예상이 지금부터 ${CYC.soon}개월 안이면 "다가옴/임박", TOP과 최하위 예상이 지금부터 3개월 안에서 한 달이라도 겹치면 "겹침"으로 봅니다(그보다 먼 훗날의 겹침은 보지 않음). 마지막으로 TOP이나 최하위에 든 뒤 2개월 이상 중간권에만 있던 섹터는 [중립]으로 봅니다. 최하위 구간과 중립 섹터는 재진입·전환·한 바퀴 예상을 모두 세서, 이번 달~다음 달에 걸린 TOP 예상이 1개 이상이고 최하위 예상보다 많으면 단기로 봅니다(이때는 겹침으로 막지 않음). 단기 조건은 맞는데 겹침 때문에 빠진 섹터는 [관망 · 겹침]으로 따로 표시해서, 겹침이 정말 피해야 할 신호인지 검증 표에서 확인할 수 있게 했습니다. [단기]는 TOP 예상이 곧 오거나(최하위 구간·중립) 최하위 전환 전에 TOP 재진입이 먼저 올 것으로 보이는(TOP 구간) 섹터로 짧게 보는 매매용이며(TOP 구간이면 10일 평균 순위가 한 달 전보다 나빠지는 중이 아니어야 함), [선진입]은 미리 들어가는 용도로, 섹터 순위(하루하루의 최근 20거래일 등락률 순위를 기준일까지 10거래일 동안 평균 낸 것)가 최하위 ${(CYC.pre || {}).bottom || 10}위 안으로 눌려 있고, 이번 달~다다음 달에 걸친 TOP 예상 개수가 최하위 예상 개수보다 많을 때입니다. 지금 TOP 구간이면 재진입 예상만으로는 안 되고 전환이나 한 바퀴 예상도 그 기간에 있어야 합니다. 그리고 이 순위가 한 달 전(20거래일 전, 같은 방식으로 10거래일 평균)보다 나아졌어야 합니다(하락이 둔화되는 중). 하루 튄 날에 판단이 흔들리지 않게 평균을 씁니다. 섹터 전체의 외국인+기관 한달 순매수가 플러스면 "수급 ✓"를 붙이고, 기본값인 "수급 조건: 거르기"에서는 순매도인 단기를 [단기 · 수급 약함]으로 따로 표시해 추천 중 맨 아래로 보내고(과거 검증에서 수급 약한 단기는 플러스였지만 평균보다 덜 올랐음), 순매도인 선진입은 [관망 · 수급 약함]으로 뺍니다. 표는 과거 검증 성적순으로 추세 지속, 단기, 선진입 ★, 선진입, 단기 · 수급 약함 순서로 정렬합니다. TOP 예상(재진입·전환·한 바퀴) 중 두 가지 이상이 들어오면 ★. 판단 칸 아래 "최근 10거래일 중 ○일 추천"은 날마다 판단을 다시 계산해 추세 지속·단기·선진입이었던 날 수를 센 것이고, "추천 안정도: 6일 이상"을 고르면 그보다 적은 섹터는 접힌 쪽으로 보냅니다. 이번 달 최하위권인데 이 조건에 못 미치면 [관망 · 하락 주의]로 표시합니다. [추세 지속]은 주기상으로는 관망이지만 지금 TOP 구간이고, 10일 평균 순위가 상위 3분의 1이며, 섹터 외국인+기관 한달 순매수가 플러스인 섹터입니다(큰 흐름을 탄 섹터를 주기 규칙이 놓치지 않도록). 그날까지의 데이터로만 정해서 과거 날짜에서도 똑같이 계산됩니다. 같은 판단끼리는 구글 시트 '1년 관점' 별이 많은 섹터를 위에 둡니다(판단에는 쓰지 않음). 과거 주기가 앞으로도 반복된다는 보장은 없고, 횟수가 적은 섹터일수록 평균이 흔들립니다. 지금 달(${CYC.now})은 진행 중이라 주기 계산에서는 뺐고, 대신 "이번 달 진행" 칸에 지난달 마지막 거래일부터 오늘까지의 섹터 등락률 순위를 따로 보여줍니다(TOP ${CYC.top}·최하위 ${CYC.top} 안이면 표시).`;
+  $('cycNote').textContent = `매달 섹터별 한달 등락률(시총 가중)로 순위를 매겨 상위 ${CYC.top}개를 TOP, 하위 ${CYC.top}개를 최하위로 기록했습니다. 재진입은 같은 명단에 다시 들어오기까지의 평균 개월, 전환은 한 구간이 시작된 뒤 반대쪽 구간이 시작되기까지의 평균, 한 바퀴는 같은 쪽 구간이 다시 시작되기까지의 평균입니다. 다음 시기는 기준 달에 평균을 더한 예상이고, 예상이 지금부터 ${CYC.soon}개월 안이면 "다가옴/임박", TOP과 최하위 예상이 지금부터 3개월 안에서 한 달이라도 겹치면 "겹침"으로 봅니다(그보다 먼 훗날의 겹침은 보지 않음). 마지막으로 TOP이나 최하위에 든 뒤 2개월 이상 중간권에만 있던 섹터는 [중립]으로 봅니다. 최하위 구간과 중립 섹터는 재진입·전환·한 바퀴 예상을 모두 세서, 이번 달~다음 달에 걸린 TOP 예상이 1개 이상이고 최하위 예상보다 많으면 단기로 봅니다(이때는 겹침으로 막지 않음). 단기 조건은 맞는데 겹침 때문에 빠진 섹터는 [관망 · 겹침]으로 따로 표시해서, 겹침이 정말 피해야 할 신호인지 검증 표에서 확인할 수 있게 했습니다. [단기]는 TOP 예상이 곧 오거나(최하위 구간·중립) 최하위 전환 전에 TOP 재진입이 먼저 올 것으로 보이는(TOP 구간) 섹터로 짧게 보는 매매용이며(TOP 구간이면 10일 평균 순위가 한 달 전보다 나빠지는 중이 아니어야 함), [선진입]은 미리 들어가는 용도로, 섹터 순위(하루하루의 최근 20거래일 등락률 순위를 기준일까지 10거래일 동안 평균 낸 것)가 최하위 ${(CYC.pre || {}).bottom || 10}위 안으로 눌려 있고, 이번 달~다다음 달에 걸친 TOP 예상 개수가 최하위 예상 개수보다 많을 때입니다. 지금 TOP 구간이면 재진입 예상만으로는 안 되고 전환이나 한 바퀴 예상도 그 기간에 있어야 합니다. 그리고 이 순위가 한 달 전(20거래일 전, 같은 방식으로 10거래일 평균)보다 나아졌어야 합니다(하락이 둔화되는 중). 하루 튄 날에 판단이 흔들리지 않게 평균을 씁니다. 섹터 전체의 외국인+기관 한달 순매수가 플러스면 "수급 ✓"를 붙이고, 기본값인 "수급 조건: 거르기"에서는 순매도인 단기를 [단기 · 수급 약함]으로 따로 표시해 추천 중 맨 아래로 보내고(과거 검증에서 수급 약한 단기는 플러스였지만 평균보다 덜 올랐음), 순매도인 선진입도 [선진입 · 수급 약함]으로 같은 방식으로 표시합니다(3개월 검증에서 수급 약한 선진입이 평균보다 못하지 않았음). 표는 과거 검증 성적순으로 추세 지속, 단기, 선진입 ★, 선진입, 단기 · 수급 약함, 선진입 · 수급 약함 순서로 정렬합니다. TOP 예상(재진입·전환·한 바퀴) 중 두 가지 이상이 들어오면 ★. 판단 칸 아래 "최근 10거래일 중 ○일 추천"은 날마다 판단을 다시 계산해 추세 지속·단기·선진입이었던 날 수를 센 것이고, "추천 안정도: 6일 이상"을 고르면 그보다 적은 섹터는 접힌 쪽으로 보냅니다. 이번 달 최하위권인데 이 조건에 못 미치면 [관망 · 하락 주의]로 표시합니다. [추세 지속]은 주기상으로는 관망이지만 지금 TOP 구간이고, 10일 평균 순위가 상위 3분의 1이며, 섹터 외국인+기관 한달 순매수가 플러스인 섹터입니다(큰 흐름을 탄 섹터를 주기 규칙이 놓치지 않도록). 그날까지의 데이터로만 정해서 과거 날짜에서도 똑같이 계산됩니다. 같은 판단끼리는 구글 시트 '1년 관점' 별이 많은 섹터를 위에 둡니다(판단에는 쓰지 않음). 과거 주기가 앞으로도 반복된다는 보장은 없고, 횟수가 적은 섹터일수록 평균이 흔들립니다. 지금 달(${CYC.now})은 진행 중이라 주기 계산에서는 뺐고, 대신 "이번 달 진행" 칸에 지난달 마지막 거래일부터 오늘까지의 섹터 등락률 순위를 따로 보여줍니다(TOP ${CYC.top}·최하위 ${CYC.top} 안이면 표시).`;
   const f1 = v => v === null || v === undefined ? '-' : fmt(v, 1).replace(/\.0$/, '');
-  const tag = l => `<span class="tag ${l.startsWith('선진입') ? 'pre' : l.startsWith('단기 · 수급 약함') ? 'goweak' : l.startsWith('단기') ? 'go' : l.startsWith('추세 지속') ? 'trend' : l.includes('하락 주의') ? 'warn' : l.startsWith('관망') ? 'wait' : 'hold'}">${esc(l)}</span>`;
+  const tag = l => `<span class="tag ${l.startsWith('선진입 · 수급 약함') ? 'preweak' : l.startsWith('선진입') ? 'pre' : l.startsWith('단기 · 수급 약함') ? 'goweak' : l.startsWith('단기') ? 'go' : l.startsWith('추세 지속') ? 'trend' : l.includes('하락 주의') ? 'warn' : l.startsWith('관망') ? 'wait' : 'hold'}">${esc(l)}</span>`;
   const stTxt = st => st === 'past' ? '<span class="st">지남</span>' : st === 'now' ? '<span class="st now">이번 달</span>' : '';
   const preds = L => L && L.length ? `<ul class="pred">${L.map(x => `<li><b>${x.txt}</b> ${stTxt(x.st)} <span class="st">(${x.nm}: ${x.base})</span></li>`).join('')}</ul>` : '-';
   const hist = G => G.length ? G.map(g => '(' + g.join(', ') + ')').join(', ') : '';
