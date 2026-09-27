@@ -1776,6 +1776,7 @@ body:not(.asofmode) .asofc{display:none}
 .flowopt{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:0 0 10px;font-size:14px}
 .flowopt > span:first-child{font-weight:700}
 .flowopt .note{margin:0;font-size:12px}
+.myn{width:52px;padding:2px 6px;font-size:13px;margin:0 3px}
 .mktwarn{background:#1A1A1A;color:#fff;border-radius:8px;padding:10px 14px;font-size:14px;font-weight:600;margin:0 0 8px}
 .flowok{display:inline-block;font-size:11px;font-weight:800;color:var(--sup);border:1px solid var(--sup);border-radius:999px;padding:1px 7px;margin-left:4px;vertical-align:middle}
 tr.morerow td{text-align:center;background:#fff !important;padding:10px}
@@ -2001,6 +2002,8 @@ td.st{text-align:center;width:44px}
     </table></div>
     <h2 class="ph" id="cycTitle">섹터 순환 주기</h2>
     <div class="flowopt"><span>수급 조건</span><div class="seg" id="flowOpt"><button data-v="strict" class="on">거르기</button><button data-v="show">표시만</button></div>
+      <span>내 기준</span><div class="seg" id="myOpt"><button data-v="off" class="on">끔</button><button data-v="on">켬</button></div>
+      <span class="note">이번 달 <input id="myMin" type="number" min="1" max="40" value="2" class="myn">~<input id="myMax" type="number" min="1" max="40" value="12" class="myn">위 + 10일 평균 순위가 한 달 전보다 상승(▲)</span>
       <span>추천 안정도</span><div class="seg" id="stabOpt"><button data-v="0" class="on">전체</button><button data-v="6">6일 이상</button></div>
       <span class="note">거르기(기본): 섹터 외국인+기관 한달 순매도면 [단기 · 수급 약함] / [선진입 · 수급 약함]으로 따로 표시해 추천 중 맨 아래에 둠 / 표시만: 그대로 두고 순매수면 "수급 ✓"만 표시</span></div>
     <p class="mktwarn" id="mktWarn" hidden></p>
@@ -2114,7 +2117,7 @@ const CREF = __CYCREF__;
 const REFBY = Object.fromEntries(((CREF && CREF.secs) || []).map(x => [x.sec.replace(/\s/g, ''), x]));
 const refOf = sec => REFBY[(sec || '').replace(/\s/g, '')];
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, view:'rank', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
+const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:false, myMin:2, myMax:12, view:'rank', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
 const RT = (r, p) => S.asof ? (r.h ? r.h.rt[p] : null) : (r.rt ? r.rt[p] : null);   // 기간 등락률
 const AA = (r, p) => S.asof ? r.h.a[p] : r.a[p];   // 외국인 (기준일 반영)
 const BB = (r, p) => S.asof ? r.h.b[p] : r.b[p];   // 기관 (기준일 반영)
@@ -2864,9 +2867,11 @@ function renderCycle(){
   ensureStability();
   const allRows = cycRowsView(), weakStab = x => S.stabMin && isPick(x.label) && (stabOf(x.sec) ?? 99) < S.stabMin;
   const isRest = x => x.label.startsWith('관망') || x.label.startsWith('판단 보류') || weakStab(x);
-  const mainRows = allRows.filter(x => !isRest(x)), restRows = allRows.filter(isRest);
+  let mainRows = allRows.filter(x => !isRest(x)), restRows = allRows.filter(isRest);
+  if (S.my) { mainRows = allRows.filter(x => myOk(x.sec)); restRows = []; }
   const moreRow = restRows.length ? `<tr class="morerow"><td colspan="30"><button class="mbtn" id="cycMore">${S.cycAll ? `관망 ${restRows.length}개 접기 ▴` : `관망 ${restRows.length}개 더보기 ▾`}</button></td></tr>` : '';
-  $('cycRows').innerHTML = (S.cycAll ? mainRows.concat(restRows) : mainRows).map(x => `<tr data-sec="${esc(x.sec)}">
+  const emptyMy = S.my && !mainRows.length ? `<tr><td colspan="30" class="empty">내 기준(이번 달 ${S.myMin}~${S.myMax}위 + 순위 상승)에 맞는 섹터가 없습니다.</td></tr>` : '';
+  $('cycRows').innerHTML = emptyMy + (S.cycAll ? mainRows.concat(restRows) : mainRows).map(x => `<tr data-sec="${esc(x.sec)}">
     <td class="nw">${tag(x.label)}${x.flow ? ' <span class="flowok" title="섹터 외국인+기관 한달 순매수 플러스">수급 ✓</span>' : ''}${(() => { const v = stabOf(x.sec); return v === null ? '' : `<div class="hist">최근 ${STAB.data.n}거래일 중 ${v}일 추천</div>`; })()}</td>
     <td class="name nw">${esc(x.sec)}</td><td class="nw">${fmt(x.n)}</td>
     <td class="nw">${!x.cur ? '-' : x.cur.k === 'N' ? `중립<div class="hist">${x.cur.prev === 'T' ? 'TOP' : '최하위'} 이후 ${x.cur.gap}개월 (마지막 ${x.cur.last})</div>` : (x.cur.k === 'T' ? 'TOP 구간' : '최하위 구간') + ` (${x.cur.start}~)`}</td>
@@ -2913,7 +2918,7 @@ $('refBox').addEventListener('click', e => {
 const PICK = {minCap: 1000, minTv: 10, maxQ: 50, perSec: 5};
 function pickStocks(){
   if (!CYC || !CYC.rows) return [];
-  const views = cycRowsView().filter(x => isPick(x.label) && !(S.stabMin && (stabOf(x.sec) ?? 99) < S.stabMin));
+  const views = cycRowsView().filter(x => isPick(x.label) && !(S.stabMin && (stabOf(x.sec) ?? 99) < S.stabMin) && (!S.my || myOk(x.sec)));
   const goSecs = views.map(x => x.sec), secLab = Object.fromEntries(views.map(x => [x.sec, x.label]));
   const patBy = Object.fromEntries(((PAT && PAT.match) || []).map(m => [m.code, m.score]));
   const out = [];
@@ -3465,6 +3470,15 @@ seg($('mkt'), v => S.mkt = v);
 seg($('pf'), v => S.pf = v);
 seg($('flowOpt'), v => S.flowStrict = v === 'strict');
 seg($('stabOpt'), v => S.stabMin = Number(v));
+seg($('myOpt'), v => S.my = v === 'on');
+['myMin', 'myMax'].forEach(id => $(id).addEventListener('change', e => { S[id] = Math.max(1, Number(e.target.value) || 1); if (S.view === 'sec') renderSec(); }));
+// 내 기준: 이번 달 진행 순위가 myMin~myMax위 안이고, 10일 평균 순위가 한 달 전보다 올라온 섹터
+function myOk(sec){
+  const d = MP.data, R = RR.data && !RR.data.none ? RR.data : null;
+  if (!d || !d.by || !d.by[sec] || !R || !R.cur.by[sec] || !R.prev || !R.prev.by[sec]) return false;
+  const rk = d.by[sec].rank;
+  return rk >= S.myMin && rk <= S.myMax && R.cur.by[sec].rank < R.prev.by[sec].rank;
+}
 seg($('view'), v => S.view = v);
 (() => {
   const sel = $('asof');
