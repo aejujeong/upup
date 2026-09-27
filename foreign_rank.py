@@ -1074,9 +1074,11 @@ def cycle_backtest(rows, series, agg, first_m, now_m, hn=None, days_net=None):
                     g[mm] = g.get(mm, 0) + v
         has_m = set(dm)
     months = []
-    for m in range(first_m + CYCLE_MONTHS + 1, now_m - 2):          # 이후 2개월이 끝난 달까지만
-        if m not in bots or m + 1 not in tops or m + 2 not in tops:
+    months2 = []
+    for m in range(first_m + CYCLE_MONTHS + 1, now_m - 1):          # 이후 1개월이 끝난 달까지 (2개월 기준은 2개월이 끝난 달까지만)
+        if m not in bots or m + 1 not in tops:
             continue
+        two = m + 2 in tops and m + 2 < now_m
         res = sector_cycles(rows, series, now=m, agg=agg, quiet=True)   # m월 중에 알 수 있던 정보(그 전 달까지)로 계산
         if not res:
             continue
@@ -1084,12 +1086,15 @@ def cycle_backtest(rows, series, agg, first_m, now_m, hn=None, days_net=None):
         rk_of = lambda mm: {x: i + 1 for i, (_, x) in enumerate(sorted(((R[s_][mm], s_) for s_ in secs if mm in R[s_]), reverse=True))}
         rk_now, rk_prev = rk_of(m), rk_of(m - 1)
         months.append(_mfmt(m))
+        if two:
+            months2.append(_mfmt(m))
         for x in res["rows"]:
             s_ = x["sec"]
-            if m + 1 not in R.get(s_, {}) or m + 2 not in R.get(s_, {}):
+            if m + 1 not in R.get(s_, {}):
                 continue
-            hit2 = s_ in tops[m + 1] or s_ in tops[m + 2]                    # 선진입: 1~2개월
-            ret2 = ((1 + R[s_][m + 1]) * (1 + R[s_][m + 2]) - 1) * 100
+            ok2 = two and m + 2 in R.get(s_, {})
+            hit2 = ok2 and (s_ in tops[m + 1] or s_ in tops[m + 2])          # 선진입: 1~2개월
+            ret2 = ((1 + R[s_][m + 1]) * (1 + R[s_][m + 2]) - 1) * 100 if ok2 else None
             hit1, ret1 = s_ in tops[m + 1], R[s_][m + 1] * 100                # 단기: 다음 1개월
             fo = (SF.get(s_, {}).get(m, 0) > 0) if SF and m in has_m else None
             kind = pre_kind(x, m, s_ in low, rk_now.get(s_), rk_prev.get(s_), fo)
@@ -1107,13 +1112,16 @@ def cycle_backtest(rows, series, agg, first_m, now_m, hn=None, days_net=None):
                    "ovl": (kind is None and x["label"].startswith("관망 · 겹침"), hit1, ret1),
                    "all1": (True, hit1, ret1)}
             for k, (on, h_, r_) in sel.items():
-                if on:
-                    g = groups[k]; g["n"] += 1; g["hit"] += int(h_); g["ret"] += r_
+                if on and r_ is not None:
+                    g = groups[k]; g["n"] += 1; g["hit"] += int(h_); g["ret"] += r_; g.setdefault("rs", []).append(r_)
     for g in groups.values():
+        rs = sorted(g.pop("rs", []))
         g["rate"] = round(g["hit"] / g["n"] * 100, 1) if g["n"] else None
         g["ret"] = round(g["ret"] / g["n"], 2) if g["n"] else None
+        g["med"] = round((rs[len(rs) // 2] if len(rs) % 2 else (rs[len(rs) // 2 - 1] + rs[len(rs) // 2]) / 2), 2) if rs else None
+        g["loss"] = round(sum(1 for v in rs if v < 0) / len(rs) * 100, 1) if rs else None     # 마이너스로 끝난 비율
     print(f"진입 판단 과거 검증: {len(months)}개월, 선진입 {groups['pre']['n']}건, 하락 주의 {groups['warn']['n']}건, 단기 {groups['short']['n']}건")
-    return {"months": months, "groups": groups, "top": CYCLE_TOP, "bottom": PRE_BOTTOM, "ahead": list(PRE_AHEAD)}
+    return {"months": months, "months2": months2, "groups": groups, "top": CYCLE_TOP, "bottom": PRE_BOTTOM, "ahead": list(PRE_AHEAD)}
 
 
 def sector_cycles(rows, series, now=None, agg=None, quiet=False):
@@ -1963,7 +1971,7 @@ td.st{text-align:center;width:44px}
     <h2 class="ph">진입 판단 기준 과거 검증</h2>
     <p class="pnote" id="cvNote"></p>
     <div class="tbl"><table class="ptbl vtbl">
-      <thead><tr><th>기준</th><th>보는 기간</th><th>해당 건수</th><th>기간 안 TOP 진입</th><th>진입 비율</th><th>기간 평균 수익률</th><th>전체 평균 대비</th></tr></thead>
+      <thead><tr><th>기준</th><th>보는 기간</th><th>해당 건수</th><th>평균 수익률</th><th>평균 대비</th><th>중간값 수익률</th><th>중간값 대비</th><th>손실 비율</th><th>TOP 진입 비율 (참고)</th></tr></thead>
       <tbody id="cvRows"></tbody>
     </table></div>
     <h2 class="ph">단기·선진입·추세 지속 섹터 후보 종목</h2>
@@ -2871,12 +2879,19 @@ function renderCycleValid(){
   const v = CYC0 && CYC0.valid;
   if (!v || !v.months || !v.months.length) { $('cvNote').textContent = '검증할 과거 달이 아직 부족합니다.'; $('cvRows').innerHTML = ''; return; }
   const g = v.groups;
-  $('cvNote').textContent = `${v.months[0]}~${v.months[v.months.length - 1]} (${v.months.length}개월) 동안 달마다, 그 달 중에 알 수 있던 정보(그 전 달까지의 주기, 그 달 순위)로 판단했을 때 각 기준에 걸린 섹터가 이후 TOP ${v.top}에 들었는지와 그 기간 수익률을 셌습니다. [단기]는 다음 1개월, [선진입]과 [하락 주의]는 다음 1~2개월로 보고, 각각 같은 기간의 전체 섹터 평균과 비교합니다. 하락 주의는 TOP 진입 비율과 수익률이 평균보다 낮게 나와야 잘 맞는 겁니다. 검증에서는 "이번 달 진행"을 그 달 전체 순위로 봤고, 건수가 적으면 우연일 수 있습니다.`;
+  const m2 = v.months2 && v.months2.length ? v.months2 : v.months;
+  $('cvNote').textContent = `다음 1개월 기준은 ${v.months[0]}~${v.months[v.months.length - 1]} (${v.months.length}개월), 다음 1~2개월 기준은 ${m2[0]}~${m2[m2.length - 1]} (${m2.length}개월) 동안 달마다(이후 기간이 다 끝난 달까지만 셈), 그 달 중에 알 수 있던 정보(그 전 달까지의 주기, 그 달 순위)로 판단했을 때 각 기준에 걸린 섹터가 이후 TOP ${v.top}에 들었는지와 그 기간 수익률을 셌습니다. [단기]는 다음 1개월, [선진입]과 [하락 주의]는 다음 1~2개월로 보고, 각각 같은 기간의 전체 섹터 평균과 비교합니다. 가장 중요한 건 평균·중간값 수익률이 같은 기간 전체 섹터보다 몇 %p 높은지이고(중간값은 큰 상승 몇 번에 휘둘리지 않는 값), 손실 비율은 그 기간에 마이너스로 끝난 비율입니다. TOP 진입 비율은 주기 예상 자체가 맞았는지 보는 참고용이에요. 하락 주의는 수익률이 평균보다 낮게 나와야 잘 맞는 겁니다. 검증에서는 "이번 달 진행"을 그 달 전체 순위로 봤고, 건수가 적으면 우연일 수 있습니다.`;
+  const pc = (v, d = 2) => v === null || v === undefined ? '-' : `<span class="${v > 0 ? 'pos' : v < 0 ? 'neg' : ''}">${plus(v)}${fmt(v, d)}%</span>`;
+  const pp = v => v === null || v === undefined ? '-' : `<span class="lift ${v >= 1 ? 'pos' : v <= -1 ? 'neg' : ''}">${plus(v)}${fmt(v, 2)}%p</span>`;
   const row = (name, per, x, base) => {
-    const lift = x.rate !== null && base.rate ? x.rate / base.rate : null;
-    return `<tr><td class="name">${name}</td><td>${per}</td><td>${fmt(x.n)}건</td><td>${fmt(x.hit)}건</td><td>${x.rate === null ? '-' : fmt(x.rate, 1) + '%'}</td>
-      <td class="${x.ret > 0 ? 'pos' : x.ret < 0 ? 'neg' : ''}">${x.ret === null ? '-' : plus(x.ret) + fmt(x.ret, 2) + '%'}</td>
-      <td>${lift === null ? '-' : `<span class="lift ${lift >= 1.3 ? 'pos' : lift < 0.8 ? 'neg' : ''}">${fmt(lift, 1)}배</span>`}</td></tr>`;
+    const isBase = x === base;
+    const dRet = !isBase && x.ret !== null && base.ret !== null ? x.ret - base.ret : null;
+    const dMed = !isBase && x.med !== null && base.med !== null ? x.med - base.med : null;
+    return `<tr><td class="name">${name}</td><td>${per}</td><td>${fmt(x.n)}건</td>
+      <td>${pc(x.ret)}</td><td>${isBase ? '기준' : pp(dRet)}</td>
+      <td>${pc(x.med)}</td><td>${isBase ? '기준' : pp(dMed)}</td>
+      <td>${x.loss === null || x.loss === undefined ? '-' : fmt(x.loss, 0) + '%'}</td>
+      <td class="muted">${x.rate === null ? '-' : fmt(x.rate, 1) + '%'}${!isBase && x.rate !== null && base.rate ? ` (${fmt(x.rate / base.rate, 1)}배)` : ''}</td></tr>`;
   };
   $('cvRows').innerHTML = row('단기', '다음 1개월', g.short, g.all1) +
     (g.shortf && g.shortf.n ? row('단기 중 수급 ✓', '다음 1개월', g.shortf, g.all1) : '') +
