@@ -248,9 +248,10 @@ HIST = {}
 HIST_DIR = OUT.parent / "h"     # 과거 시점 보기용 날짜별 누적 순매수 (h/날짜.json)
 
 
-def save_chart(code, dlist, o, h, l, c, flows=None):
-    bars = [[f"{d[:4]}-{d[4:6]}-{d[6:]}", round(a), round(b), round(x), round(y)]
-            for d, a, b, x, y in zip(dlist, o, h, l, c)]
+def save_chart(code, dlist, o, h, l, c, flows=None, vol=None):
+    vol = vol or [0] * len(c)
+    bars = [[f"{d[:4]}-{d[4:6]}-{d[6:]}", round(a), round(b), round(x), round(y), round(v)]    # 마지막은 수정 거래량 (거래량가중 이동평균용)
+            for d, a, b, x, y, v in zip(dlist, o, h, l, c, vol)]
     # 과거 시점 상세 보기용: 약 7개월치 외국인·기관 일별 [매수대금, 매도대금, 매수량, 매도량]
     z = [0, 0, 0, 0]
     bars = {"b": bars, "n": {"f": [x or z for x in flows["f"]], "i": [x or z for x in flows["i"]]} if flows else None}
@@ -872,7 +873,7 @@ def collect(days_all):
         sups, ress, sts = sr_levels(o, h, l, c, set(want))
         srh[t] = {dlist[k]: v for k, v in sts.items()}              # 과거 날짜별 그날 기준 지지선 상태
         fl = hn.get(t)
-        save_chart(t, dlist, o, h, l, c, {"f": fl["f"][-NET_HISTORY:], "i": fl["i"][-NET_HISTORY:]} if fl else None)
+        save_chart(t, dlist, o, h, l, c, {"f": fl["f"][-NET_HISTORY:], "i": fl["i"][-NET_HISTORY:]} if fl else None, vol)
         adj[t] = dict(zip(dlist, c))
         pr = lambda k: round((c[-1] / c[-1 - k] - 1) * 100, 2) if len(c) > k and c[-1 - k] > 0 else None
         r["rt"] = {"1": pr(1), "10": pr(10), "M": pr(MONTH), "Q": pr(60), "Y": pr(250)}      # 수정주가 등락률
@@ -1894,6 +1895,7 @@ dialog h3{font-size:16px;margin:22px 0 8px}
 .meas .lbl.up{background:#C62828}
 .meas .lbl.dn{background:#4A4A4A}
 .legend{display:flex;gap:16px;flex-wrap:wrap;color:var(--gray);font-size:13px;margin:6px 0 0}
+.legend i.ma{height:2px;border:0;border-radius:0}
 .legend i{display:inline-block;width:18px;height:0;border-top:2px solid var(--sup);vertical-align:middle;margin-right:6px}
 .legend i.res{border-top-color:var(--red)}
 .legend i.zres{height:10px;border:0;background:rgba(198,40,40,.16)}
@@ -2084,7 +2086,8 @@ td.st{text-align:center;width:44px}
   <div class="tvhead"><h3>가격 차트 (일봉, 지지·저항 구간 표시)</h3><div class="tvtools"><button class="mbtn" id="measBtn" aria-pressed="false">구간 측정</button><a class="tvlink" id="tvLink" target="_blank" rel="noopener">트레이딩뷰에서 크게 보기</a></div></div>
   <p class="note" id="measHelp" hidden>차트에서 시작점과 끝점을 차례로 누르면 그 사이 등락률이 표시됩니다. 다시 누르면 새로 잽니다.</p>
   <div class="tv" id="tv"></div>
-  <p class="legend"><span><i></i>지지선</span><span><i class="zone"></i>지지 구간</span><span><i class="res"></i>저항선</span><span><i class="zres"></i>저항 구간</span></p>
+  <p class="legend"><span><i></i>지지선</span><span><i class="zone"></i>지지 구간</span><span><i class="res"></i>저항선</span><span><i class="zres"></i>저항 구간</span>
+    <span><i class="ma" style="background:#2E9E4F"></i>50일선</span><span><i class="ma" style="background:#111"></i>거래량가중 100일선</span><span><i class="ma" style="background:#E53935"></i>200일선</span><span><i class="ma" style="background:#4FC3F7"></i>400일선</span></p>
   <h3>지지·저항 구간 (S&amp;R Pro Toolkit 기준)</h3>
   <div id="dSr"></div>
   <h3>매매 요약</h3>
@@ -3311,6 +3314,20 @@ async function drawChart(r){
   });
   s.setData(bars.map(b => ({time: b[0], open: b[1], high: b[2], low: b[3], close: b[4]})));
   DET.series = s;
+  // 이동평균선: 50일(초록), 거래량가중 100일(검정), 200일(빨강), 400일(하늘색)
+  const maLine = (n, color, vw) => {
+    const out = []; let sc = 0, sv = 0, svw = 0;
+    for (let k = 0; k < bars.length; k++) {
+      const c = bars[k][4], v = bars[k][5] || 0;
+      sc += c; sv += v; svw += c * v;
+      if (k >= n) { const o = bars[k - n]; sc -= o[4]; sv -= (o[5] || 0); svw -= o[4] * (o[5] || 0); }
+      if (k >= n - 1) out.push({time: bars[k][0], value: vw ? (sv > 0 ? svw / sv : sc / n) : sc / n});
+    }
+    const ls = chartObj.addLineSeries({color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false});
+    ls.setData(out);
+    return ls;
+  };
+  DET.ma = [maLine(50, '#2E9E4F'), maLine(100, '#111111', true), maLine(200, '#E53935'), maLine(400, '#4FC3F7')];
   chartObj.subscribeClick(p => {
     if (M.on || !p || !p.time) return;
     const t = typeof p.time === 'string' ? p.time : null;
