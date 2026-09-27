@@ -2283,7 +2283,7 @@ $('pager').addEventListener('click', e => {
 const SNAPC = {};
 // ---- 기준일 이후 등락을 어느 날까지로 볼지 (0 = 최신, 20 = 1개월 뒤 …) ----
 const RETTO = {n: 0, date: null, snap: null};
-const RET_OPTS = [[0, '최신'], [20, '1개월 뒤'], [40, '2개월 뒤'], [60, '3개월 뒤'], [120, '6개월 뒤']];
+const RET_OPTS = [[0, '최신'], [5, '5거래일 뒤'], [10, '10거래일 뒤'], [20, '1개월 뒤'], [40, '2개월 뒤'], [60, '3개월 뒤'], [120, '6개월 뒤']];
 function retEndDate(n){ const i = HD.indexOf(S.asof); return i < 0 || !n || i + n >= HD.length - 1 ? null : HD[i + n]; }
 function retEndLabel(){ return RETTO.n && RETTO.date ? RETTO.date.slice(5) : '최신'; }
 function retSince(r){
