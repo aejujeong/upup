@@ -397,7 +397,7 @@ def _sectors_kind():
         cells = [htmllib.unescape(re.sub(r"<[^>]+>", "", c)).strip() for c in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)]
         if len(cells) <= max(ix["종목코드"], ix["업종"]):
             continue
-        code = re.sub(r"\D", "", cells[ix["종목코드"]]).zfill(6)
+        code = re.sub(r"[^0-9A-Z]", "", cells[ix["종목코드"]].upper()).zfill(6)   # 2024년 이후 신규 상장은 0008Z0처럼 영문이 섞임
         name = re.sub(r"\s*제조업$", "", cells[ix["업종"]])
         name = re.sub(r"(서비스|공급|도매|소매|임대|개발|중개)업$", r"\1", name)
         if code and name:
@@ -430,7 +430,7 @@ SECTOR_RULES = [
     ("기계", ["기계", "철도장비", "운송장비"]),
     ("화학", ["화학", "합성고무", "플라스틱", "고무", "비료", "농약"]),
     ("철강·금속", ["철강", "비철금속", "금속"]),
-    ("비금속광물", ["유리", "시멘트", "비금속", "도자기", "콘크리트", "석회"]),
+    ("비금속광물", ["유리", "시멘트", "비금속", "도자기", "콘크리트", "석회", "요업"]),
     ("건설", ["건설", "공사업", "건축", "엔지니어링", "토목"]),
     ("에너지·유틸리티", ["전기업", "가스", "석유", "증기", "원유", "연료"]),
     ("음식료·담배", ["식품", "음료", "육류", "곡물", "담배", "수산", "과실", "낙농", "사료", "도축", "제분", "설탕"]),
@@ -440,11 +440,22 @@ SECTOR_RULES = [
     ("지주회사", ["회사 본부", "경영 컨설팅"]),
     ("운송·물류", ["운송", "창고", "택배", "항공 여객", "해상", "화물"]),
     ("부동산", ["부동산"]),
-    ("교육", ["교육"]),
+    ("교육", ["교육", "교습", "학원"]),
     ("여행·레저", ["여행", "숙박", "음식점", "주점"]),
     ("환경", ["폐기물", "환경", "하수", "재활용"]),
-    ("사업서비스", ["사업", "인력", "전문 서비스", "시설 관리", "경비", "임대"]),
+    ("사업서비스", ["사업", "인력", "전문 서비스", "시설 관리", "경비", "임대", "과학기술 서비스", "기술 서비스", "전문, 과학", "전문·과학"]),
 ]
+
+# 거래소 KIND 목록에서 세부 업종을 못 찾아 거래소 큰 업종 이름이 남은 종목을 위 섹터로 보내는 표
+KRX_FALLBACK = {
+    "증권": "금융", "기타금융": "금융", "은행": "금융", "보험": "금융", "금융": "금융",
+    "제약": "제약·바이오", "의약품": "제약·바이오", "의료·정밀기기": "의료기기",
+    "일반서비스": "사업서비스", "서비스업": "사업서비스", "IT서비스": "IT서비스·인터넷",
+    "운송·창고": "운송·물류", "운송장비·부품": "자동차", "기계·장비": "기계", "금속": "철강·금속",
+    "비금속": "비금속광물", "섬유·의류": "섬유·의류", "종이·목재": "종이·목재·가구",
+    "음식료·담배": "음식료·담배", "유통": "유통", "건설": "건설", "통신": "통신서비스",
+    "전기·가스": "에너지·유틸리티", "오락·문화": "미디어·엔터", "부동산": "부동산", "화학": "화학",
+}
 
 
 # 주요 제품에 이 단어가 있으면 산업분류보다 먼저 이 섹터로 보낸다 (장비·소재 회사를 제 섹터로 모으기 위함)
@@ -453,7 +464,78 @@ PROD_RULES = [
     ("2차전지", ["2차전지", "이차전지", "2차 전지", "양극재", "음극재", "전해액", "전해질", "분리막", "리튬", "배터리 소재"]),
     ("화장품", ["화장품"]),
     ("게임", ["게임"]),
+    ("조선", ["선박용", "조선", "선박 평형수", "선박평형수", "선박엔진", "선박 엔진", "해양플랜트", "LNG선"]),
 ]
+
+
+# 큰 섹터 안의 세부 섹터 규칙: 주요 제품 + 회사 소개 + 세부 산업 이름에 단어가 있으면 그 세부 섹터 (위에서부터 먼저 맞는 것)
+# 규칙이 없는 큰 섹터는 거래소 세부 산업 이름을 세부 섹터로 쓰고, 어디에도 안 맞으면 '미분류'
+SUB_RULES = {
+    "반도체": [("메모리·종합반도체", ["메모리", "DRAM", "D램", "낸드", "NAND", "파운드리"]),
+             ("팹리스·설계", ["팹리스", "설계", "ASIC", "SoC"]),
+             ("후공정·테스트", ["후공정", "패키징", "테스트", "OSAT", "범핑"]),
+             ("장비", ["장비", "증착", "식각", "세정", "노광", "CMP", "열처리"]),
+             ("소재·부품", ["소재", "부품", "웨이퍼", "포토마스크", "블랭크마스크", "프로브", "소켓", "특수가스", "케미칼", "쿼츠"])],
+    "2차전지": [("셀·배터리", ["배터리셀", "배터리 셀", "전지 제조", "배터리팩", "ESS"]), ("양극재", ["양극재", "전구체"]),
+              ("음극재", ["음극재", "흑연"]), ("전해액·분리막", ["전해액", "전해질", "분리막"]),
+              ("리튬·광물", ["리튬", "니켈", "코발트", "광물"]), ("장비", ["장비"]), ("부품·소재", ["동박", "부품", "소재", "캔"])],
+    "기계": [("냉각·공조", ["냉각", "칠러", "공조", "냉동", "열교환", "HVAC", "냉방"]),
+            ("로봇·자동화", ["로봇", "감속기", "자동화", "스마트팩토리"]), ("공작기계", ["공작기계", "CNC", "머시닝"]),
+            ("건설·농기계", ["굴착기", "건설기계", "농기계", "트랙터", "지게차"]),
+            ("유압·밸브·펌프", ["유압", "밸브", "펌프", "실린더", "베어링"]), ("산업장비·설비", ["장비", "설비", "플랜트"])],
+    "전기장비": [("변압기·전력기기", ["변압기", "차단기", "배전반", "전력기기", "개폐기", "GIS"]), ("전선·케이블", ["전선", "케이블"]),
+              ("발전기·모터", ["발전기", "전동기", "모터"]), ("냉각·공조", ["냉각", "공조", "칠러"]), ("조명", ["조명", "LED"]),
+              ("가전", ["가전", "냉장고", "세탁기", "에어컨", "주방"]), ("전기부품", ["부품", "센서", "커넥터"])],
+    "디스플레이·전자부품": [("디스플레이", ["디스플레이", "OLED", "LCD", "패널"]), ("PCB·기판", ["PCB", "기판"]),
+                    ("카메라·광학", ["카메라", "렌즈", "광학"]), ("수동부품·커넥터", ["MLCC", "커넥터", "콘덴서", "저항기"]),
+                    ("전자부품", ["부품", "모듈"])],
+    "제약·바이오": [("CDMO·위탁생산", ["CDMO", "CMO", "위탁생산"]), ("바이오시밀러", ["바이오시밀러"]), ("진단", ["진단"]),
+                ("원료의약품", ["원료의약"]), ("신약·바이오", ["신약", "항체", "바이오", "세포", "유전자", "임상", "플랫폼"]),
+                ("제약", ["의약품", "제약"])],
+    "의료기기": [("미용·에스테틱", ["미용", "에스테틱", "보툴리눔", "필러", "레이저"]), ("임플란트·치과", ["임플란트", "치과"]),
+              ("영상·진단기기", ["영상", "초음파", "엑스레이", "X-ray", "진단"]), ("의료소모품", ["주사기", "소모품", "카테터"])],
+    "자동차": [("완성차", ["완성차", "승용차", "자동차 제조"]), ("전장·전기차 부품", ["전장", "전기차", "모터"]),
+             ("타이어", ["타이어"]), ("부품", ["부품"])],
+    "조선": [("조선사", ["선박 건조", "선박건조", "조선업"]), ("기자재", ["기자재", "선박용", "엔진", "평형수", "배전반", "보냉"])],
+    "항공·방산": [("방산", ["방산", "유도무기", "탄약", "전차", "자주포", "국방"]), ("항공·우주", ["항공", "우주", "위성", "드론"])],
+    "화학": [("석유화학", ["석유화학", "에틸렌", "합성수지", "PVC"]), ("정밀·특수화학", ["정밀화학", "특수", "촉매"]),
+            ("비료·농약", ["비료", "농약"]), ("플라스틱·고무·필름", ["플라스틱", "고무", "필름"]), ("도료·접착", ["도료", "페인트", "접착"])],
+    "소프트웨어": [("보안", ["보안", "인증"]), ("핀테크·결제", ["결제", "PG", "핀테크", "블록체인", "가상자산", "스테이블"]),
+               ("AI·데이터", ["AI", "인공지능", "빅데이터", "데이터"]), ("클라우드·SaaS", ["클라우드", "SaaS"]),
+               ("기업용 솔루션", ["ERP", "솔루션", "그룹웨어"])],
+    "IT서비스·인터넷": [("핀테크·결제", ["결제", "PG", "핀테크", "블록체인", "가상자산", "스테이블"]),
+                   ("데이터센터", ["데이터센터", "IDC", "호스팅"]), ("플랫폼·포털", ["포털", "플랫폼", "검색", "메신저"]),
+                   ("SI·IT서비스", ["시스템 통합", "시스템통합", "IT서비스", "SI사업"])],
+    "게임": [("모바일", ["모바일"]), ("PC·온라인", ["PC", "온라인"]), ("콘솔", ["콘솔"])],
+    "미디어·엔터": [("엔터·음반", ["음반", "아이돌", "매니지먼트", "엔터"]), ("드라마·영화", ["드라마", "영화", "콘텐츠 제작"]),
+                ("방송", ["방송"]), ("광고", ["광고"]), ("웹툰·출판", ["웹툰", "출판", "만화"])],
+    "에너지·유틸리티": [("원전", ["원전", "원자력"]), ("신재생", ["태양광", "풍력", "수소", "연료전지"]),
+                   ("가스", ["가스", "LNG"]), ("전력", ["전력", "발전"]), ("정유", ["정유", "석유"])],
+    "건설": [("설비·전문공사", ["설비", "전기공사", "플랜트"]), ("엔지니어링", ["엔지니어링", "설계"]),
+            ("종합건설", ["종합건설", "주택", "건축", "토목"])],
+    "금융": [("은행", ["은행"]), ("증권", ["증권", "투자중개"]), ("보험", ["보험"]), ("카드·캐피탈", ["카드", "캐피탈", "여신"]),
+            ("창투·기타금융", ["창업투자", "벤처캐피탈", "신탁", "지주"])],
+    "유통": [("백화점·마트", ["백화점", "마트", "할인점"]), ("편의점", ["편의점"]), ("온라인·홈쇼핑", ["홈쇼핑", "온라인", "이커머스"]),
+            ("도매·무역", ["도매", "무역", "상사"])],
+    "음식료·담배": [("음료·주류", ["음료", "주류", "맥주", "소주"]), ("제과", ["제과", "과자", "빙과"]),
+                ("육류·수산", ["육류", "수산", "닭고기", "돼지"]), ("담배", ["담배"]), ("가공식품", ["라면", "식품", "가공"])],
+    "화장품": [("ODM·OEM", ["ODM", "OEM", "제조자개발"]), ("원료·용기", ["원료", "용기"]), ("브랜드", ["브랜드", "화장품"])],
+    "통신장비": [("광통신", ["광통신", "광케이블", "광모듈", "광트랜시버"]), ("안테나·RF", ["안테나", "RF"]),
+              ("네트워크장비", ["네트워크", "교환기", "라우터", "5G", "중계기"])],
+    "철강·금속": [("철강", ["철강", "강판", "강관", "열연", "냉연"]), ("비철·알루미늄", ["알루미늄", "구리", "전기동", "아연", "비철"]),
+              ("금속가공", ["가공", "단조", "주조"])],
+    "운송·물류": [("해운", ["해운", "해상"]), ("항공", ["항공"]), ("육운·택배", ["택배", "물류", "화물", "육상"])],
+}
+
+
+def sub_sector(sec, text, sec1=""):
+    rules = SUB_RULES.get(sec)
+    if rules is None:
+        return sec1 or "미분류"
+    for g, keys in rules:
+        if any(k in text for k in keys):
+            return g
+    return "미분류"
 
 
 def group_sector(name, prod=""):
@@ -468,7 +550,7 @@ def group_sector(name, prod=""):
 
 def load_sectors():
     """세부 업종: 네이버 → 거래소 KIND 순서로 시도하고, 둘 다 안 되면 거래소 큰 업종을 그대로 쓴다."""
-    f = CACHE / "sector.json"
+    f = CACHE / "sector_v2.json"   # v2: 영문 섞인 종목코드 처리 후 새로 받음
     today = dt.datetime.now(KST).date()
     try:
         saved = json.loads(f.read_text(encoding="utf-8"))
@@ -770,16 +852,33 @@ def collect(days_all):
     tlog("패턴 찾기 끝")
     fine, prod = load_sectors()
     grouped = bool(fine) and len(set(fine.values())) > 100          # KIND처럼 너무 잘게 나뉜 경우만 묶음
+    # 우선주는 상장법인목록에 따로 없어서 보통주(코드 끝자리 0)의 업종·주요 제품을 그대로 쓴다
+    common = lambda t: t[:5] + "0"
+    for t in rows:
+        if t not in fine and t[-1] != "0" and common(t) in fine:
+            fine[t] = fine[common(t)]
+            if common(t) in prod:
+                prod[t] = prod[common(t)]
     for t, r in rows.items():
         if fine.get(t):
             r["sec1"] = fine[t]                                       # 세부 산업 (상세 창에 표시)
             r["sec"] = group_sector(fine[t], prod.get(t, "")) if grouped else fine[t]
         r["prod"] = (prod.get(t) or "")[:120]
+    for r in rows.values():
+        if not r.get("sec1") and r.get("sec") in KRX_FALLBACK:      # 세부 업종을 못 찾은 종목
+            r["sec"] = KRX_FALLBACK[r["sec"]]
+        if r.get("sec", "").startswith("그외 기타 제품"):
+            r["sec"] = "기타"
     cnt = {}
     for r in rows.values():
         cnt[r["sec"]] = cnt.get(r["sec"], 0) + 1
-    for r in rows.values():                                          # 종목이 너무 적은 섹터는 '기타'로
-        if r["sec"] and cnt.get(r["sec"], 0) < 5:
+    fixed = {g for g, _ in PROD_RULES} | {g for g, _ in SECTOR_RULES}
+    for r in rows.values():
+        if not r["sec"]:
+            continue
+        if grouped and r["sec"] not in fixed:                        # 정해진 섹터 목록에 없는 이름은 '기타'로
+            r["sec"] = "기타"
+        elif not grouped and cnt.get(r["sec"], 0) < 5:               # (세부 업종을 못 받았을 때만) 너무 작은 섹터는 '기타'로
             r["sec"] = "기타"
     print(f"섹터: {len(set(r['sec'] for r in rows.values()))}개로 묶음")
     global CYCLE, CYCLE_HIST
@@ -795,6 +894,8 @@ def collect(days_all):
                 if res:
                     CYCLE_HIST[_mfmt(m)] = res
         print(f"섹터 순환 주기(과거 기준일용): {len(CYCLE_HIST)}개월")
+        if CYCLE and first_m is not None:
+            CYCLE["valid"] = cycle_backtest(rows, series, agg_m, first_m, now_m)
     except Exception as e:
         print(f"섹터 순환 주기 계산 중 문제가 생겨 건너뜁니다: {e}")
         CYCLE = None
@@ -805,10 +906,11 @@ def collect(days_all):
         print(f"참고 사이클 표 처리 중 문제: {e}")
         CYCLE_REF = None
     tlog("섹터·주기 계산 끝")
-    descs = load_descs(list(rows.keys()))
+    descs = load_descs([t for t in rows if t[-1] == "0" or t[:5] + "0" not in rows])   # 우선주는 보통주 소개를 같이 씀
     tlog("회사 소개 받기 끝")
     for t, r in rows.items():
-        r["desc"] = descs.get(t, "")
+        r["desc"] = descs.get(t) or descs.get(t[:5] + "0", "")
+        r["sub"] = sub_sector(r.get("sec", ""), " ".join([r.get("prod", ""), r["desc"], r.get("sec1", "")]), r.get("sec1", ""))
     prune_cache(set(days_all))
     return list(rows.values())
 
@@ -821,6 +923,9 @@ CYCLE_MONTHS = 24              # 섹터 순환 주기: 최근 몇 개월(완결�
 CYCLE_TOP = 10                 # 매달 등락률 상위·하위 몇 개 섹터를 TOP/최하위로 볼지
 CYCLE_SOON = 1                 # '다가옴/임박' 기준: 예상 시기가 지금부터 몇 개월 안이면 (지난 지 1개월 이내도 포함)
 CYCLE_SMALL = 15               # 종목 수가 이보다 적으면 '소형'
+CYCLE_OVERLAP_AHEAD = 3        # 'TOP·최하위 예상 겹침'은 지금부터 몇 개월 안에 겹칠 때만 본다
+PRE_BOTTOM = 10                # 선진입: 이번 달 진행 순위가 최하위 몇 위 안이면
+PRE_AHEAD = (0, 2)             # 선진입: 다음 TOP 예상 시기가 지금부터 몇~몇 개월 뒤 사이에 걸치면 (0 = 이번 달)
 
 
 def _num(x):
@@ -872,6 +977,47 @@ def sector_monthly(rows, series):
             g[0] += (b / a - 1) * w
             g[1] += w
     return agg, first
+
+
+def cycle_backtest(rows, series, agg, first_m, now_m):
+    """과거 달마다 '선진입'과 기존 '진입 검토'에 걸린 섹터가 그다음 1~2개월 안에 TOP에 들었는지, 2개월 수익률은 어땠는지"""
+    secs = sorted(agg)
+    R = {s_: {m: v[0] / v[1] for m, v in agg[s_].items() if v[1] > 0} for s_ in secs}
+    tops, bots = {}, {}
+    for m in range(first_m + 1, now_m):
+        rets = sorted(((R[s_][m], s_) for s_ in secs if m in R[s_]), reverse=True)
+        if len(rets) >= CYCLE_TOP * 2:
+            tops[m] = {x for _, x in rets[:CYCLE_TOP]}
+            bots[m] = {x for _, x in rets[-CYCLE_TOP:]}
+    groups = {k: {"n": 0, "hit": 0, "ret": 0.0} for k in ("pre", "pre2", "all2", "short", "all1")}
+    months = []
+    for m in range(first_m + CYCLE_MONTHS + 1, now_m - 2):          # 이후 2개월이 끝난 달까지만
+        if m not in bots or m + 1 not in tops or m + 2 not in tops:
+            continue
+        res = sector_cycles(rows, series, now=m, agg=agg, quiet=True)   # m월 중에 알 수 있던 정보(그 전 달까지)로 계산
+        if not res:
+            continue
+        low = {x for _, x in sorted(((R[s_][m], s_) for s_ in secs if m in R[s_]))[:PRE_BOTTOM]}
+        months.append(_mfmt(m))
+        for x in res["rows"]:
+            s_ = x["sec"]
+            if m + 1 not in R.get(s_, {}) or m + 2 not in R.get(s_, {}):
+                continue
+            hit2 = s_ in tops[m + 1] or s_ in tops[m + 2]                    # 선진입: 1~2개월
+            ret2 = ((1 + R[s_][m + 1]) * (1 + R[s_][m + 2]) - 1) * 100
+            hit1, ret1 = s_ in tops[m + 1], R[s_][m + 1] * 100                # 단기: 다음 1개월
+            cnt = sum(1 for p_ in (x.get("nextT") or []) if p_["lo"] <= m + PRE_AHEAD[1] and p_["hi"] >= m + PRE_AHEAD[0])
+            sel = {"all2": (True, hit2, ret2), "pre": (s_ in low and cnt >= 1, hit2, ret2),
+                   "pre2": (s_ in low and cnt >= 2, hit2, ret2),
+                   "short": (x["label"].startswith("단기"), hit1, ret1), "all1": (True, hit1, ret1)}
+            for k, (on, h_, r_) in sel.items():
+                if on:
+                    g = groups[k]; g["n"] += 1; g["hit"] += int(h_); g["ret"] += r_
+    for g in groups.values():
+        g["rate"] = round(g["hit"] / g["n"] * 100, 1) if g["n"] else None
+        g["ret"] = round(g["ret"] / g["n"], 2) if g["n"] else None
+    print(f"진입 판단 과거 검증: {len(months)}개월, 선진입 {groups['pre']['n']}건, 단기 {groups['short']['n']}건")
+    return {"months": months, "groups": groups, "top": CYCLE_TOP, "bottom": PRE_BOTTOM, "ahead": list(PRE_AHEAD)}
 
 
 def sector_cycles(rows, series, now=None, agg=None, quiet=False):
@@ -946,16 +1092,19 @@ def sector_cycles(rows, series, now=None, agg=None, quiet=False):
             nT, nB = pred("T"), pred("B")
             futT = [w for _, _, w in nT if w["st"] != "past"]
             futB = [w for _, _, w in nB if w["st"] != "past"]
-            overlap = any(a["lo"] <= b["hi"] and b["lo"] <= a["hi"] for a in futT for b in futB)
+            # 겹침은 가까운 시기(지금부터 CYCLE_OVERLAP_AHEAD개월 안)에 겹칠 때만 본다. 먼 훗날 겹치는 건 판단에 영향 없음
+            overlap = any(max(a["lo"], b["lo"]) <= min(a["hi"], b["hi"]) and max(a["lo"], b["lo"]) <= now + CYCLE_OVERLAP_AHEAD
+                          for a in futT for b in futB)
             sw_win = next((w for nm, _, w in (nB if cur_k == "T" else nT) if nm == "전환"), None)
             late = lambda w: w["st"] == "past" and now - w["hi"] > 1
             soon = lambda w: (w["st"] == "past" and now - w["hi"] <= 1) or w["st"] == "now" or w["lo"] - now <= CYCLE_SOON
+            soon_top = lambda w: w["st"] == "now" or (w["st"] == "future" and w["lo"] - now <= CYCLE_SOON)   # TOP 쪽은 지난 예상에 여유 없음
             if cur_k == "B":
                 if sw_win is None:
                     why = "TOP 전환 예상 불가"
-                elif late(sw_win):
+                elif sw_win["st"] == "past":
                     why = "TOP 전환 예상 지남, 지연 중"
-                elif soon(sw_win):
+                elif soon_top(sw_win):
                     why = "TOP 전환 다가옴"
                 else:
                     why = "TOP 전환까지 시간 남음"
@@ -974,10 +1123,16 @@ def sector_cycles(rows, series, now=None, agg=None, quiet=False):
                 else:
                     why = "최하위 전환까지 여유"
             good = why in ("TOP 전환 다가옴", "최하위 전환까지 여유, TOP 재진입 먼저")
-            label = "진입 검토" if good and not overlap else "관망"
+            first_t = min((w["lo"] for w in futT), default=None)
+            first_b = min((w["lo"] for w in futB), default=None)
+            if good and first_t is None:
+                good = False; why += " → 단, 앞으로 올 TOP 예상 없음"
+            elif good and first_b is not None and first_b < first_t:
+                good = False; why += " → 단, 최하위 예상이 TOP보다 먼저"
+            label = "단기" if good and not overlap else "관망"
             if overlap:
                 why += " → 단, TOP·최하위 예상 겹침"
-            enc = lambda L: [{"nm": nm, "base": bs, "txt": w["txt"], "st": w["st"]} for nm, bs, w in L]
+            enc = lambda L: [{"nm": nm, "base": bs, "txt": w["txt"], "st": w["st"], "lo": w["lo"], "hi": w["hi"]} for nm, bs, w in L]
             rec.update(label=label, why=why, nextT=enc(nT), nextB=enc(nB))
         if small:
             rec["label"] += " · 소형"
@@ -985,7 +1140,7 @@ def sector_cycles(rows, series, now=None, agg=None, quiet=False):
         rec["tops"] = [[_mfmt(m) for m in ms] for ms in rec["tops"]]
         rec["bots"] = [[_mfmt(m) for m in ms] for ms in rec["bots"]]
         out.append(rec)
-    order = {"진입 검토": 0, "관망": 1, "판단 보류": 2}
+    order = {"단기": 0, "관망": 1, "판단 보류": 2}
     out.sort(key=lambda x: (order.get(x["label"].split(" · ")[0], 3), -x["tN"], -x["n"]))
     vals = lambda k: [x[k] for x in out if x.get(k) is not None]
     med = lambda xs: (sorted(xs)[len(xs) // 2] if len(xs) % 2 else sum(sorted(xs)[len(xs) // 2 - 1:len(xs) // 2 + 1]) / 2) if xs else None
@@ -993,7 +1148,8 @@ def sector_cycles(rows, series, now=None, agg=None, quiet=False):
     summ["swN"] = sum(vals("swN"))
     if not quiet:
         print(f"섹터 순환 주기: {len(out)}개 섹터, {_mfmt(months[0])}~{_mfmt(months[-1])}")
-    return {"from": _mfmt(months[0]), "to": _mfmt(months[-1]), "now": _mfmt(now), "months": len(months),
+    return {"pre": {"bottom": PRE_BOTTOM, "ahead": list(PRE_AHEAD)},
+            "from": _mfmt(months[0]), "to": _mfmt(months[-1]), "now": _mfmt(now), "nowk": now, "months": len(months),
             "top": CYCLE_TOP, "soon": CYCLE_SOON, "rows": out, "summ": summ, "nsec": len(secs)}
 
 
@@ -1373,6 +1529,7 @@ def main():
         "made": dt.datetime.now(KST).strftime("%Y-%m-%d %H:%M"),
         "count": len(data),
         "sr": SR,
+        "subs": {k: [g for g, _ in v] for k, v in SUB_RULES.items()},
     }
     html = TEMPLATE.replace("__DATA__", json.dumps(data, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__META__", json.dumps(meta, ensure_ascii=False))
@@ -1405,6 +1562,7 @@ TEMPLATE = r"""<!doctype html>
   padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
 }
 *{box-sizing:border-box}
+[hidden]{display:none !important}
 body{margin:0;background:var(--cream);color:var(--ink);
   font-family:Pretendard,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
   font-size:15px;line-height:1.5}
@@ -1430,6 +1588,20 @@ body.secv .nsec{display:none}
 .vtbl{min-width:700px}
 .vtbl tbody tr{cursor:default}
 .lift{font-weight:800}
+.topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}
+.gearwrap{position:relative}
+.gear{border:0;background:none;color:var(--gray);width:26px;height:26px;padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:.3;transition:opacity .15s}
+.gear:hover,.gear:focus-visible,.gear[aria-expanded="true"]{opacity:.9}
+.gearpanel{position:absolute;right:0;top:32px;z-index:20;width:300px;background:#fff;border:1px solid var(--olive);border-radius:10px;padding:14px 16px;box-shadow:0 6px 20px rgba(0,0,0,.12);font-size:14px}
+.gearpanel h3{margin:0 0 6px;font-size:15px}
+.gearpanel p{margin:0 0 10px;line-height:1.55}
+.gearpanel .on{color:var(--sup);font-weight:700}
+#subf{width:170px}
+td .subn{display:block;font-size:12px;color:var(--gray)}
+.tgl{border:0;background:none;cursor:pointer;font-size:13px;padding:0 6px 0 0;color:var(--gray)}
+tr.subrow td{background:#FAFAFA !important;font-size:14px}
+tr.subrow td.name{padding-left:28px;font-weight:600}
+.subsel{font:inherit;font-size:13px;padding:2px 6px;width:auto;max-width:190px}
 .ctbl{min-width:1800px}
 body:not(.asofmode) .asofc{display:none}
 .rtbl{min-width:1100px}
@@ -1446,6 +1618,7 @@ body:not(.asofmode) .asofc{display:none}
 .ctbl td:nth-child(8),.ctbl td:nth-child(10){min-width:170px}
 .tag{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap}
 .tag.go{background:var(--red);color:#fff}
+.tag.pre{background:#1A1A1A;color:#fff}
 .tag.wait{background:#EEE;color:var(--ink)}
 .tag.hold{background:#fff;color:var(--gray);border:1px solid #CCC}
 .pred{margin:0;padding-left:0;list-style:none}
@@ -1493,7 +1666,7 @@ button:focus-visible,select:focus-visible,input:focus-visible,th:focus-visible,t
 .info{color:var(--gray);font-size:13px;margin:0 0 8px}
 .tbl{overflow-x:auto;background:#fff;border-radius:6px}
 table{border-collapse:collapse;width:100%}
-#main{min-width:1700px}
+#main{min-width:1830px}
 th,td{border:1px solid var(--olive);padding:8px 10px;text-align:left;white-space:nowrap}
 th{background:var(--olive);color:#fff;font-weight:700;text-align:center}
 #main th{cursor:pointer;user-select:none}
@@ -1575,8 +1748,20 @@ td.st{text-align:center;width:44px}
 </head>
 <body>
 <div class="wrap">
-  <h1>100억 트레이딩</h1>
-  <p class="sub" id="sub"></p>
+  <div class="topbar">
+    <h1>100억 트레이딩</h1>
+    <div class="gearwrap">
+      <button class="gear" id="gearBtn" aria-label="설정" aria-expanded="false" title="설정">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94a7.43 7.43 0 0 0 .05-.94 7.43 7.43 0 0 0-.05-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.58.24-1.12.55-1.62.94l-2.39-.96a.5.5 0 0 0-.61.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58a7.43 7.43 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.22.39.3.61.22l2.39-.96c.5.39 1.04.7 1.62.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .45-.18.49-.42l.36-2.54c.58-.24 1.12-.55 1.62-.94l2.39.96c.22.08.48 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/></svg>
+      </button>
+      <div class="gearpanel" id="gearPanel" hidden>
+        <h3>공유 편집</h3>
+        <p id="shareState"></p>
+        <button class="mbtn" id="shareBtn"></button>
+        <p class="note">켜 두면 세부 섹터 직접 지정과 관심종목이 모든 기기에 저장됩니다. 접근 키는 이 기기 브라우저에만 저장돼요.</p>
+      </div>
+    </div>
+  </div>
 
   <div class="views" id="view">
     <button data-v="rank" class="on">순매수 순위</button><button data-v="sec">섹터</button><button data-v="pat">패턴 찾기</button>
@@ -1606,6 +1791,8 @@ td.st{text-align:center;width:44px}
       </div></div>
     <div class="field"><label>업종</label>
       <select id="secf"><option value="">전체</option></select></div>
+    <div class="field" id="subField" hidden><label>세부 섹터</label>
+      <select id="subf"><option value="">전체</option></select></div>
     <div class="field"><label>실적</label>
       <div class="seg" id="pf">
         <button data-v="ALL" class="on">전체</button><button data-v="P">흑자만</button><button data-v="L">적자만</button>
@@ -1653,7 +1840,13 @@ td.st{text-align:center;width:44px}
         <th>TOP10 횟수</th><th>TOP10 재진입 평균</th><th>최하위10 횟수</th><th>최하위10 재진입 평균</th><th>전환 횟수</th><th>전환 평균</th><th>한 바퀴 평균</th></tr></thead>
       <tbody id="cycRows"></tbody>
     </table></div>
-    <h2 class="ph">진입 검토 섹터 후보 종목</h2>
+    <h2 class="ph">진입 판단 기준 과거 검증</h2>
+    <p class="pnote" id="cvNote"></p>
+    <div class="tbl"><table class="ptbl vtbl">
+      <thead><tr><th>기준</th><th>보는 기간</th><th>해당 건수</th><th>기간 안 TOP 진입</th><th>진입 비율</th><th>기간 평균 수익률</th><th>전체 평균 대비</th></tr></thead>
+      <tbody id="cvRows"></tbody>
+    </table></div>
+    <h2 class="ph">단기·선진입 섹터 후보 종목</h2>
     <p class="pnote" id="pickNote"></p>
     <div class="tbl"><table class="ptbl ktbl">
       <thead><tr><th>섹터</th><th>순위</th><th>종목명</th><th>총점</th><th>수급 (40)</th><th>위치 (25)</th><th>실적 (15)</th><th>패턴 (10)</th><th>과열 회피 (10)</th><th class="asofc">기준일 이후</th><th>선별 이유</th></tr></thead>
@@ -1750,15 +1943,86 @@ const CREF = __CYCREF__;
 const REFBY = Object.fromEntries(((CREF && CREF.secs) || []).map(x => [x.sec.replace(/\s/g, ''), x]));
 const refOf = sec => REFBY[(sec || '').replace(/\s/g, '')];
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', asof:'', view:'rank', psel:null, fsel:null, ssort:'rt', sdir:-1};
+const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', view:'rank', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
 const RT = (r, p) => S.asof ? (r.h ? r.h.rt[p] : null) : (r.rt ? r.rt[p] : null);   // 기간 등락률
 const AA = (r, p) => S.asof ? r.h.a[p] : r.a[p];   // 외국인 (기준일 반영)
 const BB = (r, p) => S.asof ? r.h.b[p] : r.b[p];   // 기관 (기준일 반영)
 const WKEY = 'upup-watchlist';
 let WATCH = new Set();
 try { WATCH = new Set(JSON.parse(localStorage.getItem(WKEY) || '[]')); } catch (e) {}
-function saveWatch(){ try { localStorage.setItem(WKEY, JSON.stringify([...WATCH])); } catch (e) {} }
+function saveWatch(){ try { localStorage.setItem(WKEY, JSON.stringify([...WATCH])); } catch (e) {} if (SH.token) saveShared(); }
 function toggleWatch(code){ WATCH.has(code) ? WATCH.delete(code) : WATCH.add(code); saveWatch(); }
+
+/* ---- 공유 저장: GitHub 저장소의 data/overrides.json 에 세부 섹터 지정과 관심종목을 저장 ----
+   읽기는 누구나(공개 저장소), 쓰기는 저장소 전용 접근 키를 입력한 기기에서만 */
+const SH = (() => {
+  const h = location.hostname, seg = location.pathname.split('/').filter(Boolean);
+  const gh = h.endsWith('.github.io') ? {owner: h.split('.')[0], repo: seg[0] || h} : {owner: 'aejujeong', repo: 'upup'};
+  let token = ''; try { token = localStorage.getItem('upup-gh-token') || ''; } catch (e) {}
+  const off = !h.endsWith('.github.io') && location.protocol !== 'file:';   // GitHub 홈페이지가 아닌 곳(미리보기 등)에서는 끔
+  return {...gh, off, path: 'data/overrides.json', token, sha: null, data: {sub: {}, watch: null}, loaded: false, saving: null, err: ''};
+})();
+const SH_URL = () => `https://api.github.com/repos/${SH.owner}/${SH.repo}/contents/${SH.path}`;
+const b64enc = str => btoa(unescape(encodeURIComponent(str)));
+const b64dec = b64 => decodeURIComponent(escape(atob(b64.replace(/\s/g, ''))));
+async function loadShared(){
+  if (SH.off) { drawShare(); return; }
+  try {
+    const res = await fetch(SH_URL() + `?t=${Date.now()}`, {headers: SH.token ? {Authorization: `Bearer ${SH.token}`} : {}, cache: 'no-store'});
+    if (res.status === 404) { SH.loaded = true; SH.sha = null; }
+    else if (res.ok) {
+      const j = await res.json(); SH.sha = j.sha;
+      const d = JSON.parse(b64dec(j.content || '') || '{}');
+      SH.data = {sub: d.sub || {}, watch: Array.isArray(d.watch) ? d.watch : null};
+      SH.loaded = true;
+    } else SH.err = `불러오기 실패 (${res.status})`;
+  } catch (e) { SH.err = '불러오기 실패'; }
+  if (SH.data.watch) { WATCH = new Set(SH.data.watch); try { localStorage.setItem(WKEY, JSON.stringify([...WATCH])); } catch (e) {} }
+  applySubs(); drawShare(); render();
+}
+function applySubs(){
+  DATA.forEach(r => { if (r.subA === undefined) r.subA = r.sub || ''; r.sub = SH.data.sub[r.code] || r.subA; r.subO = !!SH.data.sub[r.code]; });
+  fillSubSelect();
+}
+async function saveShared(retry = true){
+  if (!SH.token) { alert('공유 저장을 하려면 먼저 오른쪽 위 톱니바퀴에서 "공유 편집 켜기"를 눌러 접근 키를 입력해 주세요.'); return false; }
+  SH.data.watch = [...WATCH];
+  const body = {message: 'update overrides (from homepage)', content: b64enc(JSON.stringify(SH.data, null, 1))};
+  if (SH.sha) body.sha = SH.sha;
+  $('shareState').textContent = '저장 중...';
+  try {
+    const res = await fetch(SH_URL(), {method: 'PUT', headers: {Authorization: `Bearer ${SH.token}`, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    if (res.status === 409 && retry) {            // 다른 기기에서 먼저 바꿈 → 최신을 받아서 합친 뒤 다시 저장
+      const mine = {...SH.data.sub}; await loadShared(); Object.assign(SH.data.sub, mine); return saveShared(false);
+    }
+    if (!res.ok) throw new Error(res.status);
+    SH.sha = (await res.json()).content.sha; SH.err = '';
+  } catch (e) { SH.err = `저장 실패 (${e.message}). 키 권한을 확인해 주세요.`; }
+  drawShare(); return !SH.err;
+}
+function drawShare(){
+  if (SH.off) { $('shareState').textContent = '공유 저장은 실제 홈페이지에서만 동작합니다 (지금은 이 기기에만 저장)'; $('shareBtn').hidden = true; return; }
+  $('shareState').innerHTML = SH.err ? `<span class="neg">${esc(SH.err)}</span>` :
+    SH.token ? '<span class="on">켜짐</span> · 이 기기에서 바꾼 내용이 모든 기기에 공유됩니다.' :
+    '꺼짐 · 공유된 내용은 보이지만, 여기서 바꾼 내용은 이 기기에만 저장됩니다.';
+  $('shareBtn').textContent = SH.token ? '공유 편집 끄기 (키 지우기)' : '공유 편집 켜기 (키 입력)';
+}
+const onShareBtn = async () => {
+  if (SH.token) { if (!confirm('이 기기에 저장된 접근 키를 지울까요?')) return; SH.token = ''; try { localStorage.removeItem('upup-gh-token'); } catch (e) {} drawShare(); return; }
+  const t = prompt('GitHub 저장소 전용 접근 키(github_pat_로 시작)를 붙여 넣어 주세요. 이 기기 브라우저에만 저장됩니다.');
+  if (!t) return;
+  const res = await fetch(`https://api.github.com/repos/${SH.owner}/${SH.repo}`, {headers: {Authorization: `Bearer ${t.trim()}`}}).catch(() => null);
+  if (!res || !res.ok) { alert('키를 확인하지 못했습니다. 키가 맞는지, upup 저장소 권한이 있는지 확인해 주세요.'); return; }
+  const j = await res.json();
+  if (j.permissions && !j.permissions.push) { alert('이 키에는 저장소에 쓰기 권한이 없습니다. Contents를 Read and write로 만들어 주세요.'); return; }
+  SH.token = t.trim(); try { localStorage.setItem('upup-gh-token', SH.token); } catch (e) {}
+  SH.err = ''; await loadShared();
+};
+async function setSub(code, value){
+  if (value === null) delete SH.data.sub[code]; else SH.data.sub[code] = value;
+  applySubs();
+  if (await saveShared()) render();
+}
 function starBtn(code){ const on = WATCH.has(code); return `<button class="star${on ? ' on' : ''}" data-star="${code}" aria-pressed="${on}" aria-label="관심종목 ${on ? '해제' : '추가'}">${on ? '★' : '☆'}</button>`; }
 
 const $ = id => document.getElementById(id);
@@ -1797,6 +2061,7 @@ const COLS = [
   {k:null,   t:'코드'},
   {k:null,   t:'시장'},
   {k:'sec',  t:'업종'},
+  {k:'sub',  t:'세부 섹터'},
   {k:'cap',  t:'시가총액(억)'},
   {k:'rt',   t:'등락률'},
   {k:'own',  t:'외국인 보유율'},
@@ -1815,6 +2080,8 @@ const COLS = [
 ];
 const vcols = () => COLS.filter(c => !c.show || c.show());
 function val(r, k){
+  if (k === 'sec') return r.sec ? `${r.sec}\u0001${!r.sub || r.sub === '미분류' ? '\uffff' : r.sub}` : null;   // 섹터 → 세부 섹터 순, 미분류는 맨 뒤
+  if (k === 'sub') return r.sub && r.sub !== '미분류' ? `${r.sub}\u0001${r.sec || ''}` : null;
   if (k === 'rt') return RT(r, S.per);
   if (k === 'net' || k === 'pct') return AA(r, S.per)[k];
   if (k === 'inet') return BB(r, S.per).net;
@@ -1840,7 +2107,7 @@ function drawHead(){
   $('head').querySelectorAll('th[data-k]').forEach(th => {
     const go = () => {
       const k = th.dataset.k;
-      if (S.sort === k) S.dir *= -1; else { S.sort = k; S.dir = (k === 'name' || k === 'sec' || k === 'dist' || k === 'per') ? 1 : -1; }
+      if (S.sort === k) S.dir *= -1; else { S.sort = k; S.dir = (k === 'name' || k === 'sec' || k === 'sub' || k === 'dist' || k === 'per') ? 1 : -1; }
       if ([...$('sort').options].some(o => o.value === k)) $('sort').value = k;
       S.page = 1; render();
     };
@@ -2135,7 +2402,7 @@ function ensureMonthProgress(){
     const by = {}; list.forEach((x, i) => by[x.sec] = {ret: x.ret, rank: i + 1});
     MP.data = {by, n: list.length, from: base, to: date};
     MP.loading = null;
-    if (S.view === 'sec') renderCycle();
+    if (S.view === 'sec') renderSec();   // 선진입 판단과 후보 종목도 이번 달 순위로 다시 계산
   }).catch(() => { MP.data = {none: true}; MP.loading = null; });
 }
 function mpCell(sec){
@@ -2151,6 +2418,23 @@ function secRetSince(sec){
   DATA.forEach(r => { if (r.sec === sec && r.h && r.h.ret !== null && r.h.cap) { w += r.h.cap; s += r.h.ret * r.h.cap; } });
   return w ? s / w : null;
 }
+// 선진입: 이번 달 진행 순위가 최하위권이고, 다음 TOP 예상이 1~2개월 뒤에 시작되면 [진입 검토 · 선진입]
+function secLabel(x){
+  const base = {label: x.label, why: x.why, pre: false, strong: false};
+  const d = MP.data, P = (CYC && CYC.pre) || {bottom: 10, ahead: [1, 2]};
+  if (!d || !d.by || !d.by[x.sec] || !CYC || CYC.nowk === undefined) return base;
+  const rk = d.by[x.sec], lowRank = d.n - rk.rank + 1;
+  if (lowRank > P.bottom) return base;
+  const hits = (x.nextT || []).filter(p => p.lo !== undefined && p.lo <= CYC.nowk + P.ahead[1] && p.hi >= CYC.nowk + P.ahead[0]);
+  if (!hits.length) return base;
+  const small = x.label.includes('소형') ? ' · 소형' : '';
+  return {label: '선진입' + (hits.length >= 2 ? ' ★' : '') + small, pre: true, strong: hits.length >= 2,
+          why: `선진입: 이번 달 최하위 ${lowRank}위(${plus(rk.ret)}${fmt(rk.ret, 1)}%)인데 TOP 예상 ${hits.map(h => `${h.txt}(${h.nm})`).join(', ')} / 원래 판단: [${x.label}] ${x.why}`};
+}
+function cycRowsView(){
+  const order = l => l.startsWith('선진입 ★') ? 0 : l.startsWith('선진입') ? 1 : l.startsWith('단기') ? 2 : l.startsWith('관망') ? 3 : 4;
+  return CYC.rows.map(x => ({...x, ...secLabel(x)})).map((x, i) => ({x, i})).sort((a, b) => order(a.x.label) - order(b.x.label) || a.i - b.i).map(o => o.x);
+}
 function renderCycle(){
   CYC = curCyc();
   ensureMonthProgress();
@@ -2164,13 +2448,13 @@ function renderCycle(){
   }
   $('cycTitle').textContent = `섹터 순환 주기 (${CYC.from} ~ ${CYC.to}, ${CYC.months}개월, ${CYC.nsec}개 섹터)` + (S.asof ? ` · 기준일 ${S.asof}` : '');
   document.body.classList.toggle('asofmode', !!S.asof);
-  $('cycNote').textContent = `매달 섹터별 한달 등락률(시총 가중)로 순위를 매겨 상위 ${CYC.top}개를 TOP, 하위 ${CYC.top}개를 최하위로 기록했습니다. 재진입은 같은 명단에 다시 들어오기까지의 평균 개월, 전환은 한 구간이 시작된 뒤 반대쪽 구간이 시작되기까지의 평균, 한 바퀴는 같은 쪽 구간이 다시 시작되기까지의 평균입니다. 다음 시기는 기준 달에 평균을 더한 예상이고, 예상이 지금부터 ${CYC.soon}개월 안이면 "다가옴/임박", TOP과 최하위 예상이 한 달이라도 겹치면 "겹침"으로 봅니다. [진입 검토]는 TOP 전환이 다가오거나 최하위 전환 전에 TOP 재진입이 먼저 올 것으로 보이면서 겹침이 없는 섹터입니다. 과거 주기가 앞으로도 반복된다는 보장은 없고, 횟수가 적은 섹터일수록 평균이 흔들립니다. 지금 달(${CYC.now})은 진행 중이라 주기 계산에서는 뺐고, 대신 "이번 달 진행" 칸에 지난달 마지막 거래일부터 오늘까지의 섹터 등락률 순위를 따로 보여줍니다(TOP ${CYC.top}·최하위 ${CYC.top} 안이면 표시).`;
+  $('cycNote').textContent = `매달 섹터별 한달 등락률(시총 가중)로 순위를 매겨 상위 ${CYC.top}개를 TOP, 하위 ${CYC.top}개를 최하위로 기록했습니다. 재진입은 같은 명단에 다시 들어오기까지의 평균 개월, 전환은 한 구간이 시작된 뒤 반대쪽 구간이 시작되기까지의 평균, 한 바퀴는 같은 쪽 구간이 다시 시작되기까지의 평균입니다. 다음 시기는 기준 달에 평균을 더한 예상이고, 예상이 지금부터 ${CYC.soon}개월 안이면 "다가옴/임박", TOP과 최하위 예상이 지금부터 3개월 안에서 한 달이라도 겹치면 "겹침"으로 봅니다(그보다 먼 훗날의 겹침은 보지 않음). [단기]는 TOP 전환이 곧 오거나 최하위 전환 전에 TOP 재진입이 먼저 올 것으로 보이는 섹터로 짧게 보는 매매용이고, [선진입]은 이번 달 진행 순위가 최하위 ${(CYC.pre || {}).bottom || 10}위 안으로 눌려 있는데 TOP 예상 시기가 이번 달~다다음 달 사이에 걸치는 섹터로 미리 들어가는 용도입니다. TOP 예상은 재진입·전환·한 바퀴 세 가지 방법으로 따로 내는데, 그중 두 가지 이상이 이 기간에 들어오면 ★를 붙입니다. 과거 주기가 앞으로도 반복된다는 보장은 없고, 횟수가 적은 섹터일수록 평균이 흔들립니다. 지금 달(${CYC.now})은 진행 중이라 주기 계산에서는 뺐고, 대신 "이번 달 진행" 칸에 지난달 마지막 거래일부터 오늘까지의 섹터 등락률 순위를 따로 보여줍니다(TOP ${CYC.top}·최하위 ${CYC.top} 안이면 표시).`;
   const f1 = v => v === null || v === undefined ? '-' : fmt(v, 1).replace(/\.0$/, '');
-  const tag = l => `<span class="tag ${l.startsWith('진입') ? 'go' : l.startsWith('관망') ? 'wait' : 'hold'}">${esc(l)}</span>`;
+  const tag = l => `<span class="tag ${l.startsWith('선진입') ? 'pre' : l.startsWith('단기') ? 'go' : l.startsWith('관망') ? 'wait' : 'hold'}">${esc(l)}</span>`;
   const stTxt = st => st === 'past' ? '<span class="st">지남</span>' : st === 'now' ? '<span class="st now">이번 달</span>' : '';
   const preds = L => L && L.length ? `<ul class="pred">${L.map(x => `<li><b>${x.txt}</b> ${stTxt(x.st)} <span class="st">(${x.nm}: ${x.base})</span></li>`).join('')}</ul>` : '-';
   const hist = G => G.length ? G.map(g => '(' + g.join(', ') + ')').join(', ') : '';
-  $('cycRows').innerHTML = CYC.rows.map(x => `<tr data-sec="${esc(x.sec)}">
+  $('cycRows').innerHTML = cycRowsView().map(x => `<tr data-sec="${esc(x.sec)}">
     <td class="nw">${tag(x.label)}</td>
     <td class="name nw">${esc(x.sec)}</td><td class="nw">${fmt(x.n)}</td>
     <td class="nw">${x.cur ? (x.cur.k === 'T' ? 'TOP 구간' : '최하위 구간') + ` (${x.cur.start}~)` : '-'}</td>
@@ -2215,7 +2499,8 @@ $('refBox').addEventListener('click', e => {
 const PICK = {minCap: 1000, minTv: 10, maxQ: 50, perSec: 5};
 function pickStocks(){
   if (!CYC || !CYC.rows) return [];
-  const goSecs = CYC.rows.filter(x => x.label.startsWith('진입 검토')).map(x => x.sec);
+  const views = cycRowsView().filter(x => x.label.startsWith('단기') || x.label.startsWith('선진입'));
+  const goSecs = views.map(x => x.sec), secLab = Object.fromEntries(views.map(x => [x.sec, x.label]));
   const patBy = Object.fromEntries(((PAT && PAT.match) || []).map(m => [m.code, m.score]));
   const out = [];
   const median = xs => { const a = xs.slice().sort((x, y) => x - y); return a.length ? (a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2) : null; };
@@ -2269,7 +2554,7 @@ function pickStocks(){
       if (qAvg !== null && Q(r) < qAvg) cool += 5;
       if (cool === 10) why.push('섹터 평균보다 덜 오름');
       const total = H ? (flow + earn + cool) / 65 * 100 : flow + pos + earn + pat + cool;   // 기준일 모드는 65점 만점을 100점으로 환산
-      return {r, sec, total, flow, pos, earn, pat, cool, why, ret: H ? r.h.ret : null};
+      return {r, sec, total, flow, pos, earn, pat, cool, why, ret: H ? r.h.ret : null, lab: secLab[sec]};
     }).sort((x, y) => y.total - x.total).slice(0, PICK.perSec);
     out.push(...scored);
   });
@@ -2277,13 +2562,13 @@ function pickStocks(){
 }
 function renderPicks(){
   const list = pickStocks();
-  const asofTxt = S.asof ? ` 지금은 기준일 ${S.asof} 모드라서 그날 기준 주기의 [진입 검토] 섹터와 그날까지의 수급·등락률로 다시 골랐고, 그날 기준 값이 없는 위치(지지·저항)와 패턴 점수는 빼고 나머지 65점을 100점으로 환산했습니다. 실적은 최신 결산 기준이고, "기준일 이후"는 그날 종가에서 최신 종가까지의 등락입니다.` : '';
-  $('pickNote').textContent = `[진입 검토] 섹터 안에서 시총 ${fmt(PICK.minCap)}억 이상, 최근 20일 평균 거래대금 ${PICK.minTv}억 이상, 3달 등락률 +${PICK.maxQ}% 이하인 종목만 골라 점수를 매겼습니다. 수급 40점(외국인·기관 한달 합산 순매수의 시총 대비 섹터 내 순위, 10일 순매수 여부, 한달 중 순매수한 날 비율), 위치 25점(지지선과 가까울수록, 위쪽 저항선까지 여유가 클수록), 실적 15점(흑자, 섹터 중간보다 낮은 PER), 패턴 10점(급등 직전 패턴 유사도), 과열 회피 10점(1년·3달 등락률이 섹터 평균보다 낮음)이고 섹터마다 상위 ${PICK.perSec}개를 보여줍니다. 점수 기준은 제가 정한 가설이라 매수 추천이 아니며, 이 기준이 실제로 잘 맞았는지는 따로 검증되지 않았습니다.` + asofTxt;
+  const asofTxt = S.asof ? ` 지금은 기준일 ${S.asof} 모드라서 그날 기준 주기의 [단기]·[선진입] 섹터와 그날까지의 수급·등락률로 다시 골랐고, 그날 기준 값이 없는 위치(지지·저항)와 패턴 점수는 빼고 나머지 65점을 100점으로 환산했습니다. 실적은 최신 결산 기준이고, "기준일 이후"는 그날 종가에서 최신 종가까지의 등락입니다.` : '';
+  $('pickNote').textContent = `[단기]와 [선진입] 섹터 안에서 시총 ${fmt(PICK.minCap)}억 이상, 최근 20일 평균 거래대금 ${PICK.minTv}억 이상, 3달 등락률 +${PICK.maxQ}% 이하인 종목만 골라 점수를 매겼습니다. 수급 40점(외국인·기관 한달 합산 순매수의 시총 대비 섹터 내 순위, 10일 순매수 여부, 한달 중 순매수한 날 비율), 위치 25점(지지선과 가까울수록, 위쪽 저항선까지 여유가 클수록), 실적 15점(흑자, 섹터 중간보다 낮은 PER), 패턴 10점(급등 직전 패턴 유사도), 과열 회피 10점(1년·3달 등락률이 섹터 평균보다 낮음)이고 섹터마다 상위 ${PICK.perSec}개를 보여줍니다. 점수 기준은 제가 정한 가설이라 매수 추천이 아니며, 이 기준이 실제로 잘 맞았는지는 따로 검증되지 않았습니다.` + asofTxt;
   if (!list.length) { $('pickRows').innerHTML = `<tr><td colspan="11" class="empty">조건에 맞는 후보가 없습니다.</td></tr>`; return; }
   let prev = null, rank = 0;
   $('pickRows').innerHTML = list.map(x => {
     const first = x.sec !== prev; if (first) rank = 0; rank++; prev = x.sec;
-    return `<tr data-code="${x.r.code}" class="${first ? 'first' : ''}"><td class="name nw">${first ? esc(x.sec) : ''}</td><td class="nw">${rank}</td>
+    return `<tr data-code="${x.r.code}" class="${first ? 'first' : ''}"><td class="name nw">${first ? `${esc(x.sec)}<div class="hist">${esc(x.lab || '')}</div>` : ''}</td><td class="nw">${rank}</td>
       <td class="name nw">${esc(x.r.name)}</td><td class="nw"><span class="tot">${fmt(x.total, 0)}</span></td>
       <td class="nw">${fmt(x.flow, 0)}</td><td class="nw">${S.asof ? '-' : fmt(x.pos, 0)}</td><td class="nw">${fmt(x.earn, 0)}</td><td class="nw">${S.asof ? '-' : fmt(x.pat, 0)}</td><td class="nw">${fmt(x.cool, 0)}</td>
       <td class="asofc nw">${x.ret === null || x.ret === undefined ? '-' : `<span class="${x.ret > 0 ? 'pos' : x.ret < 0 ? 'neg' : ''}">${plus(x.ret)}${fmt(x.ret, 1)}%</span>`}</td>
@@ -2291,32 +2576,54 @@ function renderPicks(){
   }).join('');
 }
 $('pickRows').addEventListener('click', e => { const tr = e.target.closest('tr[data-code]'); if (tr) openDetail(tr.dataset.code); });
+function renderCycleValid(){
+  const v = CYC0 && CYC0.valid;
+  if (!v || !v.months || !v.months.length) { $('cvNote').textContent = '검증할 과거 달이 아직 부족합니다.'; $('cvRows').innerHTML = ''; return; }
+  const g = v.groups;
+  $('cvNote').textContent = `${v.months[0]}~${v.months[v.months.length - 1]} (${v.months.length}개월) 동안 달마다, 그 달 중에 알 수 있던 정보(그 전 달까지의 주기, 그 달 순위)로 판단했을 때 각 기준에 걸린 섹터가 이후 TOP ${v.top}에 들었는지와 그 기간 수익률을 셌습니다. [단기]는 다음 1개월, [선진입]은 다음 1~2개월로 보고, 각각 같은 기간의 전체 섹터 평균과 비교합니다. 검증에서는 "이번 달 진행"을 그 달 전체 순위로 봤고, 건수가 적으면 우연일 수 있습니다.`;
+  const row = (name, per, x, base) => {
+    const lift = x.rate !== null && base.rate ? x.rate / base.rate : null;
+    return `<tr><td class="name">${name}</td><td>${per}</td><td>${fmt(x.n)}건</td><td>${fmt(x.hit)}건</td><td>${x.rate === null ? '-' : fmt(x.rate, 1) + '%'}</td>
+      <td class="${x.ret > 0 ? 'pos' : x.ret < 0 ? 'neg' : ''}">${x.ret === null ? '-' : plus(x.ret) + fmt(x.ret, 2) + '%'}</td>
+      <td>${lift === null ? '-' : `<span class="lift ${lift >= 1.3 ? 'pos' : lift < 0.8 ? 'neg' : ''}">${fmt(lift, 1)}배</span>`}</td></tr>`;
+  };
+  $('cvRows').innerHTML = row('단기', '다음 1개월', g.short, g.all1) + row('전체 섹터 평균', '다음 1개월', g.all1, g.all1) +
+    row('선진입 ★ (예상 2개 이상)', '다음 1~2개월', g.pre2, g.all2) + row('선진입 (전체)', '다음 1~2개월', g.pre, g.all2) + row('전체 섹터 평균', '다음 1~2개월', g.all2, g.all2);
+}
 function renderSec(){
   renderCycle();
+  renderCycleValid();
   renderPicks();
   renderRef();
   const q = S.q.trim().toLowerCase();
-  const G = {};
+  const G = {}, GS = {};
+  const newG = name => ({name, n: 0, cap: 0, capR: 0, wr: 0, up: 0, nr: 0, fnet: 0, inet: 0, top: null, topv: -Infinity, ftop: null, ftopv: -Infinity});
+  const add = (g, r) => {
+    const a = AA(r, S.per), b = BB(r, S.per), rt = RT(r, S.per);
+    g.n++; g.cap += r.cap; g.fnet += a.net; g.inet += b.net;
+    if (rt !== null && rt !== undefined) { g.capR += r.cap; g.wr += rt * r.cap; g.nr++; if (rt > 0) g.up++; if (rt > g.topv) { g.topv = rt; g.top = r; } }
+    if (a.net > g.ftopv) { g.ftopv = a.net; g.ftop = r; }
+  };
   DATA.forEach(r => {
     if (!r.sec) return;
     if (!((S.mkt === 'ALL' || r.mkt === S.mkt) && r.cap >= S.minCap && (S.sr === 'ALL' || (r.sr && r.sr.near)) &&
           (S.watch === 'ALL' || WATCH.has(r.code)) &&
           (S.pf === 'ALL' || (S.pf === 'P' ? r.eps > 0 : (r.eps !== null && r.eps < 0))))) return;
-    const g = G[r.sec] || (G[r.sec] = {name: r.sec, n: 0, cap: 0, capR: 0, wr: 0, up: 0, nr: 0, fnet: 0, inet: 0, top: null, topv: -Infinity, ftop: null, ftopv: -Infinity});
-    const a = AA(r, S.per), b = BB(r, S.per), rt = RT(r, S.per);
-    g.n++; g.cap += r.cap; g.fnet += a.net; g.inet += b.net;
-    if (rt !== null && rt !== undefined) { g.capR += r.cap; g.wr += rt * r.cap; g.nr++; if (rt > 0) g.up++; if (rt > g.topv) { g.topv = rt; g.top = r; } }
-    if (a.net > g.ftopv) { g.ftopv = a.net; g.ftop = r; }
+    add(G[r.sec] || (G[r.sec] = newG(r.sec)), r);
+    const gs = GS[r.sec] || (GS[r.sec] = {}), sub = r.sub || '미분류';
+    add(gs[sub] || (gs[sub] = newG(sub)), r);
   });
-  let list = Object.values(G).map(g => ({...g, rt: g.capR ? g.wr / g.capR : null, up: g.nr ? g.up / g.nr * 100 : null,
-    fpct: g.cap ? g.fnet / g.cap : 0, ipct: g.cap ? g.inet / g.cap : 0, spct: g.cap ? (g.fnet + g.inet) / g.cap : 0}));
-  if (q) list = list.filter(g => g.name.toLowerCase().includes(q));
-  list.sort((x, y) => {
+  const fin = g => ({...g, rt: g.capR ? g.wr / g.capR : null, up: g.nr ? g.up / g.nr * 100 : null,
+    fpct: g.cap ? g.fnet / g.cap : 0, ipct: g.cap ? g.inet / g.cap : 0, spct: g.cap ? (g.fnet + g.inet) / g.cap : 0});
+  const sorter = (x, y) => {
     const a = x[S.ssort], b = y[S.ssort];
     if (S.ssort === 'name') return a.localeCompare(b, 'ko') * S.sdir;
     if (a === null || b === null) return a === b ? 0 : (a === null ? 1 : -1);
     return (a - b) * S.sdir;
-  });
+  };
+  let list = Object.values(G).map(fin);
+  if (q) list = list.filter(g => g.name.toLowerCase().includes(q));
+  list.sort(sorter);
   $('secHead').innerHTML = SCOLS.map(c => c.k
     ? `<th tabindex="0" data-k="${c.k}">${c.t}${S.ssort === c.k ? `<span class="arw">${S.sdir < 0 ? '▼' : '▲'}</span>` : ''}</th>`
     : `<th class="nosort">${c.t}</th>`).join('');
@@ -2324,21 +2631,28 @@ function renderSec(){
     const go = () => { const k = th.dataset.k; if (S.ssort === k) S.sdir *= -1; else { S.ssort = k; S.sdir = k === 'name' ? 1 : -1; } renderSec(); };
     th.onclick = go; th.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
   });
-  $('secInfo').textContent = `${fmt(list.length)}개 섹터. 머리글을 누르면 정렬되고, 섹터를 누르면 그 섹터 종목 순위로 이동합니다.`;
+  $('secInfo').textContent = `${fmt(list.length)}개 섹터. 머리글을 누르면 정렬되고, 섹터 이름 왼쪽 ▸를 누르면 세부 섹터가 펼쳐집니다. 섹터나 세부 섹터를 누르면 그 종목 순위로 이동합니다.`;
   const cc = v => v > 0 ? 'pos' : (v < 0 ? 'neg' : '');
   const pctc = (v, d = 2) => v === null || v === undefined ? '<span class="muted">-</span>' : `<span class="${cc(v)}">${plus(v)}${fmt(v, d)}%</span>`;
-  $('secRows').innerHTML = list.length ? list.map(g => `<tr data-sec="${esc(g.name)}">
-    <td class="name">${esc(g.name)}</td><td>${fmt(g.n)}</td><td>${fmt(g.cap)}</td><td>${pctc(g.rt)}</td>
+  const cells = g => `<td>${fmt(g.n)}</td><td>${fmt(g.cap)}</td><td>${pctc(g.rt)}</td>
     <td>${g.up === null ? '-' : fmt(g.up, 0) + '%'}</td>
     <td class="${cc(g.fnet)}">${won(g.fnet, true)}</td><td class="${cc(g.inet)}">${won(g.inet, true)}</td>
     <td>${pctc(g.fpct, 3)}</td><td>${pctc(g.ipct, 3)}</td><td>${pctc(g.spct, 3)}</td>
     <td>${g.top ? `${esc(g.top.name)} <span class="${cc(g.topv)}">${plus(g.topv)}${fmt(g.topv, 1)}%</span>` : '-'}</td>
-    <td>${g.ftop && g.ftopv > 0 ? `${esc(g.ftop.name)} <span class="pos">${won(g.ftopv, true)}</span>` : '-'}</td></tr>`).join('')
-    : `<tr><td colspan="${SCOLS.length}" class="empty">조건에 맞는 섹터가 없습니다.</td></tr>`;
+    <td>${g.ftop && g.ftopv > 0 ? `${esc(g.ftop.name)} <span class="pos">${won(g.ftopv, true)}</span>` : '-'}</td>`;
+  $('secRows').innerHTML = list.length ? list.map(g => {
+    const open = S.secOpen.has(g.name), subs = Object.values(GS[g.name] || {}).map(fin).sort(sorter);
+    const nsub = subs.length;
+    let h = `<tr data-sec="${esc(g.name)}"><td class="name"><button class="tgl" data-tgl="${esc(g.name)}" aria-expanded="${open}">${nsub > 1 ? (open ? '▾' : '▸') : '·'}</button>${esc(g.name)}</td>${cells(g)}</tr>`;
+    if (open) h += subs.map(x => `<tr class="subrow" data-sec="${esc(g.name)}" data-sub="${esc(x.name)}"><td class="name">${esc(x.name)}</td>${cells(x)}</tr>`).join('');
+    return h;
+  }).join('') : `<tr><td colspan="${SCOLS.length}" class="empty">조건에 맞는 섹터가 없습니다.</td></tr>`;
 }
 $('secRows').addEventListener('click', e => {
+  const t = e.target.closest('[data-tgl]');
+  if (t) { const k = t.dataset.tgl; S.secOpen.has(k) ? S.secOpen.delete(k) : S.secOpen.add(k); renderSec(); return; }
   const tr = e.target.closest('tr[data-sec]'); if (!tr) return;
-  S.sec = tr.dataset.sec; $('secf').value = S.sec; S.view = 'rank'; S.page = 1;
+  S.sec = tr.dataset.sec; $('secf').value = S.sec; S.sub = tr.dataset.sub || ''; fillSubSelect(); S.view = 'rank'; S.page = 1;
   $('view').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === 'rank'));
   render(); window.scrollTo({top: 0, behavior: 'smooth'});
 });
@@ -2356,6 +2670,7 @@ function render(){
   let rows = DATA.filter(r =>
     (S.watch === 'ALL' || WATCH.has(r.code)) &&
     (!S.sec || r.sec === S.sec) &&
+    (!S.sub || (r.sub || '미분류') === S.sub) &&
     (S.pf === 'ALL' || (S.pf === 'P' ? r.eps > 0 : (r.eps !== null && r.eps < 0))) &&
     (S.mkt === 'ALL' || r.mkt === S.mkt) &&
     (S.sr === 'ALL' || (r.sr && r.sr.near)) &&
@@ -2364,7 +2679,8 @@ function render(){
   const total = rows.length;
   rows.sort((a, b) => {
     const x = val(a, S.sort), y = val(b, S.sort);
-    if (S.sort === 'name' || S.sort === 'sec') return (x || '힣').localeCompare(y || '힣', 'ko') * S.dir;
+    if (S.sort === 'name') return (x || '힣').localeCompare(y || '힣', 'ko') * S.dir;
+    if (S.sort === 'sec' || S.sort === 'sub') { if (!x || !y) return x === y ? 0 : (!x ? 1 : -1); return (x < y ? -1 : x > y ? 1 : 0) * S.dir; }
     if (x === null || y === null) return x === y ? 0 : (x === null ? 1 : -1);
     return (x - y) * S.dir;
   });
@@ -2391,6 +2707,7 @@ function render(){
       <td class="code">${r.code}</td>
       <td>${r.mkt}</td>
       <td class="sec" title="${esc(r.sec || '')}">${r.sec ? esc(r.sec) : '<span class="muted">-</span>'}</td>
+      <td class="sec" title="${esc(r.sub || '')}">${r.sub && r.sub !== '미분류' ? esc(r.sub) : '<span class="muted">-</span>'}</td>
       <td>${fmt(r.cap)}</td>
       <td class="${cc(RT(r, S.per))}">${RT(r, S.per) === null || RT(r, S.per) === undefined ? '<span class="muted">-</span>' : plus(RT(r, S.per)) + fmt(RT(r, S.per), 2) + '%'}</td>
       <td>${fmt(r.own, 2)}%</td>
@@ -2653,6 +2970,20 @@ function setDetailDate(d){
   mark();
 }
 $('dDate').onchange = e => setDetailDate(e.target.value);
+function subEditor(r){
+  const cur = r.sub || '미분류';
+  if (!SH.token) return `${esc(cur)}${r.subO ? ' <span class="muted">(직접 지정)</span>' : ''}`;
+  const opts = [...new Set([...(META.subs && META.subs[r.sec] || []), ...DATA.filter(x => x.sec === r.sec).map(x => x.sub).filter(Boolean), '미분류', cur])];
+  return `<select class="subsel" data-subcode="${r.code}">${opts.map(v => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(v)}</option>`).join('')}
+    <option value="__new">직접 입력…</option>${r.subO ? '<option value="__auto">자동 분류로 되돌리기</option>' : ''}</select>`;
+}
+document.addEventListener('change', async e => {
+  const sel = e.target.closest('select[data-subcode]'); if (!sel) return;
+  const code = sel.dataset.subcode; let v = sel.value;
+  if (v === '__new') { v = prompt('세부 섹터 이름을 입력해 주세요 (예: 냉각·공조)'); if (!v) { openDetail(code); return; } v = v.trim(); }
+  await setSub(code, v === '__auto' ? null : v);
+  openDetail(code);
+});
 function openDetail(code){
   const r = BY[code]; if (!r) return;
   const d = r.a['1'], t = r.a['10'], m = r.a['M'], di = r.b['1'], ti = r.b['10'], mi = r.b['M'];
@@ -2665,7 +2996,7 @@ function openDetail(code){
   const pl = r.eps === null || r.eps === undefined ? '-' : r.eps > 0 ? '흑자' : r.eps < 0 ? '적자' : '-';
   const cells = [
     ['종목코드', r.code], ['시장', r.mkt], ['업종', r.sec ? esc(r.sec) : '-'],
-    ['세부 산업', r.sec1 ? esc(r.sec1) : '-'], ['거래소 업종', r.sec0 ? esc(r.sec0) : '-'], ['1년 등락률', r.rt && r.rt.Y !== null ? plus(r.rt.Y) + fmt(r.rt.Y, 1) + '%' : '-'], ['3달 등락률', r.rt && r.rt.Q !== null ? plus(r.rt.Q) + fmt(r.rt.Q, 1) + '%' : '-'],
+    ['세부 섹터', subEditor(r)], ['세부 산업', r.sec1 ? esc(r.sec1) : '-'], ['거래소 업종', r.sec0 ? esc(r.sec0) : '-'], ['1년 등락률', r.rt && r.rt.Y !== null ? plus(r.rt.Y) + fmt(r.rt.Y, 1) + '%' : '-'], ['3달 등락률', r.rt && r.rt.Q !== null ? plus(r.rt.Q) + fmt(r.rt.Q, 1) + '%' : '-'],
     ['종가', fmt(r.price) + '원'], ['시가총액', fmt(r.cap) + '억'], ['외국인 보유율', fmt(r.own, 2) + '%'],
     ['한도소진율', fmt(r.exh, 2) + '%'], ['실적', pl], ['EPS', r.eps === null || r.eps === undefined ? '-' : fmt(r.eps) + '원'],
     ['PER', r.eps > 0 && r.per > 0 ? fmt(r.per, 1) + '배' : '-'], ['PBR', r.pbr ? fmt(r.pbr, 2) + '배' : '-'],
@@ -2706,7 +3037,6 @@ function seg(el, onPick){
     b.classList.add('on'); onPick(b.dataset.v); S.page = 1; render();
   });
 }
-$('sub').textContent = `외국인·기관 순매수 순위, 기준일 ${DAYS[ND - 1]}, 코스피와 코스닥 ${fmt(META.count)}개 종목 (생성 ${META.made})`;
 seg($('per'), v => S.per = v);
 seg($('watchf'), v => S.watch = v);
 seg($('mkt'), v => S.mkt = v);
@@ -2721,13 +3051,27 @@ seg($('view'), v => S.view = v);
 [...new Set(DATA.map(r => r.sec).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko')).forEach(v => {
   const o = document.createElement('option'); o.value = v; o.textContent = v; $('secf').appendChild(o);
 });
-$('secf').onchange = e => { S.sec = e.target.value; S.page = 1; render(); };
+$('secf').onchange = e => { S.sec = e.target.value; S.sub = ''; S.page = 1; fillSubSelect(); render(); };
+function fillSubSelect(){
+  const box = $('subField'), sel = $('subf');
+  if (!S.sec) { box.hidden = true; S.sub = ''; return; }
+  const subs = [...new Set(DATA.filter(r => r.sec === S.sec).map(r => r.sub || '미분류'))].sort((a, b) => (a === '미분류') - (b === '미분류') || a.localeCompare(b, 'ko'));
+  sel.innerHTML = '<option value="">전체</option>' + subs.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  sel.value = subs.includes(S.sub) ? S.sub : ''; if (!subs.includes(S.sub)) S.sub = '';
+  box.hidden = false;
+}
+$('subf').onchange = e => { S.sub = e.target.value; S.page = 1; render(); };
 seg($('srf'), v => S.sr = v);
 $('sort').onchange = e => { S.sort = e.target.value; S.dir = (S.sort === 'dist' || S.sort === 'per') ? 1 : -1; S.page = 1; render(); };
 $('minCap').oninput = e => { S.minCap = Number(e.target.value) || 0; S.page = 1; render(); };
 $('top').onchange = e => { S.top = Number(e.target.value); S.page = 1; render(); };
 $('q').oninput = e => { S.q = e.target.value; S.page = 1; render(); };
+$('shareBtn').onclick = onShareBtn;
+$('gearBtn').onclick = e => { e.stopPropagation(); const p = $('gearPanel'); p.hidden = !p.hidden; $('gearBtn').setAttribute('aria-expanded', !p.hidden); };
+document.addEventListener('click', e => { if (!e.target.closest('.gearwrap')) { $('gearPanel').hidden = true; $('gearBtn').setAttribute('aria-expanded', 'false'); } });
+applySubs(); drawShare();
 render();
+loadShared();
 </script>
 </body>
 </html>
