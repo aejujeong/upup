@@ -124,7 +124,28 @@ class Level:
         self.mit, self.hidden, self.entries, self.sweeps = False, False, 0, 0
 
 
-def sr_levels(o, h, l, c):
+def _sr_state_at(levels, px):
+    """그 봉 시점에 화면에 보였을 구간으로 지지선 상태·거리·저항 여유를 계산 (at=3 근접, in=2 구간 안, app=1 접근, 0 해당 없음)"""
+    vis = [lv for lv in levels if not lv.mit and not lv.hidden][: SR["max_levels"]]
+    sups = [lv for lv in vis if lv.sup]
+    st = 0
+    for lv in sups:
+        if lv.btm <= px <= lv.base * (1 + SR_NEAR_PCT / 100):
+            st = 3
+            break
+        if lv.btm <= px <= lv.top:
+            st = max(st, 2)
+        elif lv.top < px <= lv.top * (1 + SR_NEAR_PCT / 100):
+            st = max(st, 1)
+    dist = max(((lv.base - px) / px * 100 for lv in sups if px > 0), default=None)
+    above = [lv for lv in vis if not lv.sup and lv.top > px]
+    room = max(0.0, min((lv.btm - px) / px * 100 for lv in above)) if above and px > 0 else None
+    return [st, None if dist is None else round(dist, 1), None if room is None else round(room, 1)]
+
+
+def sr_levels(o, h, l, c, snap=None):
+    """snap: 과거 날짜별 지지선 상태를 남길 봉 번호 모음. 계산은 봉을 차례로 따라가므로 그 시점까지의 봉만 쓴다."""
+    states = {}
     n = len(c)
     k = max(1, int(SR["sensitivity"]))
     p = SR["atr_period"]
@@ -212,9 +233,13 @@ def sr_levels(o, h, l, c):
                         lv.entries += 1
                     if h[i] > lv.top and max(c[i], o[i]) < lv.top:
                         lv.sweeps += 1
+        if snap and i in snap:
+            states[i] = _sr_state_at(levels, c[i])
 
     # 마지막 봉 기준으로 화면에 보이는 활성 구간(최신순 최대 N개, 지지·저항 합산)
     visible = [lv for lv in levels if not lv.mit and not lv.hidden][: SR["max_levels"]]
+    if snap is not None:
+        return [lv for lv in visible if lv.sup], [lv for lv in visible if not lv.sup], states
     return [lv for lv in visible if lv.sup], [lv for lv in visible if not lv.sup]
 
 
@@ -732,6 +757,8 @@ def collect(days_all):
     adj = {}     # 종목별 수정주가 종가 {날짜: 종가}
     series = {}  # 종목별 (날짜, 수정종가, 수정거래량) — 패턴 찾기용
     frames_all = []   # 두 시장의 날짜별 일봉을 모아 두었다가 종목별로 한 번에 계산
+    srh = {}          # 종목 → 날짜 → 그날 기준 지지선 상태
+    hist_set = set(days_all[-NET_HISTORY:])
     for m in MARKETS:
         print(f"[{m}] 시가총액·외국인 보유율 불러오는 중...")
         cap = stock.get_market_cap(base, market=m)
@@ -841,7 +868,9 @@ def collect(days_all):
         if "등락률" in g.columns:
             o, h, l, c, vol = adjust_splits(o, h, l, c, g["등락률"].astype(float).tolist(), vol)
         dlist = g["day"].tolist()
-        sups, ress = sr_levels(o, h, l, c)
+        want = [k for k, d in enumerate(dlist) if d in hist_set]
+        sups, ress, sts = sr_levels(o, h, l, c, set(want))
+        srh[t] = {dlist[k]: v for k, v in sts.items()}              # 과거 날짜별 그날 기준 지지선 상태
         fl = hn.get(t)
         save_chart(t, dlist, o, h, l, c, {"f": fl["f"][-NET_HISTORY:], "i": fl["i"][-NET_HISTORY:]} if fl else None)
         adj[t] = dict(zip(dlist, c))
@@ -883,7 +912,7 @@ def collect(days_all):
         r["d"] = [x if x else [0, 0, 0, 0] for x in r["d"]]
         r["di"] = [x if x else [0, 0, 0, 0] for x in r["di"]]
     tlog("지지선·차트 계산 끝")
-    save_hist(rows, hn, adj, days_net)
+    save_hist(rows, hn, adj, days_net, srh)
     tlog("과거 시점 파일 저장 끝")
     global PATTERN
     try:
@@ -1605,7 +1634,7 @@ def find_failures(rows, series, hn, didx, tmpls, tset, weights=None):
     return fails, stat
 
 
-def save_hist(rows, hn, adj, days_net):
+def save_hist(rows, hn, adj, days_net, srh=None):
     """날짜별로 '그날까지의 누적 순매수'와 수정주가를 저장한다. 두 날짜의 누적값 차이 = 그 사이 순매수."""
     cum = {t: [0, 0] for t in rows}
     first = len(days_net) - NET_HISTORY
@@ -1620,6 +1649,9 @@ def save_hist(rows, hn, adj, days_net):
                     cum[t][1] += x["i"][j][0] - x["i"][j][1]
             px = adj.get(t, {}).get(day)
             snap[t] = [cum[t][0], cum[t][1], None if px is None else round(px, 1)]
+            st = (srh or {}).get(t, {}).get(day)
+            if st:
+                snap[t] += st                                        # [그날 지지선 상태(0~3), 지지선까지 %, 저항까지 %]
         if j < first:
             continue
         key = f"{day[:4]}-{day[4:6]}-{day[6:]}"
@@ -1967,6 +1999,7 @@ td.st{text-align:center;width:44px}
     </table></div>
     <h2 class="ph" id="cycTitle">섹터 순환 주기</h2>
     <div class="flowopt"><span>수급 조건</span><div class="seg" id="flowOpt"><button data-v="strict" class="on">거르기</button><button data-v="show">표시만</button></div>
+      <span>추천 안정도</span><div class="seg" id="stabOpt"><button data-v="0" class="on">전체</button><button data-v="6">6일 이상</button></div>
       <span class="note">거르기(기본): 섹터 외국인+기관 한달 순매도인 단기·선진입은 [관망 · 수급 약함]으로 뺌 / 표시만: 그대로 두고 순매수면 "수급 ✓"만 표시</span></div>
     <p class="mktwarn" id="mktWarn" hidden></p>
     <p class="pnote" id="cycNote"></p>
@@ -2079,7 +2112,7 @@ const CREF = __CYCREF__;
 const REFBY = Object.fromEntries(((CREF && CREF.secs) || []).map(x => [x.sec.replace(/\s/g, ''), x]));
 const refOf = sec => REFBY[(sec || '').replace(/\s/g, '')];
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', flowOpen:false, flowStrict:true, cycAll:false, view:'rank', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
+const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, view:'rank', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
 const RT = (r, p) => S.asof ? (r.h ? r.h.rt[p] : null) : (r.rt ? r.rt[p] : null);   // 기간 등락률
 const AA = (r, p) => S.asof ? r.h.a[p] : r.a[p];   // 외국인 (기준일 반영)
 const BB = (r, p) => S.asof ? r.h.b[p] : r.b[p];   // 기관 (기준일 반영)
@@ -2223,6 +2256,7 @@ const vcols = () => COLS.filter(c => (!c.show || c.show()) && (c.grp !== 'fd' ||
 function val(r, k){
   if (k === 'sec') return r.sec ? `${r.sec}\u0001${!r.sub || r.sub === '미분류' ? '\uffff' : r.sub}` : null;   // 섹터 → 세부 섹터 순, 미분류는 맨 뒤
   if (k === 'sub') return r.sub && r.sub !== '미분류' ? `${r.sub}\u0001${r.sec || ''}` : null;
+  if (k === 'dist' && S.asof) { const x = r.h && r.h.sr; if (!x) return null; return x.st === 'at' ? -3 : x.st === 'in' ? -2 : x.st === 'app' ? -1 : (x.dist === null || x.dist === undefined ? null : Math.abs(x.dist)); }   // 근접 → 구간 안 → 접근 → 가까운 순
   if (k === 'rt') return RT(r, S.per);
   if (k === 'net' || k === 'pct') return AA(r, S.per)[k];
   if (k === 'inet') return BB(r, S.per).net;
@@ -2265,11 +2299,19 @@ function plCell(r){
 }
 // 지지선 상태: at 지지선 근접 / in 지지 구간 안 / app 구간 접근 (모두 최신 종가 기준)
 function srOk(r){
-  if (S.sr === 'ALL' || S.asof) return true;          // 기준일 모드에서는 오늘 기준 지지선으로 거르지 않음
-  const st = r.sr && r.sr.st;
+  if (S.sr === 'ALL') return true;
+  if (S.asof && !(r.h && r.h.sr)) return true;         // 그날 기준 지지선 기록이 없으면 거르지 않음
+  const st = S.asof ? r.h.sr.st : (r.sr && r.sr.st);
   return S.sr === 'AT' ? st === 'at' : S.sr === 'IN' ? (st === 'at' || st === 'in') : !!st;
 }
 function srCell(r){
+  if (S.asof && r.h && r.h.sr) {                       // 기준일 모드: 그날까지의 봉으로 계산한 지지선
+    const x = r.h.sr, day = '<span class="subn">그날 기준</span>';
+    if (x.st === 'at') return `<span class="badge">지지선 근접</span>${day}`;
+    if (x.st === 'in') return `<span class="badge in">지지 구간 안</span>${day}`;
+    if (x.st === 'app') return `<span class="badge app">구간 접근</span>${day}`;
+    return x.dist === null || x.dist === undefined ? `<span class="muted">-</span>${day}` : `<span class="muted">${plus(x.dist)}${fmt(x.dist, 1)}%</span>${day}`;
+  }
   if (!r.sr || !r.sr.levels.length) return '<span class="muted">-</span>';
   const dim = S.asof ? ' dim' : '', st = r.sr.st;
   const nw = r.sr.new && !S.asof ? '<span class="newtag">새로 진입</span>' : '';
@@ -2357,6 +2399,7 @@ async function setAsof(d){
         rt: {'1': px && a1[2] ? (px / a1[2] - 1) * 100 : null, '10': px && a10[2] ? (px / a10[2] - 1) * 100 : null,
              'M': px && aM[2] ? (px / aM[2] - 1) * 100 : null},
         px, cap: capD,
+        sr: c && c.length > 3 ? {st: [null, 'app', 'in', 'at'][c[3]] || null, dist: c[4], room: c[5]} : null,   // 그날 기준 지지선
       };
       const q0 = s60 && s60[r.code] && s60[r.code][2], y0 = s250 && s250[r.code] && s250[r.code][2];
       r.h.q = px && q0 ? (px / q0 - 1) * 100 : null;
@@ -2597,6 +2640,56 @@ function ensureMonthProgress(){
 // 기준일 순위 = 기준일까지 10거래일 동안의 하루 순위 평균, 한 달 전 순위 = 20거래일 전까지 10거래일 동안의 평균
 const RR = {key: null, data: null, loading: null, win: 20, avg: 10};
 const MKT_WARN = -5;   // 시장 전체 최근 20거래일 등락률이 이 % 이하면 경고
+// 날짜 번호 i 기준 순위 묶음: 하루 순위(최근 20거래일 등락률) → 10일 평균(지금) / 20거래일 전 10일 평균(한 달 전)
+function rankPack(SN, i){
+  const W = RR.win, A = RR.avg;
+  const daysNow = [], daysPrev = [];
+  for (let k = 0; k < A; k++) { if (i - k - W >= 0) daysNow.push(i - k); if (i - W - k - W >= 0) daysPrev.push(i - W - k); }
+  const cache = {};
+  const dayRank = d => {
+    if (cache[d] !== undefined) return cache[d];
+    const a = SN[d - W], b = SN[d]; if (!a || !b) return (cache[d] = null);
+    const G = {};
+    DATA.forEach(r => {
+      if (!r.sec) return;
+      const p0 = a[r.code] && a[r.code][2], p1 = b[r.code] && b[r.code][2];
+      if (!p0 || !p1) return;
+      const w = r.cap * p0 / r.price, g = G[r.sec] || (G[r.sec] = [0, 0]);
+      g[0] += (p1 / p0 - 1) * 100 * w; g[1] += w;
+    });
+    const list = Object.entries(G).filter(([, g]) => g[1] > 0).map(([sec, g]) => ({sec, ret: g[0] / g[1]})).sort((x, y) => y.ret - x.ret);
+    const by = {}; list.forEach((x, k) => by[x.sec] = {ret: x.ret, rank: k + 1});
+    return (cache[d] = by);
+  };
+  const avgRank = ds => {
+    const acc = {};
+    ds.map(dayRank).filter(Boolean).forEach(by => Object.entries(by).forEach(([sec, v]) => {
+      const a = acc[sec] || (acc[sec] = {sum: 0, n: 0}); a.sum += v.rank; a.n++;
+    }));
+    const first = dayRank(ds[0]) || {};
+    const list = Object.entries(acc).map(([sec, a]) => ({sec, avg: a.sum / a.n})).sort((x, y) => x.avg - y.avg);
+    const by = {}; list.forEach((x, k) => by[x.sec] = {avg: x.avg, rank: k + 1, ret: first[x.sec] ? first[x.sec].ret : null});
+    return list.length ? {by, n: list.length} : null;
+  };
+  const cur = avgRank(daysNow), prev = daysPrev.length ? avgRank(daysPrev) : null;
+  let mw = 0, ms = 0; const a0 = SN[i - W], b0 = SN[i];
+  if (a0 && b0) DATA.forEach(r => { const p0 = a0[r.code] && a0[r.code][2], p1 = b0[r.code] && b0[r.code][2]; if (p0 && p1) { const w = r.cap * p0 / r.price; mw += w; ms += (p1 / p0 - 1) * 100 * w; } });
+  return {cur, prev, market: mw ? ms / mw : null};
+}
+// 날짜 번호 i 기준 섹터별 외국인+기관 한달(20거래일) 순매수
+function flowsAt(SN, i){
+  const a = SN[i - RR.win], b = SN[i], out = {};
+  if (!a || !b) return null;
+  DATA.forEach(r => {
+    if (!r.sec) return;
+    const x = b[r.code], y = a[r.code]; if (!x || !y) return;
+    const px = x[2], cap = px && r.price ? r.cap * px / r.price : r.cap;
+    const o = out[r.sec] || (out[r.sec] = {net: 0, cap: 0});
+    o.net += (x[0] - y[0]) + (x[1] - y[1]); o.cap += cap;
+  });
+  Object.values(out).forEach(o => { o.pct = o.cap ? o.net / o.cap : 0; o.txt = `섹터 외국인+기관 한달 ${won(o.net, true)} (시총의 ${plus(o.pct)}${fmt(o.pct, 2)}%)`; });
+  return out;
+}
 function ensureRolling(){
   const date = S.asof || HD[HD.length - 1];
   if (RR.key === date && (RR.data || RR.loading)) return;
@@ -2609,33 +2702,8 @@ function ensureRolling(){
   RR.loading = Promise.all(need.map(d => loadSnap(HD[d]).then(sn => [d, sn]).catch(() => [d, null]))).then(pairs => {
     if (RR.key !== date) return;
     const SN = Object.fromEntries(pairs);
-    const dayRank = d => {                       // d일 기준 최근 20거래일 등락률 순위
-      const a = SN[d - RR.win], b = SN[d]; if (!a || !b) return null;
-      const G = {};
-      DATA.forEach(r => {
-        if (!r.sec) return;
-        const p0 = a[r.code] && a[r.code][2], p1 = b[r.code] && b[r.code][2];
-        if (!p0 || !p1) return;
-        const w = r.cap * p0 / r.price, g = G[r.sec] || (G[r.sec] = [0, 0]);
-        g[0] += (p1 / p0 - 1) * 100 * w; g[1] += w;
-      });
-      const list = Object.entries(G).filter(([, g]) => g[1] > 0).map(([sec, g]) => ({sec, ret: g[0] / g[1]})).sort((x, y) => y.ret - x.ret);
-      const by = {}; list.forEach((x, k) => by[x.sec] = {ret: x.ret, rank: k + 1});
-      return by;
-    };
-    const avgRank = ds => {                      // 여러 날 순위의 평균 → 평균이 좋은 순서로 다시 순위
-      const acc = {};
-      ds.map(dayRank).filter(Boolean).forEach(by => Object.entries(by).forEach(([sec, v]) => {
-        const a = acc[sec] || (acc[sec] = {sum: 0, n: 0, ret: v.ret}); a.sum += v.rank; a.n++;
-      }));
-      const list = Object.entries(acc).map(([sec, a]) => ({sec, avg: a.sum / a.n})).sort((x, y) => x.avg - y.avg);
-      const by = {}; list.forEach((x, k) => by[x.sec] = {avg: x.avg, rank: k + 1, ret: (dayRank(ds[0]) || {})[x.sec] ? dayRank(ds[0])[x.sec].ret : null});
-      return list.length ? {by, n: list.length} : null;
-    };
-    const cur = avgRank(daysNow), prev = daysPrev.length ? avgRank(daysPrev) : null;
-    let mw = 0, ms = 0; const a0 = SN[i - RR.win], b0 = SN[i];
-    if (a0 && b0) DATA.forEach(r => { const p0 = a0[r.code] && a0[r.code][2], p1 = b0[r.code] && b0[r.code][2]; if (p0 && p1) { const w = r.cap * p0 / r.price; mw += w; ms += (p1 / p0 - 1) * 100 * w; } });
-    const market = mw ? ms / mw : null;
+    const {cur, prev, market} = rankPack(SN, i);
+    const daysNow = [], daysPrev = []; for (let k = 0; k < RR.avg; k++) { if (i - k - RR.win >= 0) daysNow.push(i - k); if (i - RR.win - k - RR.win >= 0) daysPrev.push(i - RR.win - k); }
     RR.data = cur ? {cur, prev, market, to: date, from: HD[daysNow[daysNow.length - 1]], prevTo: daysPrev.length ? HD[daysPrev[0]] : null} : {none: true};
     RR.loading = null;
     if (S.view === 'sec') renderSec();
@@ -2687,7 +2755,9 @@ function secLabel(x){
           why: `하락 주의: ${lowTxt}, ${reason} (TOP ${list(t)} / 최하위 ${list(b)}) / 원래 판단: [${x.label}] ${x.why}`};
 }
 // 섹터 전체 외국인+기관 한달(20거래일) 순매수 (기준일 모드면 그날 기준)
+let FLOWCTX = null;   // 추천 안정도 계산 중: 그날 기준 섹터 수급
 function secFlow(sec){
+  if (FLOWCTX) { const f = FLOWCTX[sec]; return f || {net: 0, pct: 0, txt: '섹터 수급 정보 없음'}; }
   let net = 0, cap = 0;
   DATA.forEach(r => { if (r.sec === sec && (!S.asof || r.h)) { net += AA(r, 'M').net + BB(r, 'M').net; cap += S.asof ? (r.h.cap || r.cap) : r.cap; } });
   const pct = cap ? net / cap : 0;
@@ -2718,17 +2788,46 @@ function secLabel2(x){
   if (T1) {
     const small = x.label.includes('소형') ? ' · 소형' : '';
     return {...L, label: '추세 지속' + small, trend: true, flow: true,
-            why: `추세 지속: TOP 구간, 이번 달 ${T1.m.rank}위(${plus(T1.m.ret)}${fmt(T1.m.ret, 1)}%), 10일 평균 ${T1.r.rank}위 / ${T1.n}, ${T1.f.txt} / 원래 판단: [${x.label}] ${x.why}`};
+            why: `추세 지속: TOP 구간, 10일 평균 ${T1.r.rank}위 / ${T1.n}${T1.r.ret !== null && T1.r.ret !== undefined ? ` (최근 20일 ${plus(T1.r.ret)}${fmt(T1.r.ret, 1)}%)` : ''}, ${T1.f.txt} / 원래 판단: [${x.label}] ${x.why}`};
   }
   return L;
 }
 function trendData(x, L){
-  const d = MP.data, R = RR.data && !RR.data.none ? RR.data : null;
-  if (!L.label.startsWith('관망') || L.warn || !x.cur || x.cur.k !== 'T' || !d || !d.by || !d.by[x.sec] || !R || !R.cur.by[x.sec]) return null;
-  const m = d.by[x.sec], r = R.cur.by[x.sec], f = secFlow(x.sec);
-  if (m.rank > d.n / 2 || r.rank > R.cur.n / 3 || f.net <= 0) return null;
-  return {m, r, f, n: R.cur.n};
+  const R = RR.data && !RR.data.none ? RR.data : null;
+  if (!L.label.startsWith('관망') || L.warn || !x.cur || x.cur.k !== 'T' || !R || !R.cur.by[x.sec]) return null;
+  const r = R.cur.by[x.sec], f = secFlow(x.sec);
+  if (r.rank > R.cur.n / 3 || f.net <= 0) return null;       // 10일 평균 순위 상위 3분의 1 + 수급 플러스 (월초에도 흔들리지 않게)
+  return {r, f, n: R.cur.n};
 }
+// ---- 추천 안정도: 최근 10거래일 동안 날마다 판단을 다시 계산해 추천(추세 지속·단기·선진입)이었던 날 수를 셈 ----
+const STAB = {key: null, data: null, loading: null, days: 10};
+const isPick = l => l.startsWith('추세 지속') || l.startsWith('단기') || l.startsWith('선진입');
+function cycForDate(d){ const k = d.slice(2, 7).replace('-', '.'); return (CYC0 && CYC0.now === k) ? CYC0 : (CYCH[k] || null); }
+function ensureStability(){
+  const date = S.asof || HD[HD.length - 1], key = date + '|' + S.flowStrict;
+  if (STAB.key === key && (STAB.data || STAB.loading)) return;
+  STAB.key = key; STAB.data = null;
+  const i = HD.indexOf(date); if (i < 0) { STAB.data = {none: true}; return; }
+  const targets = []; for (let k = 0; k < STAB.days && i - k >= 0; k++) targets.push(i - k);
+  const need = new Set();
+  targets.forEach(t => { for (let k = 0; k < RR.avg; k++) [t - k, t - k - RR.win, t - RR.win - k, t - 2 * RR.win - k].forEach(x => x >= 0 && need.add(x)); need.add(t); need.add(t - RR.win); });
+  STAB.loading = Promise.all([...need].map(d => loadSnap(HD[d]).then(sn => [d, sn]).catch(() => [d, null]))).then(pairs => {
+    if (STAB.key !== key) return;
+    const SN = Object.fromEntries(pairs), cnt = {}, saved = {rr: RR.data, cyc: CYC};
+    let used = 0;
+    try {
+      targets.forEach(t => {
+        const cyc = cycForDate(HD[t]), pk = rankPack(SN, t), fl = flowsAt(SN, t);
+        if (!cyc || !cyc.rows || !pk.cur || !fl) return;
+        RR.data = {cur: pk.cur, prev: pk.prev, market: pk.market}; CYC = cyc; FLOWCTX = fl; used++;
+        cyc.rows.forEach(x => { if (isPick(secLabel2(x).label)) cnt[x.sec] = (cnt[x.sec] || 0) + 1; });
+      });
+    } finally { RR.data = saved.rr; CYC = saved.cyc; FLOWCTX = null; }
+    STAB.data = {cnt, n: used}; STAB.loading = null;
+    if (S.view === 'sec') renderSec();
+  }).catch(() => { STAB.data = {none: true}; STAB.loading = null; });
+}
+const stabOf = sec => STAB.data && STAB.data.cnt ? (STAB.data.cnt[sec] || 0) : null;
 function cycRowsView(){
   // 과거 검증 성적순: 추세 지속 → 단기 → 선진입 ★ → 선진입 → 관망 …
   const order = l => l.startsWith('추세 지속') ? 0 : l.startsWith('단기') ? 1 : l.startsWith('선진입 ★') ? 2 : l.startsWith('선진입') ? 3 : l.startsWith('관망 · 하락 주의') ? 5 : l.startsWith('관망 · 수급 약함') ? 4.5 : l.startsWith('관망') ? 4 : 6;
@@ -2754,17 +2853,19 @@ function renderCycle(){
   }
   $('cycTitle').textContent = `섹터 순환 주기 (${CYC.from} ~ ${CYC.to}, ${CYC.months}개월, ${CYC.nsec}개 섹터)` + (S.asof ? ` · 기준일 ${S.asof}` : '');
   document.body.classList.toggle('asofmode', !!S.asof);
-  $('cycNote').textContent = `매달 섹터별 한달 등락률(시총 가중)로 순위를 매겨 상위 ${CYC.top}개를 TOP, 하위 ${CYC.top}개를 최하위로 기록했습니다. 재진입은 같은 명단에 다시 들어오기까지의 평균 개월, 전환은 한 구간이 시작된 뒤 반대쪽 구간이 시작되기까지의 평균, 한 바퀴는 같은 쪽 구간이 다시 시작되기까지의 평균입니다. 다음 시기는 기준 달에 평균을 더한 예상이고, 예상이 지금부터 ${CYC.soon}개월 안이면 "다가옴/임박", TOP과 최하위 예상이 지금부터 3개월 안에서 한 달이라도 겹치면 "겹침"으로 봅니다(그보다 먼 훗날의 겹침은 보지 않음). 마지막으로 TOP이나 최하위에 든 뒤 2개월 이상 중간권에만 있던 섹터는 [중립]으로 봅니다. 최하위 구간과 중립 섹터는 재진입·전환·한 바퀴 예상을 모두 세서, 이번 달~다음 달에 걸린 TOP 예상이 1개 이상이고 최하위 예상보다 많으면 단기로 봅니다(이때는 겹침으로 막지 않음). 단기 조건은 맞는데 겹침 때문에 빠진 섹터는 [관망 · 겹침]으로 따로 표시해서, 겹침이 정말 피해야 할 신호인지 검증 표에서 확인할 수 있게 했습니다. [단기]는 TOP 예상이 곧 오거나(최하위 구간·중립) 최하위 전환 전에 TOP 재진입이 먼저 올 것으로 보이는(TOP 구간) 섹터로 짧게 보는 매매용이며(TOP 구간이면 10일 평균 순위가 한 달 전보다 나빠지는 중이 아니어야 함), [선진입]은 미리 들어가는 용도로, 섹터 순위(하루하루의 최근 20거래일 등락률 순위를 기준일까지 10거래일 동안 평균 낸 것)가 최하위 ${(CYC.pre || {}).bottom || 10}위 안으로 눌려 있고, 이번 달~다다음 달에 걸친 TOP 예상 개수가 최하위 예상 개수보다 많을 때입니다. 지금 TOP 구간이면 재진입 예상만으로는 안 되고 전환이나 한 바퀴 예상도 그 기간에 있어야 합니다. 그리고 이 순위가 한 달 전(20거래일 전, 같은 방식으로 10거래일 평균)보다 나아졌어야 합니다(하락이 둔화되는 중). 하루 튄 날에 판단이 흔들리지 않게 평균을 씁니다. 섹터 전체의 외국인+기관 한달 순매수가 플러스면 "수급 ✓"를 붙이고, 기본값인 "수급 조건: 거르기"에서는 순매도인 섹터를 [관망 · 수급 약함]으로 뺍니다(과거 검증에서 수급 약한 단기가 평균보다 못했음). 표는 과거 검증 성적순으로 추세 지속, 단기, 선진입 ★, 선진입 순서로 정렬합니다. TOP 예상(재진입·전환·한 바퀴) 중 두 가지 이상이 들어오면 ★. 이번 달 최하위권인데 이 조건에 못 미치면 [관망 · 하락 주의]로 표시합니다. [추세 지속]은 주기상으로는 관망이지만 지금 TOP 구간이고, 이번 달 순위가 상위 절반, 10일 평균 순위가 상위 3분의 1이며, 섹터 외국인+기관 한달 순매수가 플러스인 섹터입니다(큰 흐름을 탄 섹터를 주기 규칙이 놓치지 않도록). 그날까지의 데이터로만 정해서 과거 날짜에서도 똑같이 계산됩니다. 같은 판단끼리는 구글 시트 '1년 관점' 별이 많은 섹터를 위에 둡니다(판단에는 쓰지 않음). 과거 주기가 앞으로도 반복된다는 보장은 없고, 횟수가 적은 섹터일수록 평균이 흔들립니다. 지금 달(${CYC.now})은 진행 중이라 주기 계산에서는 뺐고, 대신 "이번 달 진행" 칸에 지난달 마지막 거래일부터 오늘까지의 섹터 등락률 순위를 따로 보여줍니다(TOP ${CYC.top}·최하위 ${CYC.top} 안이면 표시).`;
+  $('cycNote').textContent = `매달 섹터별 한달 등락률(시총 가중)로 순위를 매겨 상위 ${CYC.top}개를 TOP, 하위 ${CYC.top}개를 최하위로 기록했습니다. 재진입은 같은 명단에 다시 들어오기까지의 평균 개월, 전환은 한 구간이 시작된 뒤 반대쪽 구간이 시작되기까지의 평균, 한 바퀴는 같은 쪽 구간이 다시 시작되기까지의 평균입니다. 다음 시기는 기준 달에 평균을 더한 예상이고, 예상이 지금부터 ${CYC.soon}개월 안이면 "다가옴/임박", TOP과 최하위 예상이 지금부터 3개월 안에서 한 달이라도 겹치면 "겹침"으로 봅니다(그보다 먼 훗날의 겹침은 보지 않음). 마지막으로 TOP이나 최하위에 든 뒤 2개월 이상 중간권에만 있던 섹터는 [중립]으로 봅니다. 최하위 구간과 중립 섹터는 재진입·전환·한 바퀴 예상을 모두 세서, 이번 달~다음 달에 걸린 TOP 예상이 1개 이상이고 최하위 예상보다 많으면 단기로 봅니다(이때는 겹침으로 막지 않음). 단기 조건은 맞는데 겹침 때문에 빠진 섹터는 [관망 · 겹침]으로 따로 표시해서, 겹침이 정말 피해야 할 신호인지 검증 표에서 확인할 수 있게 했습니다. [단기]는 TOP 예상이 곧 오거나(최하위 구간·중립) 최하위 전환 전에 TOP 재진입이 먼저 올 것으로 보이는(TOP 구간) 섹터로 짧게 보는 매매용이며(TOP 구간이면 10일 평균 순위가 한 달 전보다 나빠지는 중이 아니어야 함), [선진입]은 미리 들어가는 용도로, 섹터 순위(하루하루의 최근 20거래일 등락률 순위를 기준일까지 10거래일 동안 평균 낸 것)가 최하위 ${(CYC.pre || {}).bottom || 10}위 안으로 눌려 있고, 이번 달~다다음 달에 걸친 TOP 예상 개수가 최하위 예상 개수보다 많을 때입니다. 지금 TOP 구간이면 재진입 예상만으로는 안 되고 전환이나 한 바퀴 예상도 그 기간에 있어야 합니다. 그리고 이 순위가 한 달 전(20거래일 전, 같은 방식으로 10거래일 평균)보다 나아졌어야 합니다(하락이 둔화되는 중). 하루 튄 날에 판단이 흔들리지 않게 평균을 씁니다. 섹터 전체의 외국인+기관 한달 순매수가 플러스면 "수급 ✓"를 붙이고, 기본값인 "수급 조건: 거르기"에서는 순매도인 섹터를 [관망 · 수급 약함]으로 뺍니다(과거 검증에서 수급 약한 단기가 평균보다 못했음). 표는 과거 검증 성적순으로 추세 지속, 단기, 선진입 ★, 선진입 순서로 정렬합니다. TOP 예상(재진입·전환·한 바퀴) 중 두 가지 이상이 들어오면 ★. 판단 칸 아래 "최근 10거래일 중 ○일 추천"은 날마다 판단을 다시 계산해 추세 지속·단기·선진입이었던 날 수를 센 것이고, "추천 안정도: 6일 이상"을 고르면 그보다 적은 섹터는 접힌 쪽으로 보냅니다. 이번 달 최하위권인데 이 조건에 못 미치면 [관망 · 하락 주의]로 표시합니다. [추세 지속]은 주기상으로는 관망이지만 지금 TOP 구간이고, 10일 평균 순위가 상위 3분의 1이며, 섹터 외국인+기관 한달 순매수가 플러스인 섹터입니다(큰 흐름을 탄 섹터를 주기 규칙이 놓치지 않도록). 그날까지의 데이터로만 정해서 과거 날짜에서도 똑같이 계산됩니다. 같은 판단끼리는 구글 시트 '1년 관점' 별이 많은 섹터를 위에 둡니다(판단에는 쓰지 않음). 과거 주기가 앞으로도 반복된다는 보장은 없고, 횟수가 적은 섹터일수록 평균이 흔들립니다. 지금 달(${CYC.now})은 진행 중이라 주기 계산에서는 뺐고, 대신 "이번 달 진행" 칸에 지난달 마지막 거래일부터 오늘까지의 섹터 등락률 순위를 따로 보여줍니다(TOP ${CYC.top}·최하위 ${CYC.top} 안이면 표시).`;
   const f1 = v => v === null || v === undefined ? '-' : fmt(v, 1).replace(/\.0$/, '');
   const tag = l => `<span class="tag ${l.startsWith('선진입') ? 'pre' : l.startsWith('단기') ? 'go' : l.startsWith('추세 지속') ? 'trend' : l.includes('하락 주의') ? 'warn' : l.startsWith('관망') ? 'wait' : 'hold'}">${esc(l)}</span>`;
   const stTxt = st => st === 'past' ? '<span class="st">지남</span>' : st === 'now' ? '<span class="st now">이번 달</span>' : '';
   const preds = L => L && L.length ? `<ul class="pred">${L.map(x => `<li><b>${x.txt}</b> ${stTxt(x.st)} <span class="st">(${x.nm}: ${x.base})</span></li>`).join('')}</ul>` : '-';
   const hist = G => G.length ? G.map(g => '(' + g.join(', ') + ')').join(', ') : '';
-  const allRows = cycRowsView(), isRest = x => x.label.startsWith('관망') || x.label.startsWith('판단 보류');
+  ensureStability();
+  const allRows = cycRowsView(), weakStab = x => S.stabMin && isPick(x.label) && (stabOf(x.sec) ?? 99) < S.stabMin;
+  const isRest = x => x.label.startsWith('관망') || x.label.startsWith('판단 보류') || weakStab(x);
   const mainRows = allRows.filter(x => !isRest(x)), restRows = allRows.filter(isRest);
   const moreRow = restRows.length ? `<tr class="morerow"><td colspan="30"><button class="mbtn" id="cycMore">${S.cycAll ? `관망 ${restRows.length}개 접기 ▴` : `관망 ${restRows.length}개 더보기 ▾`}</button></td></tr>` : '';
   $('cycRows').innerHTML = (S.cycAll ? mainRows.concat(restRows) : mainRows).map(x => `<tr data-sec="${esc(x.sec)}">
-    <td class="nw">${tag(x.label)}${x.flow ? ' <span class="flowok" title="섹터 외국인+기관 한달 순매수 플러스">수급 ✓</span>' : ''}</td>
+    <td class="nw">${tag(x.label)}${x.flow ? ' <span class="flowok" title="섹터 외국인+기관 한달 순매수 플러스">수급 ✓</span>' : ''}${(() => { const v = stabOf(x.sec); return v === null ? '' : `<div class="hist">최근 ${STAB.data.n}거래일 중 ${v}일 추천</div>`; })()}</td>
     <td class="name nw">${esc(x.sec)}</td><td class="nw">${fmt(x.n)}</td>
     <td class="nw">${!x.cur ? '-' : x.cur.k === 'N' ? `중립<div class="hist">${x.cur.prev === 'T' ? 'TOP' : '최하위'} 이후 ${x.cur.gap}개월 (마지막 ${x.cur.last})</div>` : (x.cur.k === 'T' ? 'TOP 구간' : '최하위 구간') + ` (${x.cur.start}~)`}</td>
     <td>${preds(x.nextT)}</td><td>${preds(x.nextB)}</td><td>${esc(x.why)}</td>
@@ -2810,7 +2911,7 @@ $('refBox').addEventListener('click', e => {
 const PICK = {minCap: 1000, minTv: 10, maxQ: 50, perSec: 5};
 function pickStocks(){
   if (!CYC || !CYC.rows) return [];
-  const views = cycRowsView().filter(x => x.label.startsWith('단기') || x.label.startsWith('선진입') || x.label.startsWith('추세 지속'));
+  const views = cycRowsView().filter(x => isPick(x.label) && !(S.stabMin && (stabOf(x.sec) ?? 99) < S.stabMin));
   const goSecs = views.map(x => x.sec), secLab = Object.fromEntries(views.map(x => [x.sec, x.label]));
   const patBy = Object.fromEntries(((PAT && PAT.match) || []).map(m => [m.code, m.score]));
   const out = [];
@@ -2841,7 +2942,15 @@ function pickStocks(){
       if (f10 > 0) why.push('10일도 순매수');
       why.push(`한달 중 ${Math.round(dayRatio * days.length)}일 순매수`);
       // 위치 25
-      let pos = 0; const sr = H ? null : r.sr;
+      let pos = 0; const sr = H ? null : r.sr, hs = H && r.h ? r.h.sr : null;
+      if (hs) {                                          // 기준일: 그날 기준 지지선 상태로 위치 점수
+        if (hs.st === 'at') { pos += 15; why.push('그날 지지선 근접'); }
+        else if (hs.st === 'in') { pos += 10; why.push('그날 지지 구간 안'); }
+        else if (hs.st === 'app') { pos += 6; why.push('그날 지지 구간 접근'); }
+        else if (hs.dist !== null && hs.dist !== undefined) pos += 15 * Math.max(0, 1 - Math.abs(hs.dist) / 20);
+        if (hs.room === null || hs.room === undefined) { pos += 10; why.push('위쪽 저항선 없음'); }
+        else { pos += Math.min(10, hs.room / 2); why.push(`저항까지 ${plus(hs.room)}${fmt(hs.room, 1)}%`); }
+      }
       if (sr && sr.levels && sr.levels.length) {
         if (sr.st === 'at') { pos += 15; why.push('지지선 근접'); }
         else if (sr.st === 'in') { pos += 10; why.push('지지 구간 안'); }
@@ -2866,7 +2975,7 @@ function pickStocks(){
       if (yAvg !== null && Y(r) !== null && Y(r) !== undefined && Y(r) < yAvg) cool += 5;
       if (qAvg !== null && Q(r) < qAvg) cool += 5;
       if (cool === 10) why.push('섹터 평균보다 덜 오름');
-      const total = H ? (flow + earn + cool) / 65 * 100 : flow + pos + earn + pat + cool;   // 기준일 모드는 65점 만점을 100점으로 환산
+      const total = H ? (hs ? (flow + pos + earn + cool) / 90 * 100 : (flow + earn + cool) / 65 * 100) : flow + pos + earn + pat + cool;   // 기준일: 패턴 점수(10) 없이 환산
       return {r, sec, total, flow, pos, earn, pat, cool, why, ret: H ? retSince(r) : null, lab: secLab[sec]};
     }).sort((x, y) => y.total - x.total).slice(0, PICK.perSec);
     out.push(...scored);
@@ -2875,7 +2984,7 @@ function pickStocks(){
 }
 function renderPicks(){
   const list = pickStocks();
-  const asofTxt = S.asof ? ` 지금은 기준일 ${S.asof} 모드라서 그날 기준 주기의 [단기]·[선진입] 섹터와 그날까지의 수급·등락률로 다시 골랐고, 그날 기준 값이 없는 위치(지지·저항)와 패턴 점수는 빼고 나머지 65점을 100점으로 환산했습니다. 실적은 최신 결산 기준이고, "기준일 이후"는 그날 종가에서 고른 끝날(기본은 최신) 종가까지의 등락입니다.` : '';
+  const asofTxt = S.asof ? ` 지금은 기준일 ${S.asof} 모드라서 그날 기준 주기의 [단기]·[선진입] 섹터와 그날까지의 수급·등락률로 다시 골랐고, 위치(지지·저항) 점수는 그날까지의 봉으로 계산한 지지선으로 매기고, 그날 기준 값이 없는 패턴 점수만 빼서 90점을 100점으로 환산했습니다. 실적은 최신 결산 기준이고, "기준일 이후"는 그날 종가에서 고른 끝날(기본은 최신) 종가까지의 등락입니다.` : '';
   $('pickNote').textContent = `[단기]·[선진입]·[추세 지속] 섹터 안에서 시총 ${fmt(PICK.minCap)}억 이상, 최근 20일 평균 거래대금 ${PICK.minTv}억 이상, 3달 등락률 +${PICK.maxQ}% 이하인 종목만 골라 점수를 매겼습니다. 수급 40점(외국인·기관 한달 합산 순매수의 시총 대비 섹터 내 순위, 10일 순매수 여부, 한달 중 순매수한 날 비율), 위치 25점(지지선과 가까울수록, 위쪽 저항선까지 여유가 클수록), 실적 15점(흑자, 섹터 중간보다 낮은 PER), 패턴 10점(급등 직전 패턴 유사도), 과열 회피 10점(1년·3달 등락률이 섹터 평균보다 낮음)이고, 섹터마다 상위 ${PICK.perSec}개를 보여줍니다. 점수 기준은 제가 정한 가설이라 매수 추천이 아니며, 이 기준이 실제로 잘 맞았는지는 따로 검증되지 않았습니다.` + asofTxt;
   if (!list.length) { $('pickRows').innerHTML = `<tr><td colspan="11" class="empty">조건에 맞는 후보가 없습니다.</td></tr>`; return; }
   let prev = null, rank = 0;
@@ -2883,7 +2992,7 @@ function renderPicks(){
     const first = x.sec !== prev; if (first) rank = 0; rank++; prev = x.sec;
     return `<tr data-code="${x.r.code}" class="${first ? 'first' : ''}"><td class="name nw">${first ? `${esc(x.sec)}<div class="hist">${esc(x.lab || '')}</div>` : ''}</td><td class="nw">${rank}</td>
       <td class="name nw">${esc(x.r.name)}</td><td class="nw"><span class="tot">${fmt(x.total, 0)}</span></td>
-      <td class="nw">${fmt(x.flow, 0)}</td><td class="nw">${S.asof ? '-' : fmt(x.pos, 0)}</td><td class="nw">${fmt(x.earn, 0)}</td><td class="nw">${S.asof ? '-' : fmt(x.pat, 0)}</td><td class="nw">${fmt(x.cool, 0)}</td>
+      <td class="nw">${fmt(x.flow, 0)}</td><td class="nw">${S.asof && !(x.r.h && x.r.h.sr) ? '-' : fmt(x.pos, 0)}</td><td class="nw">${fmt(x.earn, 0)}</td><td class="nw">${S.asof ? '-' : fmt(x.pat, 0)}</td><td class="nw">${fmt(x.cool, 0)}</td>
       <td class="asofc nw">${x.ret === null || x.ret === undefined ? '-' : `<span class="${x.ret > 0 ? 'pos' : x.ret < 0 ? 'neg' : ''}">${plus(x.ret)}${fmt(x.ret, 1)}%</span>`}</td>
       <td>${esc(x.why.join(', '))}</td></tr>`;
   }).join('');
@@ -3353,6 +3462,7 @@ seg($('watchf'), v => S.watch = v);
 seg($('mkt'), v => S.mkt = v);
 seg($('pf'), v => S.pf = v);
 seg($('flowOpt'), v => S.flowStrict = v === 'strict');
+seg($('stabOpt'), v => S.stabMin = Number(v));
 seg($('view'), v => S.view = v);
 (() => {
   const sel = $('asof');
