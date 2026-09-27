@@ -62,6 +62,8 @@ DESC_PER_RUN = 700             # 한 번 실행할 때 새로 받아올 회사 �
 DESC_REFRESH_DAYS = 120        # 회사 소개를 다시 받아오는 주기
 
 # ---- S&R Pro Toolkit 설정 (트레이딩뷰 기본값) ----
+SR_NEAR_PCT = 3                # '지지선 근접' = 지지선 위 3% 이내, '구간 접근' = 구간 위쪽 끝에서 3% 이내
+SR_NEW_DAYS = 5                # 최근 며칠 안에 들어왔으면 '새로 진입'
 SR = {
     "method": "Donchian",      # 이 스크립트는 Donchian 방식만 옮겼습니다
     "sensitivity": 7,          # Swing Sensitivity
@@ -282,7 +284,8 @@ def fetch_desc(code):
 
 # ---- 금융감독원 DART: 사업보고서의 '사업의 개요' (인증키가 있을 때 우선 사용) ----
 DART_KEY = os.environ.get("DART_KEY", "").strip()
-DART_PER_RUN = 300             # DART에서 한 번 실행할 때 받아올 회사 수 (사업보고서 파일이 커서 조금씩)
+DART_PER_RUN = 800             # DART에서 한 번 실행할 때 받아올 최대 회사 수 (실제로는 아래 시간 제한 안에서 받음)
+DESC_WORKERS = 6               # 회사 소개를 동시에 몇 개씩 받을지
 DESC_BUDGET_MIN = 12           # 회사 소개 받기에 한 번 실행당 쓸 최대 시간(분). 넘으면 멈추고 다음 실행 때 이어서
 
 
@@ -353,7 +356,16 @@ def fetch_desc_dart(code, corp_map):
         items = lst.get("list") or []
     if not items:
         return ""
-    z = zipfile.ZipFile(io.BytesIO(_dart_get("document.xml", rcept_no=items[0]["rcept_no"])))
+    raw_doc = _dart_get("document.xml", rcept_no=items[0]["rcept_no"])
+    if not raw_doc.startswith(b"PK"):                               # zip이 아니면 DART가 보낸 안내 메시지(JSON/XML)
+        msg = raw_doc[:300].decode("utf-8", "ignore")
+        st = re.search(r'"?status"?\s*[:>]\s*"?(\d{3})', msg)
+        code_ = st.group(1) if st else "?"
+        if code_ == "020":
+            raise RuntimeError("DART 요청 한도 초과(020)")
+        DESC_DEBUG.setdefault(f"dart_{code_}", msg[:80].replace("\n", " "))
+        return ""
+    z = zipfile.ZipFile(io.BytesIO(raw_doc))
     for name in z.namelist():
         raw = z.read(name)
         for enc in ("utf-8", "cp949"):
@@ -647,26 +659,42 @@ def load_descs(codes):
             print(f"DART 고유번호 목록을 받지 못해 기업정보 사이트로 시도합니다: {e}")
     limit = DART_PER_RUN if corp_map else DESC_PER_RUN
     fails = done = empty = 0
+    from concurrent.futures import ThreadPoolExecutor, FIRST_COMPLETED, wait
     t0 = time.time()
-    for c in todo[:limit]:
-        if time.time() - t0 > DESC_BUDGET_MIN * 60:
-            print(f"회사 소개: {DESC_BUDGET_MIN}분이 지나 이번 실행에서는 여기까지 받고 다음에 이어서 받습니다.")
-            break
-        try:
-            text = fetch_desc_dart(c, corp_map) if corp_map else fetch_desc(c)
-            fails = 0
-            if text:
-                descs[c] = {"x": text[:450], "t": today.isoformat(), "s": src}
-                done += 1
-            else:
-                empty += 1
-        except Exception as e:
-            fails += 1
-            DESC_DEBUG.setdefault("err", str(e)[:120])
-            if fails >= 15:
-                print("회사 소개 사이트 접속이 계속 실패해서 이번 실행에서는 건너뜁니다.")
-                break
-        time.sleep(0.2 if corp_map else 0.2)
+    work = iter(todo[:limit])
+    stop = False
+    job = (lambda c: fetch_desc_dart(c, corp_map)) if corp_map else fetch_desc
+    with ThreadPoolExecutor(max_workers=DESC_WORKERS) as ex:
+        running = {}
+        def feed():
+            while not stop and len(running) < DESC_WORKERS:
+                c = next(work, None)
+                if c is None:
+                    return
+                running[ex.submit(job, c)] = c
+        feed()
+        while running:
+            finished, _ = wait(list(running), return_when=FIRST_COMPLETED)
+            for fu in finished:
+                c = running.pop(fu)
+                try:
+                    text = fu.result()
+                    fails = 0
+                    if text:
+                        descs[c] = {"x": text[:450], "t": today.isoformat(), "s": src}
+                        done += 1
+                    else:
+                        empty += 1
+                except Exception as e:
+                    fails += 1
+                    DESC_DEBUG.setdefault("err", str(e)[:120])
+                    if "020" in str(e) or fails >= 15:
+                        print("회사 소개: 요청 한도 초과나 접속 실패가 이어져 이번 실행에서는 여기까지 받습니다.")
+                        stop = True
+            if not stop and time.time() - t0 > DESC_BUDGET_MIN * 60:
+                print(f"회사 소개: {DESC_BUDGET_MIN}분이 지나 이번 실행에서는 여기까지 받고 다음에 이어서 받습니다.")
+                stop = True
+            feed()
     print(f"회사 소개({src}): 새로 {done}개, 못 찾음 {empty}개, 보유 {sum(1 for c in codes if descs.get(c, {}).get('x'))}개 / 전체 {len(codes)}개")
     if DESC_DEBUG:
         print("회사 소개 진단:", "; ".join(f"{k}: {v}" for k, v in DESC_DEBUG.items()))
@@ -830,10 +858,24 @@ def collect(days_all):
                 "entries": lv.entries, "sweeps": lv.sweeps,
             } for lv in lst]
         lv_out, res_out = pack(sups), pack(ress)
-        near = any(lv.btm <= last <= lv.top for lv in sups)
+        def sr_state(px):
+            """at: 지지선 위 SR_NEAR_PCT% 이내 / in: 지지 구간 안 / app: 구간 위쪽 끝에서 SR_NEAR_PCT% 이내 / None"""
+            best = None
+            for lv in sups:
+                if lv.btm <= px <= lv.base * (1 + SR_NEAR_PCT / 100):
+                    return "at"
+                if lv.btm <= px <= lv.top:
+                    best = "in"
+                elif best is None and lv.top < px <= lv.top * (1 + SR_NEAR_PCT / 100):
+                    best = "app"
+            return best
+        st_now = sr_state(last)
+        st_before = sr_state(c[-1 - SR_NEW_DAYS]) if len(c) > SR_NEW_DAYS else None
+        near = st_now in ("at", "in")
         # 현재가에서 지지선까지 거리 (%). 음수 = 그만큼 내려가야 지지선에 닿음
         dist = max(((lv.base - last) / last * 100 for lv in sups if last > 0), default=None)
-        r["sr"] = {"near": near, "dist": None if dist is None else round(dist, 2), "levels": lv_out, "res": res_out}
+        r["sr"] = {"near": near, "st": st_now, "new": bool(st_now and not st_before),
+                   "dist": None if dist is None else round(dist, 2), "levels": lv_out, "res": res_out}
 
     for t, r in rows.items():
         if r["name"] is None:
@@ -979,6 +1021,22 @@ def sector_monthly(rows, series):
     return agg, first
 
 
+def pre_kind(x, now, is_low):
+    """선진입 판단 (화면과 같은 규칙). 반환: 'pre2'(선진입 ★) / 'pre'(선진입) / 'warn'(하락 주의) / None(해당 없음)
+    1) 이번 달 순위가 최하위권이어야 하고
+    2) 이번 달~다다음 달에 걸친 TOP 예상 개수 > 최하위 예상 개수
+    3) TOP 구간이면 재진입 예상만으로는 안 되고 전환이나 한 바퀴 예상도 그 기간에 있어야 함
+    1은 맞는데 2·3에서 떨어지면 하락 주의"""
+    if not is_low or not x.get("cur"):
+        return None
+    inwin = lambda L: [p_ for p_ in (L or []) if p_["lo"] <= now + PRE_AHEAD[1] and p_["hi"] >= now + PRE_AHEAD[0]]
+    t, b = inwin(x.get("nextT")), inwin(x.get("nextB"))
+    ok = len(t) > len(b) and (x["cur"]["k"] != "T" or any(p_["nm"] != "재진입" for p_ in t))
+    if not ok:
+        return "warn"
+    return "pre2" if len(t) >= 2 else "pre"
+
+
 def cycle_backtest(rows, series, agg, first_m, now_m):
     """과거 달마다 '선진입'과 기존 '진입 검토'에 걸린 섹터가 그다음 1~2개월 안에 TOP에 들었는지, 2개월 수익률은 어땠는지"""
     secs = sorted(agg)
@@ -989,7 +1047,7 @@ def cycle_backtest(rows, series, agg, first_m, now_m):
         if len(rets) >= CYCLE_TOP * 2:
             tops[m] = {x for _, x in rets[:CYCLE_TOP]}
             bots[m] = {x for _, x in rets[-CYCLE_TOP:]}
-    groups = {k: {"n": 0, "hit": 0, "ret": 0.0} for k in ("pre", "pre2", "all2", "short", "all1")}
+    groups = {k: {"n": 0, "hit": 0, "ret": 0.0} for k in ("pre", "pre2", "warn", "all2", "short", "all1")}
     months = []
     for m in range(first_m + CYCLE_MONTHS + 1, now_m - 2):          # 이후 2개월이 끝난 달까지만
         if m not in bots or m + 1 not in tops or m + 2 not in tops:
@@ -1006,17 +1064,17 @@ def cycle_backtest(rows, series, agg, first_m, now_m):
             hit2 = s_ in tops[m + 1] or s_ in tops[m + 2]                    # 선진입: 1~2개월
             ret2 = ((1 + R[s_][m + 1]) * (1 + R[s_][m + 2]) - 1) * 100
             hit1, ret1 = s_ in tops[m + 1], R[s_][m + 1] * 100                # 단기: 다음 1개월
-            cnt = sum(1 for p_ in (x.get("nextT") or []) if p_["lo"] <= m + PRE_AHEAD[1] and p_["hi"] >= m + PRE_AHEAD[0])
-            sel = {"all2": (True, hit2, ret2), "pre": (s_ in low and cnt >= 1, hit2, ret2),
-                   "pre2": (s_ in low and cnt >= 2, hit2, ret2),
-                   "short": (x["label"].startswith("단기"), hit1, ret1), "all1": (True, hit1, ret1)}
+            kind = pre_kind(x, m, s_ in low)
+            sel = {"all2": (True, hit2, ret2), "pre": (kind in ("pre", "pre2"), hit2, ret2),
+                   "pre2": (kind == "pre2", hit2, ret2), "warn": (kind == "warn", hit2, ret2),
+                   "short": (kind is None and x["label"].startswith("단기"), hit1, ret1), "all1": (True, hit1, ret1)}
             for k, (on, h_, r_) in sel.items():
                 if on:
                     g = groups[k]; g["n"] += 1; g["hit"] += int(h_); g["ret"] += r_
     for g in groups.values():
         g["rate"] = round(g["hit"] / g["n"] * 100, 1) if g["n"] else None
         g["ret"] = round(g["ret"] / g["n"], 2) if g["n"] else None
-    print(f"진입 판단 과거 검증: {len(months)}개월, 선진입 {groups['pre']['n']}건, 단기 {groups['short']['n']}건")
+    print(f"진입 판단 과거 검증: {len(months)}개월, 선진입 {groups['pre']['n']}건, 하락 주의 {groups['warn']['n']}건, 단기 {groups['short']['n']}건")
     return {"months": months, "groups": groups, "top": CYCLE_TOP, "bottom": PRE_BOTTOM, "ahead": list(PRE_AHEAD)}
 
 
@@ -1588,6 +1646,8 @@ body.secv .nsec{display:none}
 .vtbl{min-width:700px}
 .vtbl tbody tr{cursor:default}
 .lift{font-weight:800}
+.infobar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:0 0 8px}
+.infobar .info{margin:0}
 .topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}
 .gearwrap{position:relative}
 .gear{border:0;background:none;color:var(--gray);width:26px;height:26px;padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:.3;transition:opacity .15s}
@@ -1619,6 +1679,7 @@ body:not(.asofmode) .asofc{display:none}
 .tag{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap}
 .tag.go{background:var(--red);color:#fff}
 .tag.pre{background:#1A1A1A;color:#fff}
+.tag.warn{background:#fff;color:var(--red);border:1px solid var(--red)}
 .tag.wait{background:#EEE;color:var(--ink)}
 .tag.hold{background:#fff;color:var(--gray);border:1px solid #CCC}
 .pred{margin:0;padding-left:0;list-style:none}
@@ -1734,6 +1795,10 @@ dialog h3{font-size:16px;margin:22px 0 8px}
 .badge{display:inline-block;background:var(--sup);color:#fff;font-size:12px;font-weight:700;padding:2px 9px;border-radius:999px}
 .muted{color:var(--stone)}
 .badge.rb{background:var(--red)}
+.badge.in{background:#CDEBE3;color:#07614F}
+.badge.app{background:#fff;color:var(--sup);border:1px solid var(--sup)}
+.badge.dim{opacity:.45}
+.newtag{font-size:11px;color:var(--sup);font-weight:700;margin-left:4px}
 .pl{font-weight:700}
 .pl.loss{color:var(--bean);font-weight:500}
 .star{border:0;background:none;cursor:pointer;font-size:20px;line-height:1;padding:2px 4px;color:#BDBDBD}
@@ -1787,7 +1852,7 @@ td.st{text-align:center;width:44px}
       </div></div>
     <div class="field"><label>지지선</label>
       <div class="seg" id="srf">
-        <button data-v="ALL" class="on">전체</button><button data-v="NEAR">근처만</button>
+        <button data-v="ALL" class="on">전체</button><button data-v="AT">근접만</button><button data-v="IN">구간 안</button><button data-v="APP">접근 포함</button>
       </div></div>
     <div class="field"><label>업종</label>
       <select id="secf"><option value="">전체</option></select></div>
@@ -1817,7 +1882,7 @@ td.st{text-align:center;width:44px}
   </div>
 
   <div id="rankBody">
-  <p class="info" id="info"></p>
+  <div class="infobar"><p class="info" id="info"></p><button class="mbtn" id="flowBtn"></button></div>
   <div class="tbl"><table id="main">
     <thead><tr id="head"></tr></thead>
     <tbody id="body"></tbody>
@@ -1943,7 +2008,7 @@ const CREF = __CYCREF__;
 const REFBY = Object.fromEntries(((CREF && CREF.secs) || []).map(x => [x.sec.replace(/\s/g, ''), x]));
 const refOf = sec => REFBY[(sec || '').replace(/\s/g, '')];
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', view:'rank', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
+const S = {per:'1', mkt:'ALL', sr:'ALL', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', flowOpen:false, view:'rank', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
 const RT = (r, p) => S.asof ? (r.h ? r.h.rt[p] : null) : (r.rt ? r.rt[p] : null);   // 기간 등락률
 const AA = (r, p) => S.asof ? r.h.a[p] : r.a[p];   // 외국인 (기준일 반영)
 const BB = (r, p) => S.asof ? r.h.b[p] : r.b[p];   // 기관 (기준일 반영)
@@ -2054,31 +2119,36 @@ DATA.forEach(r => {
 
 const PNAME = {'1': '전날', '10': '10일', 'M': '한달'};
 const OTHER = {'1': 'M', '10': 'M', 'M': '1'};   // 비교용으로 같이 보여줄 기간
+const pctTd = (v, extra = '') => `<td class="${extra}${v > 0 ? 'pos' : v < 0 ? 'neg' : ''}">${plus(v)}${fmt(v, 2)}%</td>`;
+const wonTd = v => `<td class="${v > 0 ? 'pos' : v < 0 ? 'neg' : ''}">${won(v, true)}</td>`;
+// grp: 'fd' = 수급 칸을 펼쳤을 때만, 'fc' = 접었을 때만 보이는 칸
 const COLS = [
-  {k:null,   t:'관심'},
-  {k:null,   t:'순위'},
-  {k:'name', t:'종목명'},
-  {k:null,   t:'코드'},
-  {k:null,   t:'시장'},
-  {k:'sec',  t:'업종'},
-  {k:'sub',  t:'세부 섹터'},
-  {k:'cap',  t:'시가총액(억)'},
-  {k:'rt',   t:'등락률'},
-  {k:'own',  t:'외국인 보유율'},
-  {k:'net',  t:'외국인 순매수'},
-  {k:'pct',  t:'외국인/시총'},
-  {k:'inet', t:'기관 순매수'},
-  {k:'ipct', t:'기관/시총'},
-  {k:'sum',  t:'합산 순매수'},
-  {k:'spct', t:'합산/시총'},
-  {k:'opct', t:() => `${PNAME[OTHER[S.per]]} 외국인/시총`},
-  {k:'oipct', t:() => `${PNAME[OTHER[S.per]]} 기관/시총`},
-  {k:'eps',  t:'실적'},
-  {k:'per',  t:'PER'},
-  {k:'dist', t:'지지선'},
-  {k:'ret',  t:'기준일 이후 수익률', show: () => !!S.asof},
+  {k:null,   t:'관심', cell: (r) => `<td class="st">${starBtn(r.code)}</td>`},
+  {k:null,   t:'순위', cell: (r, x) => `<td>${x.rank}</td>`},
+  {k:'name', t:'종목명', cell: (r) => `<td class="name">${esc(r.name)}</td>`},
+  {k:null,   t:'코드', cell: (r) => `<td class="code">${r.code}</td>`},
+  {k:null,   t:'시장', cell: (r) => `<td>${r.mkt}</td>`},
+  {k:'sec',  t:'업종', cell: (r) => `<td class="sec" title="${esc(r.sec || '')}">${r.sec ? esc(r.sec) : '<span class="muted">-</span>'}</td>`},
+  {k:'sub',  t:'세부 섹터', cell: (r) => `<td class="sec" title="${esc(r.sub || '')}">${r.sub && r.sub !== '미분류' ? esc(r.sub) : '<span class="muted">-</span>'}</td>`},
+  {k:'cap',  t:'시가총액(억)', cell: (r) => `<td>${fmt(r.cap)}</td>`},
+  {k:'rt',   t:'등락률', cell: (r) => { const v = RT(r, S.per); return v === null || v === undefined ? '<td><span class="muted">-</span></td>' : pctTd(v); }},
+  {k:'own',  t:'외국인 보유율', cell: (r) => `<td>${fmt(r.own, 2)}%</td>`},
+  {k:'net',  t:'외국인 순매수', grp:'fd', cell: (r, x) => wonTd(x.a.net)},
+  {k:'pct',  t:'외국인/시총', grp:'fd', cell: (r, x) => pctTd(x.a.pct)},
+  {k:'inet', t:'기관 순매수', grp:'fd', cell: (r, x) => wonTd(x.b.net)},
+  {k:'ipct', t:'기관/시총', grp:'fd', cell: (r, x) => pctTd(x.b.pct)},
+  {k:'sum',  t:'합산 순매수', cell: (r, x) => wonTd(x.sn)},
+  {k:'spct', t:'합산/시총', cell: (r, x) => pctTd(x.sp)},
+  {k:'opct', t:() => `${PNAME[OTHER[S.per]]} 외국인/시총`, grp:'fd', cell: (r, x) => pctTd(x.o.pct, 'cmp ')},
+  {k:'oipct', t:() => `${PNAME[OTHER[S.per]]} 기관/시총`, grp:'fd', cell: (r, x) => pctTd(x.oi.pct, 'cmp ')},
+  {k:'ospct', t:() => `${PNAME[OTHER[S.per]]} 합산/시총`, grp:'fc', cell: (r, x) => pctTd(x.o.pct + x.oi.pct, 'cmp ')},
+  {k:'eps',  t:'실적', cell: (r) => `<td>${plCell(r)}</td>`},
+  {k:'per',  t:'PER', cell: (r) => `<td>${r.eps > 0 && r.per > 0 ? fmt(r.per, 1) + '배' : '<span class="muted">-</span>'}</td>`},
+  {k:'dist', t:'지지선', cell: (r) => `<td>${srCell(r)}</td>`},
+  {k:'tspct', t:'오늘 기준 한달 합산/시총', show: () => !!S.asof, cell: (r) => pctTd(r.a.M.pct + r.b.M.pct, 'cmp ')},
+  {k:'ret',  t:'기준일 이후 수익률', show: () => !!S.asof, cell: (r, x) => x.rt === null || x.rt === undefined ? '<td><span class="muted">-</span></td>' : `<td class="${x.rt > 0 ? 'pos' : x.rt < 0 ? 'neg' : ''}">${plus(x.rt)}${fmt(x.rt, 1)}%</td>`},
 ];
-const vcols = () => COLS.filter(c => !c.show || c.show());
+const vcols = () => COLS.filter(c => (!c.show || c.show()) && (c.grp !== 'fd' || S.flowOpen) && (c.grp !== 'fc' || !S.flowOpen));
 function val(r, k){
   if (k === 'sec') return r.sec ? `${r.sec}\u0001${!r.sub || r.sub === '미분류' ? '\uffff' : r.sub}` : null;   // 섹터 → 세부 섹터 순, 미분류는 맨 뒤
   if (k === 'sub') return r.sub && r.sub !== '미분류' ? `${r.sub}\u0001${r.sec || ''}` : null;
@@ -2090,6 +2160,8 @@ function val(r, k){
   if (k === 'spct') return AA(r, S.per).pct + BB(r, S.per).pct;
   if (k === 'opct') return AA(r, OTHER[S.per]).pct;
   if (k === 'oipct') return BB(r, OTHER[S.per]).pct;
+  if (k === 'ospct') return AA(r, OTHER[S.per]).pct + BB(r, OTHER[S.per]).pct;
+  if (k === 'tspct') return r.a.M.pct + r.b.M.pct;          // 기준일과 상관없이 최신 한달 합산/시총
   if (k === 'ret') return S.asof && r.h.ret !== null ? r.h.ret : null;
   if (k === 'eps') return r.eps;
   if (k === 'per') return r.eps > 0 && r.per > 0 ? r.per : null;
@@ -2120,10 +2192,21 @@ function plCell(r){
   if (r.eps === null || r.eps === undefined || r.eps === 0) return '<span class="muted">-</span>';
   return r.eps > 0 ? '<span class="pl">흑자</span>' : '<span class="pl loss">적자</span>';
 }
+// 지지선 상태: at 지지선 근접 / in 지지 구간 안 / app 구간 접근 (모두 최신 종가 기준)
+function srOk(r){
+  if (S.sr === 'ALL' || S.asof) return true;          // 기준일 모드에서는 오늘 기준 지지선으로 거르지 않음
+  const st = r.sr && r.sr.st;
+  return S.sr === 'AT' ? st === 'at' : S.sr === 'IN' ? (st === 'at' || st === 'in') : !!st;
+}
 function srCell(r){
   if (!r.sr || !r.sr.levels.length) return '<span class="muted">-</span>';
-  if (r.sr.near) return '<span class="badge">지지 근처</span>';
-  return `<span class="muted">${plus(r.sr.dist)}${fmt(r.sr.dist, 1)}%</span>`;
+  const dim = S.asof ? ' dim' : '', st = r.sr.st;
+  const nw = r.sr.new && !S.asof ? '<span class="newtag">새로 진입</span>' : '';
+  const today = S.asof ? '<span class="subn">오늘 기준</span>' : '';
+  if (st === 'at') return `<span class="badge${dim}">지지선 근접</span>${nw}${today}`;
+  if (st === 'in') return `<span class="badge in${dim}">지지 구간 안</span>${nw}${today}`;
+  if (st === 'app') return `<span class="badge app${dim}">구간 접근</span>${nw}${today}`;
+  return `<span class="muted">${plus(r.sr.dist)}${fmt(r.sr.dist, 1)}%</span>${today}`;
 }
 function drawPager(pages){
   const el = $('pager');
@@ -2216,7 +2299,7 @@ function renderPat(){
     const r = BY[m.code]; if (!r) return false;
     return (S.watch === 'ALL' || WATCH.has(r.code)) && (!S.sec || r.sec === S.sec) &&
       (S.pf === 'ALL' || (S.pf === 'P' ? r.eps > 0 : (r.eps !== null && r.eps < 0))) &&
-      (S.mkt === 'ALL' || r.mkt === S.mkt) && (S.sr === 'ALL' || (r.sr && r.sr.near)) && r.cap >= S.minCap &&
+      (S.mkt === 'ALL' || r.mkt === S.mkt) && srOk(r) && r.cap >= S.minCap &&
       (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q));
   });
   $('patInfo').textContent = `유사도 상위 ${fmt(PAT.match.length)}개 중 조건에 맞는 ${fmt(list.length)}개. 종목을 누르면 위에 비교 차트가 나옵니다.`;
@@ -2421,18 +2504,26 @@ function secRetSince(sec){
 // 선진입: 이번 달 진행 순위가 최하위권이고, 다음 TOP 예상이 1~2개월 뒤에 시작되면 [진입 검토 · 선진입]
 function secLabel(x){
   const base = {label: x.label, why: x.why, pre: false, strong: false};
-  const d = MP.data, P = (CYC && CYC.pre) || {bottom: 10, ahead: [1, 2]};
-  if (!d || !d.by || !d.by[x.sec] || !CYC || CYC.nowk === undefined) return base;
+  const d = MP.data, P = (CYC && CYC.pre) || {bottom: 10, ahead: [0, 2]};
+  if (!d || !d.by || !d.by[x.sec] || !CYC || CYC.nowk === undefined || !x.cur) return base;
   const rk = d.by[x.sec], lowRank = d.n - rk.rank + 1;
-  if (lowRank > P.bottom) return base;
-  const hits = (x.nextT || []).filter(p => p.lo !== undefined && p.lo <= CYC.nowk + P.ahead[1] && p.hi >= CYC.nowk + P.ahead[0]);
-  if (!hits.length) return base;
+  if (lowRank > P.bottom) return base;                                   // 1) 이번 달 최하위권이 아니면 해당 없음
+  const inwin = L => (L || []).filter(p => p.lo !== undefined && p.lo <= CYC.nowk + P.ahead[1] && p.hi >= CYC.nowk + P.ahead[0]);
+  const t = inwin(x.nextT), b = inwin(x.nextB);
   const small = x.label.includes('소형') ? ' · 소형' : '';
-  return {label: '선진입' + (hits.length >= 2 ? ' ★' : '') + small, pre: true, strong: hits.length >= 2,
-          why: `선진입: 이번 달 최하위 ${lowRank}위(${plus(rk.ret)}${fmt(rk.ret, 1)}%)인데 TOP 예상 ${hits.map(h => `${h.txt}(${h.nm})`).join(', ')} / 원래 판단: [${x.label}] ${x.why}`};
+  const lowTxt = `이번 달 최하위 ${lowRank}위(${plus(rk.ret)}${fmt(rk.ret, 1)}%)`;
+  const list = L => L.length ? L.map(h => `${h.txt}(${h.nm})`).join(', ') : '없음';
+  const onlyRe = x.cur.k === 'T' && !t.some(h => h.nm !== '재진입');
+  if (t.length > b.length && !onlyRe) {                                  // 2) TOP 예상 > 최하위 예상, 3) TOP 구간이면 재진입만으로는 안 됨
+    return {label: '선진입' + (t.length >= 2 ? ' ★' : '') + small, pre: true, strong: t.length >= 2,
+            why: `선진입: ${lowTxt}, 이번 달~다다음 달 TOP 예상 ${list(t)} / 최하위 예상 ${list(b)} / 원래 판단: [${x.label}] ${x.why}`};
+  }
+  const reason = onlyRe ? 'TOP 구간인데 가까운 TOP 예상이 재진입뿐' : `가까운 TOP 예상 ${t.length}개 ≤ 최하위 예상 ${b.length}개`;
+  return {label: '관망 · 하락 주의' + small, pre: false, warn: true,
+          why: `하락 주의: ${lowTxt}, ${reason} (TOP ${list(t)} / 최하위 ${list(b)}) / 원래 판단: [${x.label}] ${x.why}`};
 }
 function cycRowsView(){
-  const order = l => l.startsWith('선진입 ★') ? 0 : l.startsWith('선진입') ? 1 : l.startsWith('단기') ? 2 : l.startsWith('관망') ? 3 : 4;
+  const order = l => l.startsWith('선진입 ★') ? 0 : l.startsWith('선진입') ? 1 : l.startsWith('단기') ? 2 : l.startsWith('관망 · 하락 주의') ? 4 : l.startsWith('관망') ? 3 : 5;
   return CYC.rows.map(x => ({...x, ...secLabel(x)})).map((x, i) => ({x, i})).sort((a, b) => order(a.x.label) - order(b.x.label) || a.i - b.i).map(o => o.x);
 }
 function renderCycle(){
@@ -2448,9 +2539,9 @@ function renderCycle(){
   }
   $('cycTitle').textContent = `섹터 순환 주기 (${CYC.from} ~ ${CYC.to}, ${CYC.months}개월, ${CYC.nsec}개 섹터)` + (S.asof ? ` · 기준일 ${S.asof}` : '');
   document.body.classList.toggle('asofmode', !!S.asof);
-  $('cycNote').textContent = `매달 섹터별 한달 등락률(시총 가중)로 순위를 매겨 상위 ${CYC.top}개를 TOP, 하위 ${CYC.top}개를 최하위로 기록했습니다. 재진입은 같은 명단에 다시 들어오기까지의 평균 개월, 전환은 한 구간이 시작된 뒤 반대쪽 구간이 시작되기까지의 평균, 한 바퀴는 같은 쪽 구간이 다시 시작되기까지의 평균입니다. 다음 시기는 기준 달에 평균을 더한 예상이고, 예상이 지금부터 ${CYC.soon}개월 안이면 "다가옴/임박", TOP과 최하위 예상이 지금부터 3개월 안에서 한 달이라도 겹치면 "겹침"으로 봅니다(그보다 먼 훗날의 겹침은 보지 않음). [단기]는 TOP 전환이 곧 오거나 최하위 전환 전에 TOP 재진입이 먼저 올 것으로 보이는 섹터로 짧게 보는 매매용이고, [선진입]은 이번 달 진행 순위가 최하위 ${(CYC.pre || {}).bottom || 10}위 안으로 눌려 있는데 TOP 예상 시기가 이번 달~다다음 달 사이에 걸치는 섹터로 미리 들어가는 용도입니다. TOP 예상은 재진입·전환·한 바퀴 세 가지 방법으로 따로 내는데, 그중 두 가지 이상이 이 기간에 들어오면 ★를 붙입니다. 과거 주기가 앞으로도 반복된다는 보장은 없고, 횟수가 적은 섹터일수록 평균이 흔들립니다. 지금 달(${CYC.now})은 진행 중이라 주기 계산에서는 뺐고, 대신 "이번 달 진행" 칸에 지난달 마지막 거래일부터 오늘까지의 섹터 등락률 순위를 따로 보여줍니다(TOP ${CYC.top}·최하위 ${CYC.top} 안이면 표시).`;
+  $('cycNote').textContent = `매달 섹터별 한달 등락률(시총 가중)로 순위를 매겨 상위 ${CYC.top}개를 TOP, 하위 ${CYC.top}개를 최하위로 기록했습니다. 재진입은 같은 명단에 다시 들어오기까지의 평균 개월, 전환은 한 구간이 시작된 뒤 반대쪽 구간이 시작되기까지의 평균, 한 바퀴는 같은 쪽 구간이 다시 시작되기까지의 평균입니다. 다음 시기는 기준 달에 평균을 더한 예상이고, 예상이 지금부터 ${CYC.soon}개월 안이면 "다가옴/임박", TOP과 최하위 예상이 지금부터 3개월 안에서 한 달이라도 겹치면 "겹침"으로 봅니다(그보다 먼 훗날의 겹침은 보지 않음). [단기]는 TOP 전환이 곧 오거나 최하위 전환 전에 TOP 재진입이 먼저 올 것으로 보이는 섹터로 짧게 보는 매매용이고, [선진입]은 미리 들어가는 용도로, 이번 달 진행 순위가 최하위 ${(CYC.pre || {}).bottom || 10}위 안으로 눌려 있고, 이번 달~다다음 달에 걸친 TOP 예상 개수가 최하위 예상 개수보다 많을 때입니다. 지금 TOP 구간이면 재진입 예상만으로는 안 되고 전환이나 한 바퀴 예상도 그 기간에 있어야 합니다. TOP 예상(재진입·전환·한 바퀴) 중 두 가지 이상이 들어오면 ★. 이번 달 최하위권인데 이 조건에 못 미치면 [관망 · 하락 주의]로 표시합니다. 과거 주기가 앞으로도 반복된다는 보장은 없고, 횟수가 적은 섹터일수록 평균이 흔들립니다. 지금 달(${CYC.now})은 진행 중이라 주기 계산에서는 뺐고, 대신 "이번 달 진행" 칸에 지난달 마지막 거래일부터 오늘까지의 섹터 등락률 순위를 따로 보여줍니다(TOP ${CYC.top}·최하위 ${CYC.top} 안이면 표시).`;
   const f1 = v => v === null || v === undefined ? '-' : fmt(v, 1).replace(/\.0$/, '');
-  const tag = l => `<span class="tag ${l.startsWith('선진입') ? 'pre' : l.startsWith('단기') ? 'go' : l.startsWith('관망') ? 'wait' : 'hold'}">${esc(l)}</span>`;
+  const tag = l => `<span class="tag ${l.startsWith('선진입') ? 'pre' : l.startsWith('단기') ? 'go' : l.includes('하락 주의') ? 'warn' : l.startsWith('관망') ? 'wait' : 'hold'}">${esc(l)}</span>`;
   const stTxt = st => st === 'past' ? '<span class="st">지남</span>' : st === 'now' ? '<span class="st now">이번 달</span>' : '';
   const preds = L => L && L.length ? `<ul class="pred">${L.map(x => `<li><b>${x.txt}</b> ${stTxt(x.st)} <span class="st">(${x.nm}: ${x.base})</span></li>`).join('')}</ul>` : '-';
   const hist = G => G.length ? G.map(g => '(' + g.join(', ') + ')').join(', ') : '';
@@ -2532,7 +2623,9 @@ function pickStocks(){
       // 위치 25
       let pos = 0; const sr = H ? null : r.sr;
       if (sr && sr.levels && sr.levels.length) {
-        if (sr.near) { pos += 15; why.push('지지 구간 안'); }
+        if (sr.st === 'at') { pos += 15; why.push('지지선 근접'); }
+        else if (sr.st === 'in') { pos += 10; why.push('지지 구간 안'); }
+        else if (sr.st === 'app') { pos += 6; why.push('지지 구간 접근'); }
         else if (sr.dist !== null) { const d = Math.abs(sr.dist); pos += 15 * Math.max(0, 1 - d / 20); if (d <= 10) why.push(`지지선까지 ${fmt(d, 1)}%`); }
       }
       const above = sr && sr.res ? sr.res.filter(lv => lv.top > r.price) : [];
@@ -2580,7 +2673,7 @@ function renderCycleValid(){
   const v = CYC0 && CYC0.valid;
   if (!v || !v.months || !v.months.length) { $('cvNote').textContent = '검증할 과거 달이 아직 부족합니다.'; $('cvRows').innerHTML = ''; return; }
   const g = v.groups;
-  $('cvNote').textContent = `${v.months[0]}~${v.months[v.months.length - 1]} (${v.months.length}개월) 동안 달마다, 그 달 중에 알 수 있던 정보(그 전 달까지의 주기, 그 달 순위)로 판단했을 때 각 기준에 걸린 섹터가 이후 TOP ${v.top}에 들었는지와 그 기간 수익률을 셌습니다. [단기]는 다음 1개월, [선진입]은 다음 1~2개월로 보고, 각각 같은 기간의 전체 섹터 평균과 비교합니다. 검증에서는 "이번 달 진행"을 그 달 전체 순위로 봤고, 건수가 적으면 우연일 수 있습니다.`;
+  $('cvNote').textContent = `${v.months[0]}~${v.months[v.months.length - 1]} (${v.months.length}개월) 동안 달마다, 그 달 중에 알 수 있던 정보(그 전 달까지의 주기, 그 달 순위)로 판단했을 때 각 기준에 걸린 섹터가 이후 TOP ${v.top}에 들었는지와 그 기간 수익률을 셌습니다. [단기]는 다음 1개월, [선진입]과 [하락 주의]는 다음 1~2개월로 보고, 각각 같은 기간의 전체 섹터 평균과 비교합니다. 하락 주의는 TOP 진입 비율과 수익률이 평균보다 낮게 나와야 잘 맞는 겁니다. 검증에서는 "이번 달 진행"을 그 달 전체 순위로 봤고, 건수가 적으면 우연일 수 있습니다.`;
   const row = (name, per, x, base) => {
     const lift = x.rate !== null && base.rate ? x.rate / base.rate : null;
     return `<tr><td class="name">${name}</td><td>${per}</td><td>${fmt(x.n)}건</td><td>${fmt(x.hit)}건</td><td>${x.rate === null ? '-' : fmt(x.rate, 1) + '%'}</td>
@@ -2588,7 +2681,8 @@ function renderCycleValid(){
       <td>${lift === null ? '-' : `<span class="lift ${lift >= 1.3 ? 'pos' : lift < 0.8 ? 'neg' : ''}">${fmt(lift, 1)}배</span>`}</td></tr>`;
   };
   $('cvRows').innerHTML = row('단기', '다음 1개월', g.short, g.all1) + row('전체 섹터 평균', '다음 1개월', g.all1, g.all1) +
-    row('선진입 ★ (예상 2개 이상)', '다음 1~2개월', g.pre2, g.all2) + row('선진입 (전체)', '다음 1~2개월', g.pre, g.all2) + row('전체 섹터 평균', '다음 1~2개월', g.all2, g.all2);
+    row('선진입 ★ (예상 2개 이상)', '다음 1~2개월', g.pre2, g.all2) + row('선진입 (전체)', '다음 1~2개월', g.pre, g.all2) +
+    (g.warn ? row('관망 · 하락 주의', '다음 1~2개월', g.warn, g.all2) : '') + row('전체 섹터 평균', '다음 1~2개월', g.all2, g.all2);
 }
 function renderSec(){
   renderCycle();
@@ -2606,7 +2700,7 @@ function renderSec(){
   };
   DATA.forEach(r => {
     if (!r.sec) return;
-    if (!((S.mkt === 'ALL' || r.mkt === S.mkt) && r.cap >= S.minCap && (S.sr === 'ALL' || (r.sr && r.sr.near)) &&
+    if (!((S.mkt === 'ALL' || r.mkt === S.mkt) && r.cap >= S.minCap && srOk(r) &&
           (S.watch === 'ALL' || WATCH.has(r.code)) &&
           (S.pf === 'ALL' || (S.pf === 'P' ? r.eps > 0 : (r.eps !== null && r.eps < 0))))) return;
     add(G[r.sec] || (G[r.sec] = newG(r.sec)), r);
@@ -2656,6 +2750,7 @@ $('secRows').addEventListener('click', e => {
   $('view').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === 'rank'));
   render(); window.scrollTo({top: 0, behavior: 'smooth'});
 });
+$('flowBtn').onclick = () => { S.flowOpen = !S.flowOpen; render(); };
 function render(){
   document.body.classList.toggle('pat', S.view === 'pat');
   document.body.classList.toggle('secv', S.view === 'sec');
@@ -2673,7 +2768,7 @@ function render(){
     (!S.sub || (r.sub || '미분류') === S.sub) &&
     (S.pf === 'ALL' || (S.pf === 'P' ? r.eps > 0 : (r.eps !== null && r.eps < 0))) &&
     (S.mkt === 'ALL' || r.mkt === S.mkt) &&
-    (S.sr === 'ALL' || (r.sr && r.sr.near)) &&
+    srOk(r) &&
     r.cap >= S.minCap &&
     (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q)));
   const total = rows.length;
@@ -2690,6 +2785,7 @@ function render(){
   rows = rows.slice(off, off + S.top);
 
   drawHead();
+  $('flowBtn').textContent = S.flowOpen ? '수급 칸 접기 ◂' : '외국인·기관 따로 보기 ▸';
   $('info').textContent = total
     ? `조건에 맞는 ${fmt(total)}개 종목 중 ${fmt(off + 1)}~${fmt(off + rows.length)}위 (${S.page} / ${pages} 페이지)`
     : '조건에 맞는 종목이 없습니다';
@@ -2700,30 +2796,8 @@ function render(){
     const sn = a.net + b.net, sp = a.pct + b.pct, scls = cc(sn);
     const o = AA(r, OTHER[S.per]), oi = BB(r, OTHER[S.per]);
     const rt = S.asof ? r.h.ret : null;
-    return `<tr tabindex="0" data-code="${r.code}">
-      <td class="st">${starBtn(r.code)}</td>
-      <td>${off + i + 1}</td>
-      <td class="name">${esc(r.name)}</td>
-      <td class="code">${r.code}</td>
-      <td>${r.mkt}</td>
-      <td class="sec" title="${esc(r.sec || '')}">${r.sec ? esc(r.sec) : '<span class="muted">-</span>'}</td>
-      <td class="sec" title="${esc(r.sub || '')}">${r.sub && r.sub !== '미분류' ? esc(r.sub) : '<span class="muted">-</span>'}</td>
-      <td>${fmt(r.cap)}</td>
-      <td class="${cc(RT(r, S.per))}">${RT(r, S.per) === null || RT(r, S.per) === undefined ? '<span class="muted">-</span>' : plus(RT(r, S.per)) + fmt(RT(r, S.per), 2) + '%'}</td>
-      <td>${fmt(r.own, 2)}%</td>
-      <td class="${cls}">${won(a.net, true)}</td>
-      <td class="${cls}">${plus(a.pct)}${fmt(a.pct, 2)}%</td>
-      <td class="${icls}">${won(b.net, true)}</td>
-      <td class="${icls}">${plus(b.pct)}${fmt(b.pct, 2)}%</td>
-      <td class="${scls}">${won(sn, true)}</td>
-      <td class="${scls}">${plus(sp)}${fmt(sp, 2)}%</td>
-      <td class="cmp ${cc(o.pct)}">${plus(o.pct)}${fmt(o.pct, 2)}%</td>
-      <td class="cmp ${cc(oi.pct)}">${plus(oi.pct)}${fmt(oi.pct, 2)}%</td>
-      <td>${plCell(r)}</td>
-      <td>${r.eps > 0 && r.per > 0 ? fmt(r.per, 1) + '배' : '<span class="muted">-</span>'}</td>
-      <td>${srCell(r)}</td>
-      ${S.asof ? `<td class="${cc(rt)}">${rt === null ? '<span class="muted">-</span>' : plus(rt) + fmt(rt, 1) + '%'}</td>` : ''}
-    </tr>`;
+    const ctx = {rank: off + i + 1, a, b, sn, sp, o, oi, rt};
+    return `<tr tabindex="0" data-code="${r.code}">${vcols().map(c => c.cell(r, ctx)).join('')}</tr>`;
   }).join('') : `<tr><td colspan="${vcols().length}" class="empty">${S.watch === 'W' && !WATCH.size ? '관심종목이 없습니다. 종목 왼쪽의 ☆를 눌러 추가해 보세요.' : '조건에 맞는 종목이 없습니다. 시총 최소값을 낮추거나 검색어를 지워 보세요.'}</td></tr>`;
   $('wBtn').textContent = `관심종목 (${WATCH.size})`;
 }
