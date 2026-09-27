@@ -1773,6 +1773,13 @@ body:not(.asofmode) .asofc{display:none}
 .tag.go{background:var(--red);color:#fff}
 .tag.pre{background:#1A1A1A;color:#fff}
 .tag.trend{background:var(--sup);color:#fff}
+details.notebox{margin:0 0 10px}
+details.notebox > summary{cursor:pointer;list-style:none;font-size:14px;color:var(--gray);padding:6px 0}
+details.notebox > summary::-webkit-details-marker{display:none}
+details.notebox > summary .more{color:var(--olive);font-weight:700;margin-left:6px}
+details.notebox > summary .more::after{content:" ▾"}
+details.notebox[open] > summary .more::after{content:" ▴"}
+details.notebox .pnote{margin:6px 0 10px}
 .flowopt{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:0 0 10px;font-size:14px}
 .flowopt > span:first-child{font-weight:700}
 .flowopt .note{margin:0;font-size:12px}
@@ -1994,7 +2001,7 @@ td.st{text-align:center;width:44px}
   </div>
 
   <div id="secView" hidden>
-    <p class="pnote">거래소 산업분류를 반도체, 2차전지, 제약·바이오 같은 투자 섹터 약 35개로 다시 묶었습니다. 주요 제품에 반도체·웨이퍼, 양극재·분리막·리튬, 화장품 같은 단어가 있으면 장비·소재 회사라도 그 섹터로 모읍니다. 등락률은 시가총액 가중 평균이고, 순매수와 시총 대비는 섹터 안 종목을 모두 더한 값입니다. 위의 전날·10일·한달 탭과 기준일, 시장·시총·실적 필터가 그대로 적용되고, 섹터를 누르면 그 섹터 종목 순위로 이동합니다.</p>
+    <details class="notebox"><summary>섹터별 등락률·외국인·기관 순매수 요약 · 섹터를 누르면 그 섹터 종목으로 이동 <span class="more">자세히 보기</span></summary><p class="pnote">거래소 산업분류를 반도체, 2차전지, 제약·바이오 같은 투자 섹터 약 35개로 다시 묶었습니다. 주요 제품에 반도체·웨이퍼, 양극재·분리막·리튬, 화장품 같은 단어가 있으면 장비·소재 회사라도 그 섹터로 모읍니다. 등락률은 시가총액 가중 평균이고, 순매수와 시총 대비는 섹터 안 종목을 모두 더한 값입니다. 위의 전날·10일·한달 탭과 기준일, 시장·시총·실적 필터가 그대로 적용되고, 섹터를 누르면 그 섹터 종목 순위로 이동합니다.</p></details>
     <p class="info" id="secInfo"></p>
     <div class="tbl"><table class="ptbl" id="stbl">
       <thead><tr id="secHead"></tr></thead>
@@ -2003,31 +2010,30 @@ td.st{text-align:center;width:44px}
     <h2 class="ph" id="cycTitle">섹터 순환 주기</h2>
     <div class="flowopt"><span>수급 조건</span><div class="seg" id="flowOpt"><button data-v="strict" class="on">거르기</button><button data-v="show">표시만</button></div>
       <span>내 기준</span><div class="seg" id="myOpt"><button data-v="off" class="on">끔</button><button data-v="on">켬</button></div>
-      <span class="note">이번 달 <input id="myMin" type="number" min="1" max="40" value="2" class="myn">~<input id="myMax" type="number" min="1" max="40" value="12" class="myn">위 + 10일 평균 순위가 한 달 전보다 상승(▲)</span>
-      <span>추천 안정도</span><div class="seg" id="stabOpt"><button data-v="0" class="on">전체</button><button data-v="6">6일 이상</button></div>
-      <span class="note">거르기(기본): 섹터 외국인+기관 한달 순매도면 [단기 · 수급 약함] / [선진입 · 수급 약함]으로 따로 표시해 추천 중 맨 아래에 둠 / 표시만: 그대로 두고 순매수면 "수급 ✓"만 표시</span></div>
+      <span class="note">이번 달 <input id="myMin" type="number" min="1" max="40" value="2" class="myn">~<input id="myMax" type="number" min="1" max="40" value="12" class="myn">위 + 10일 평균 순위가 한 달 전보다 상승(▲), 추천 섹터 중에서만</span>
+      <span>추천 안정도</span><div class="seg" id="stabOpt"><button data-v="0" class="on">전체</button><button data-v="6">6일 이상</button></div></div>
     <p class="mktwarn" id="mktWarn" hidden></p>
-    <p class="pnote" id="cycNote"></p>
+    <details class="notebox"><summary>판단 순서: 추세 지속 → 단기 → 선진입 → 관망 · 과거 30개월 주기, 10일 평균 순위, 섹터 수급으로 계산 <span class="more">자세히 보기</span></summary><p class="pnote">수급 조건 거르기(기본): 섹터 외국인+기관 한달 순매도면 [단기 · 수급 약함] / [선진입 · 수급 약함]으로 따로 표시해 추천 중 맨 아래에 둠 / 표시만: 그대로 두고 순매수면 "수급 ✓"만 표시</p><p class="pnote" id="cycNote"></p></details>
     <div class="tbl"><table class="ptbl ctbl">
       <thead><tr><th>판단</th><th>섹터</th><th>종목 수</th><th>현재</th><th>다음 TOP 예상</th><th>다음 최하위 예상</th><th>사유</th>
         <th id="mpHead">이번 달 진행</th><th class="asofc">기준일 이후 섹터 등락<br><select class="retto" aria-label="등락 비교 끝날"></select></th><th>장기 사이클 (참고)</th><th>1년 관점 (참고)</th>
         <th>TOP10 횟수</th><th>TOP10 재진입 평균</th><th>최하위10 횟수</th><th>최하위10 재진입 평균</th><th>전환 횟수</th><th>전환 평균</th><th>한 바퀴 평균</th></tr></thead>
       <tbody id="cycRows"></tbody>
     </table></div>
-    <h2 class="ph">진입 판단 기준 과거 검증</h2>
-    <p class="pnote" id="cvNote"></p>
-    <div class="tbl"><table class="ptbl vtbl">
-      <thead><tr><th>기준</th><th>보는 기간</th><th>해당 건수</th><th>평균 수익률</th><th>평균 대비</th><th>중간값 수익률</th><th>중간값 대비</th><th>손실 비율</th><th>TOP 진입 비율 (참고)</th></tr></thead>
-      <tbody id="cvRows"></tbody>
-    </table></div>
     <h2 class="ph">단기·선진입·추세 지속 섹터 후보 종목</h2>
-    <p class="pnote" id="pickNote"></p>
+    <details class="notebox"><summary>추천 섹터 안에서 수급·위치·실적·과열로 점수 매긴 상위 종목 <span class="more">자세히 보기</span></summary><p class="pnote" id="pickNote"></p></details>
     <div class="tbl"><table class="ptbl ktbl">
       <thead><tr><th>섹터</th><th>순위</th><th>종목명</th><th>총점</th><th>수급 (40)</th><th>위치 (25)</th><th>실적 (15)</th><th>패턴 (10)</th><th>과열 회피 (10)</th><th class="asofc">기준일 이후<br><select class="retto" aria-label="등락 비교 끝날"></select></th><th>선별 이유</th></tr></thead>
       <tbody id="pickRows"></tbody>
     </table></div>
+    <h2 class="ph">진입 판단 기준 과거 검증</h2>
+    <details class="notebox"><summary>과거 달마다 각 기준에 걸린 섹터가 이후 얼마나 올랐는지 · 전체 섹터 평균과 비교 <span class="more">자세히 보기</span></summary><p class="pnote" id="cvNote"></p></details>
+    <div class="tbl"><table class="ptbl vtbl">
+      <thead><tr><th>기준</th><th>보는 기간</th><th>해당 건수</th><th>평균 수익률</th><th>평균 대비</th><th>중간값 수익률</th><th>중간값 대비</th><th>손실 비율</th><th>TOP 진입 비율 (참고)</th></tr></thead>
+      <tbody id="cvRows"></tbody>
+    </table></div>
     <h2 class="ph">참고: 장기 사이클 표 (직접 정리)</h2>
-    <p class="pnote" id="refNote"></p>
+    <details class="notebox"><summary>구글 시트에 직접 정리한 장기 사이클 판단 (데이터 계산 아님) <span class="more">자세히 보기</span></summary><p class="pnote" id="refNote"></p></details>
     <div id="refBox"></div>
   </div>
 
@@ -2868,9 +2874,9 @@ function renderCycle(){
   const allRows = cycRowsView(), weakStab = x => S.stabMin && isPick(x.label) && (stabOf(x.sec) ?? 99) < S.stabMin;
   const isRest = x => x.label.startsWith('관망') || x.label.startsWith('판단 보류') || weakStab(x);
   let mainRows = allRows.filter(x => !isRest(x)), restRows = allRows.filter(isRest);
-  if (S.my) { mainRows = allRows.filter(x => myOk(x.sec)); restRows = []; }
+  if (S.my) { mainRows = mainRows.filter(x => myOk(x.sec)); restRows = []; }   // 내 기준: 접히기 전(추천) 섹터 중에서만
   const moreRow = restRows.length ? `<tr class="morerow"><td colspan="30"><button class="mbtn" id="cycMore">${S.cycAll ? `관망 ${restRows.length}개 접기 ▴` : `관망 ${restRows.length}개 더보기 ▾`}</button></td></tr>` : '';
-  const emptyMy = S.my && !mainRows.length ? `<tr><td colspan="30" class="empty">내 기준(이번 달 ${S.myMin}~${S.myMax}위 + 순위 상승)에 맞는 섹터가 없습니다.</td></tr>` : '';
+  const emptyMy = S.my && !mainRows.length ? `<tr><td colspan="30" class="empty">추천 섹터 중 내 기준(이번 달 ${S.myMin}~${S.myMax}위 + 순위 상승)에 맞는 섹터가 없습니다.</td></tr>` : '';
   $('cycRows').innerHTML = emptyMy + (S.cycAll ? mainRows.concat(restRows) : mainRows).map(x => `<tr data-sec="${esc(x.sec)}">
     <td class="nw">${tag(x.label)}${x.flow ? ' <span class="flowok" title="섹터 외국인+기관 한달 순매수 플러스">수급 ✓</span>' : ''}${(() => { const v = stabOf(x.sec); return v === null ? '' : `<div class="hist">최근 ${STAB.data.n}거래일 중 ${v}일 추천</div>`; })()}</td>
     <td class="name nw">${esc(x.sec)}</td><td class="nw">${fmt(x.n)}</td>
