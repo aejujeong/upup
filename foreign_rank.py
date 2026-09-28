@@ -618,6 +618,7 @@ def load_sectors():
     return (saved or {}).get("map") or {}, (saved or {}).get("prod") or {}
 
 
+TRADE_REPO = os.environ.get("TRADE_REPO", "aejujeong/upup-data")   # 매매 기록을 저장할 비공개 저장소 (공유 편집 키에 이 저장소 권한도 필요)
 QUOTE_API = os.environ.get("QUOTE_API", "https://upup-quote.vercel.app/api/price")   # 실시간 현재가 중계 주소 (한국투자증권 오픈API)
 REF_SHEET = "1CRxMKK8YpduGmJlpAeku8Y76WMDq3pJvHnFCJ9vahEk"   # 참고용 장기 사이클 표 (구글 시트, 링크 공유 필요)
 
@@ -1698,6 +1699,7 @@ def main():
     html = html.replace("__PATTERN__", json.dumps(PATTERN, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__CYCLE__", json.dumps(CYCLE, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__QUOTE_API__", json.dumps(QUOTE_API))
+    html = html.replace("__TRADE_REPO__", json.dumps(TRADE_REPO))
     html = html.replace("__CYCHIST__", json.dumps(CYCLE_HIST, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__CYCREF__", json.dumps(CYCLE_REF, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__HIST__", json.dumps(HIST, separators=(",", ":")) if INLINE_CHARTS else "null")
@@ -1798,6 +1800,51 @@ td.livec{white-space:nowrap}
 .perrow{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
 .perrow .tabs{margin-bottom:0}
 #danBtn.on{background:var(--olive);color:#fff}
+body.tradev .bar, body.tradev #asofNote{display:none !important}
+.topts input[type=checkbox]{width:auto;height:auto;margin:0 6px 0 0;vertical-align:middle}
+.flash{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#1A1A1A;color:#fff;padding:10px 16px;border-radius:999px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:50}
+.flash.on{opacity:1}
+tr.clickable{cursor:pointer}
+.tdlg{border:1px solid var(--olive);border-radius:12px;padding:18px 20px;width:min(620px,94vw)}
+.tdlg::backdrop{background:rgba(0,0,0,.35)}
+.tdhead{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}
+.tdhead h3{margin:0}
+.tdrow{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid #F0E4E4;font-size:14px}
+.tdrow span:first-child{color:var(--gray)}
+.tdlg input,.tdlg textarea{font:inherit;font-size:14px;padding:6px 10px;border-radius:6px;border:1px solid var(--olive);width:100%;box-sizing:border-box}
+.tdlg textarea{min-height:70px;resize:vertical}
+.tdlg .lbl{display:block;font-size:13px;color:var(--gray);margin:10px 0 4px}
+.tdbtns{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
+.buybtn{font:inherit;font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--red);background:#fff;color:var(--red);cursor:pointer;white-space:nowrap}
+.buybtn:hover{background:var(--red);color:#fff}
+.tform{display:flex;flex-wrap:wrap;gap:12px 14px;align-items:flex-end;border:1px solid var(--olive);border-radius:10px;padding:14px 16px;margin:0 0 8px}
+.tform input{font:inherit;font-size:14px;padding:5px 10px;height:32px;border-radius:6px;border:1px solid var(--olive);width:150px}
+.tform .wide input{width:260px}
+#tStock{width:200px}
+.mbtn.big{padding:7px 18px;font-size:14px;background:var(--olive);color:#fff}
+.ttbl td{white-space:nowrap}
+.ttbl .dcol{width:92px}
+.tsum{margin-bottom:14px}
+.sumrow td{font-weight:700;background:#FBF3F3;border-top:2px solid var(--red)}
+.threc{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:18px 0 8px}
+.threc h3{margin:0}
+#tSumBox table{min-width:0;width:auto}
+#tSumBox th,#tSumBox td{padding:8px 22px}
+#tradeView .ptbl{min-width:0}
+.tsum td{font-size:15px;font-weight:700}
+.kind{display:inline-block;font-size:12px;font-weight:700;padding:1px 8px;border-radius:999px;border:1px solid var(--olive);color:var(--olive)}
+.kind.sw{border-color:#1A1A1A;color:#1A1A1A}
+.ttbl td.dcol{font-size:13px}
+#tDate{width:140px}
+#tFrom,#tTo{width:150px;font:inherit;font-size:14px;padding:5px 10px;height:32px;border-radius:6px;border:1px solid var(--olive);background:#fff;color:var(--ink)}
+.tdlist{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+.tdlist th,.tdlist td{border-bottom:1px solid #F0E4E4;padding:5px 4px;text-align:left}
+.tdlist input{padding:3px 6px;font-size:13px;height:auto}
+.tdlist .num{width:96px}
+.tdlist .del{border:0;background:none;color:var(--gray);cursor:pointer}
+.ttbl .del{border:0;background:none;color:var(--gray);cursor:pointer;font-size:14px}
+.topts{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin:14px 0 6px;font-size:13px}
+.topts label.mbtn{display:inline-block}
 .flowopt{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:0 0 10px;font-size:14px}
 .flowopt > span:first-child{font-weight:700}
 .flowopt .note{margin:0;font-size:12px}
@@ -1963,7 +2010,7 @@ td.st{text-align:center;width:44px}
   </div>
 
   <div class="views" id="view">
-    <button data-v="rank" class="on">순매수 순위</button><button data-v="sec">섹터</button><button data-v="pat">패턴 찾기</button>
+    <button data-v="sec" class="on">섹터</button><button data-v="rank">순매수 순위</button><button data-v="pat">패턴 찾기</button><button data-v="trade">매매</button>
   </div>
   <div id="rankTop">
   <div class="perrow">
@@ -2066,6 +2113,43 @@ td.st{text-align:center;width:44px}
     <details class="notebox"><summary>구글 시트에 직접 정리한 장기 사이클 판단 (데이터 계산 아님) <span class="more">자세히 보기</span></summary><p class="pnote" id="refNote"></p></details>
     <div id="refBox"></div>
   </div>
+
+  <div id="tradeView" hidden>
+    <div class="tbl" id="tSumBox"><table class="ptbl ttbl tsum">
+      <thead><tr><th>보유 매수금액</th><th>평가금액</th><th>평가손익</th><th>실현손익</th></tr></thead>
+      <tbody id="tSum"></tbody>
+    </table></div>
+    <h3>보유 종목</h3>
+    <div class="tbl"><table class="ptbl ttbl">
+      <thead><tr><th>종목명</th><th>유형</th><th>매수금액</th><th>평균 매수가</th><th>현재가</th><th>평가금액</th><th>평가손익</th><th>수익률</th></tr></thead>
+      <tbody id="tHold"></tbody>
+    </table></div>
+    <div class="threc"><h3>매매 기록</h3>
+      <div class="asofpair"><input type="date" id="tFrom" aria-label="시작일"><span class="tilde">~</span><input type="date" id="tTo" aria-label="끝날"></div></div>
+    <div class="tbl"><table class="ptbl ttbl">
+      <thead><tr><th class="dcol">매수일</th><th>종목명</th><th>유형</th><th>상태</th><th>매수금액</th><th>실현 손익</th><th>메모</th></tr></thead>
+      <tbody id="tHist"></tbody>
+      <tfoot id="tHistSum"></tfoot>
+    </table></div>
+    <details class="notebox"><summary>직접 기록하기 <span class="more">열기</span></summary>
+    <div class="tform">
+      <div class="field"><label>매수일</label><input type="date" id="tDate"></div>
+      <div class="field"><label>종목</label><input id="tStock" list="tStocks" placeholder="종목명이나 코드" autocomplete="off"><datalist id="tStocks"></datalist></div>
+      <div class="field"><label>유형</label><div class="seg" id="tKind"><button data-v="단기" class="on">단기</button><button data-v="스윙">스윙</button></div></div>
+      <div class="field"><label>매수 금액 (원)</label><input type="text" inputmode="numeric" id="tAmt" class="money"></div>
+      <div class="field"><label>매수 단가 (원)</label><input type="number" id="tPrice" min="0" step="1" placeholder="비우면 지금 가격"></div>
+      <div class="field wide"><label>메모</label><input id="tMemo" placeholder="매수 이유, 목표가 등"></div>
+      <div class="field"><label>&nbsp;</label><button class="mbtn big" id="tAdd">매수 기록</button></div>
+    </div>
+    <p class="snapmsg" id="tMsg"></p>
+    </details>
+    <p class="muted" id="tNote" style="font-size:12px;margin:12px 0 0"></p>
+  </div>
+
+  <dialog id="tDlg" class="tdlg">
+    <div class="tdhead"><h3 id="tdTitle"></h3><button class="close" id="tdClose">닫기</button></div>
+    <div id="tdBody"></div>
+  </dialog>
 
   <div id="patView" hidden>
     <p class="pnote">최근 1년 동안 가장 많이 오른 종목들이 크게 오르기 직전 3달(60거래일) 동안 어떤 흐름이었는지를 기준 패턴으로 잡고, 모든 종목의 최근 3달 흐름과 비교합니다. 주가 모양, 거래량 흐름, 외국인·기관 누적 순매수 흐름을 함께 봅니다. 닮은 패턴이 같은 결과로 이어진다는 보장은 없으니 후보를 추리는 참고용으로 써 주세요. PER은 직전 결산 연도 이익 기준이고, "급등 시작 때 PER"과 "당시 PER"은 이익이 그대로였다고 보고 그때 주가로 다시 계산한 추정치입니다.</p>
@@ -2212,7 +2296,7 @@ const CREF = __CYCREF__;
 const REFBY = Object.fromEntries(((CREF && CREF.secs) || []).map(x => [x.sec.replace(/\s/g, ''), x]));
 const refOf = sec => REFBY[(sec || '').replace(/\s/g, '')];
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'10', mkt:'ALL', sr:'IN', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', allf:'ALL', dan:false, flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:true, myMin:2, myMax:12, view:'rank', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
+const S = {per:'10', mkt:'ALL', sr:'IN', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', allf:'ALL', dan:false, flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:true, myMin:2, myMax:12, view:'sec', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
 const RT = (r, p) => S.asof ? (r.h ? r.h.rt[p] : null) : (r.rt ? r.rt[p] : null);   // 기간 등락률
 const AA = (r, p) => S.asof ? r.h.a[p] : r.a[p];   // 외국인 (기준일 반영)
 const BB = (r, p) => S.asof ? r.h.b[p] : r.b[p];   // 기관 (기준일 반영)
@@ -2256,7 +2340,8 @@ function applySubs(){
 async function saveShared(retry = true){
   if (!SH.token) { alert('공유 저장을 하려면 먼저 오른쪽 위 톱니바퀴에서 "공유 편집 켜기"를 눌러 접근 키를 입력해 주세요.'); return false; }
   SH.data.watch = [...WATCH];
-  const body = {message: 'update overrides (from homepage)', content: b64enc(JSON.stringify(SH.data, null, 1))};
+  const up = {...SH.data}; delete up.trades;
+  const body = {message: 'update overrides (from homepage)', content: b64enc(JSON.stringify(up, null, 1))};
   if (SH.sha) body.sha = SH.sha;
   $('shareState').textContent = '저장 중...';
   try {
@@ -2350,6 +2435,7 @@ const COLS = [
   {k:'eps',  t:'실적', cell: (r) => `<td>${plCell(r)}</td>`},
   {k:'per',  t:'PER', cell: (r) => `<td>${r.eps > 0 && r.per > 0 ? fmt(r.per, 1) + '배' : '<span class="muted">-</span>'}</td>`},
   {k:'dist', t:'지지선', cell: (r) => `<td>${srCell(r)}</td>`},
+  {k:null, t:'매수', cell: (r) => `<td><button class="buybtn" data-buy="${r.code}">매수</button></td>`},
   {k:'tspct', t:'오늘 기준 한달 합산/시총', show: () => !!S.asof, cell: (r) => pctTd(r.a.M.pct + r.b.M.pct, 'cmp ')},
   {k:'ret',  t:() => `기준일 이후 수익률 (~${retEndLabel()})`, show: () => !!S.asof, cell: (r, x) => x.rt === null || x.rt === undefined ? '<td><span class="muted">-</span></td>' : `<td class="${x.rt > 0 ? 'pos' : x.rt < 0 ? 'neg' : ''}">${plus(x.rt)}${fmt(x.rt, 1)}%</td>`},
 ];
@@ -3223,10 +3309,13 @@ function render(){
   if (S.asof) fillRetTo();
   document.body.classList.toggle('pat', S.view === 'pat');
   document.body.classList.toggle('secv', S.view === 'sec');
-  $('rankTop').hidden = S.view === 'pat';
+  document.body.classList.toggle('tradev', S.view === 'trade');
+  $('rankTop').hidden = S.view === 'pat' || S.view === 'trade';
   $('rankBody').hidden = S.view !== 'rank';
   $('patView').hidden = S.view !== 'pat';
   $('secView').hidden = S.view !== 'sec';
+  $('tradeView').hidden = S.view !== 'trade';
+  if (S.view === 'trade') { renderTrade(); return; }
   if (S.view === 'pat') { renderPat(); return; }
   if (S.view === 'sec') { renderRange(); renderSec(); return; }
   renderRange();
@@ -3600,6 +3689,249 @@ $('body').addEventListener('keydown', e => {
   const tr = e.target.closest('tr[data-code]');
   if (tr && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openDetail(tr.dataset.code); }
 });
+// ---- 매매 기록: 금액 기준, 수수료·세금은 키움증권 온라인 기준 ----
+// 공유 편집 키가 있는 기기는 비공개 저장소(TRADE_REPO)의 data/trades.json 에 자동 저장 → 다른 기기에서도 같은 기록
+const TRADE_REPO = __TRADE_REPO__;
+const FEE = 0.00015, TAX = 0.002;          // 키움 온라인 매매 수수료 0.015%(매수·매도), 매도 시 증권거래세 등 0.20%
+const TR = {list: [], sha: null, sync: '', busy: null, from: '', to: ''};
+// 금액 칸: 콤마 표시, ↑↓ 키로 100만 원씩
+const numVal = el => Number(String(el.value).replace(/[^0-9]/g, '')) || 0;
+function moneyInput(el, onChange){
+  const fmtNow = () => { const v = numVal(el); el.value = v ? fmt(v) : ''; if (onChange) onChange(); };
+  el.addEventListener('input', () => { const pos = el.value.length - el.selectionStart; fmtNow(); const n = Math.max(0, el.value.length - pos); el.setSelectionRange(n, n); });
+  el.addEventListener('keydown', e => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    const v = numVal(el), step = 1000000;
+    el.value = fmt(Math.max(0, e.key === 'ArrowUp' ? Math.floor(v / step) * step + step : Math.ceil(v / step) * step - step)) || '';
+    if (!numVal(el)) el.value = '';
+    if (onChange) onChange();
+  });
+}
+try { TR.list = JSON.parse(localStorage.getItem('upup-trades') || '[]'); } catch (e) {}
+TR.list.forEach(t => { if (t.amt === undefined && t.q) t.amt = t.q * t.p; });      // 예전(수량) 기록 옮기기
+function saveTradesLocal(){ try { localStorage.setItem('upup-trades', JSON.stringify(TR.list)); } catch (e) {} }
+const TR_URL = () => `https://api.github.com/repos/${TRADE_REPO}/contents/data/trades.json`;
+async function loadTradesRemote(){
+  if (!SH.token || SH.off || !TRADE_REPO) { TR.sync = 'local'; return; }
+  try {
+    const res = await fetch(TR_URL() + `?t=${Date.now()}`, {headers: {Authorization: `Bearer ${SH.token}`}, cache: 'no-store'});
+    if (res.ok) {
+      const j = await res.json(); TR.sha = j.sha;
+      const remote = JSON.parse(b64dec(j.content || '') || '[]');
+      if (Array.isArray(remote) && (remote.length || !TR.list.length)) { TR.list = remote; saveTradesLocal(); TR.sync = 'ok'; }
+      else { TR.sync = 'ok'; await saveTradesRemote(); }                 // 저장소가 비어 있고 이 기기에 기록이 있으면 올림
+    } else if (res.status === 404) { TR.sha = null; TR.sync = 'ok'; if (TR.list.length) await saveTradesRemote(); }
+    else TR.sync = `err${res.status}`;
+  } catch (e) { TR.sync = 'err'; }
+  if (S.view === 'trade') renderTrade();
+}
+async function saveTradesRemote(retry = true){
+  if (!SH.token || SH.off || !TRADE_REPO) return;
+  const body = {message: 'update trades (from homepage)', content: b64enc(JSON.stringify(TR.list, null, 1))};
+  if (TR.sha) body.sha = TR.sha;
+  try {
+    const res = await fetch(TR_URL(), {method: 'PUT', headers: {Authorization: `Bearer ${SH.token}`, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    if (res.ok) { TR.sha = (await res.json()).content.sha; TR.sync = 'ok'; }
+    else if ((res.status === 409 || res.status === 422) && retry) {        // 다른 기기에서 먼저 바꿨으면 합쳐서 다시
+      const r2 = await fetch(TR_URL() + `?t=${Date.now()}`, {headers: {Authorization: `Bearer ${SH.token}`}, cache: 'no-store'});
+      if (r2.ok) { const j = await r2.json(); TR.sha = j.sha; const remote = JSON.parse(b64dec(j.content || '') || '[]'); const ids = new Set(TR.list.map(t => t.id)); remote.forEach(t => { if (!ids.has(t.id)) TR.list.push(t); }); saveTradesLocal(); }
+      return saveTradesRemote(false);
+    } else TR.sync = `err${res.status}`;
+  } catch (e) { TR.sync = 'err'; }
+}
+async function saveTrades(){ saveTradesLocal(); await saveTradesRemote(); }
+const today = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+const nowHM = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(11, 16);
+function findStock(v){
+  v = (v || '').trim(); if (!v) return null;
+  const m = v.match(/\(([0-9A-Z]{6})\)\s*$/);
+  return (m && BY[m[1]]) || BY[v] || DATA.find(r => r.name === v) || null;
+}
+function nowPrice(code){ const q = QUOTE.data[code]; if (q && !q.err) return {p: q.price, live: true}; const r = BY[code]; return r ? {p: r.price, live: false} : {p: null, live: false}; }
+async function livePrice(code){ if (QUOTE_API) { QUOTE.failAt = 0; await fetchQuotes([code]); } return nowPrice(code); }   // 누른 순간의 실시간 가격 (안 되면 전날 종가)
+const tShares = t => t.p ? t.amt / t.p : 0;
+// 종목 하나로 묶어서 계산 (날짜순, 이동평균 단가)
+function posOf(code){
+  const ts = TR.list.filter(t => t.code === code).sort((a, b) => a.d.localeCompare(b.d) || a.id - b.id);
+  let sh = 0, cost = 0, buyAmt = 0, sellAmt = 0, soldCost = 0, real = 0;
+  ts.forEach(t => {
+    if (t.side === 'B') { sh += tShares(t); cost += t.amt * (1 + FEE); buyAmt += t.amt; }        // 원가 = 매수금액 + 수수료
+    else { const avg = sh ? cost / sh : 0, q = Math.min(tShares(t), sh), gross = t.p * q;
+           const r1 = gross * (1 - FEE - TAX) - avg * q; t._real = r1; t._cost = avg * q;          // 매도 한 건의 실현손익 (기간 합계용)
+           real += r1; soldCost += avg * q; sellAmt += gross; cost -= avg * q; sh -= q; }   // 받는 돈 = 매도금액 - 수수료 - 세금
+  });
+  if (sh < 1e-6) { sh = 0; cost = 0; }
+  const first = ts.find(t => t.side === 'B'), lastMemo = [...ts].reverse().find(t => t.memo), lastKind = [...ts].reverse().find(t => t.side === 'B' && t.kind);
+  return {code, name: (first || ts[0] || {}).name, ts, sh, cost, buyAmt, sellAmt, soldCost, real, first: first ? first.d : (ts[0] || {}).d, memo: lastMemo ? lastMemo.memo : '', kind: lastKind ? lastKind.kind : ''};
+}
+const kindTag = k => k ? `<span class="kind${k === '스윙' ? ' sw' : ''}">${k}</span>` : '<span class="muted">-</span>';
+function positions(){ return [...new Set(TR.list.map(t => t.code))].map(posOf); }
+function holdings(){ return positions().map(p => ({code: p.code, name: p.name, left: p.sh, cost: p.cost, real: p.real})); }
+const wonK = v => `${v > 0 ? '+' : ''}${fmt(Math.round(v))}원`;
+const pc = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+const pct = (a, b) => b ? `${plus(a / b * 100)}${fmt(a / b * 100, 2)}%` : '';
+function renderTrade(){
+  $('tStocks').innerHTML = DATA.map(r => `<option value="${esc(r.name)} (${r.code})"></option>`).join('');
+  if (!$('tDate').value) $('tDate').value = today();
+  const ps = positions(), open = ps.filter(p => p.sh > 0);
+  if (QUOTE_API && open.length && !TR.fetching && !(TR.fetchedAt && Date.now() - TR.fetchedAt < 30000)) {
+    TR.fetching = true; fetchQuotes(open.map(p => p.code).slice(0, 60)).finally(() => { TR.fetching = false; TR.fetchedAt = Date.now(); if (S.view === 'trade') renderTrade(); });
+  }
+  let tCost = 0, tVal = 0, tNet = 0, tReal = 0;
+  const netVal = (p, np) => p.sh > 0 && np.p ? p.sh * np.p * (1 - FEE - TAX) : null;     // 지금 팔면 받는 돈 (수수료·세금 뺀 값)
+  // 보유 종목: 보유 중인 것만, 수익률 높은 순
+  const held = ps.filter(p => p.sh > 0).map(p => { const np = nowPrice(p.code), nv = netVal(p, np); return {p, np, nv, pl: nv !== null ? nv - p.cost : null}; });
+  held.sort((a, b) => (b.pl !== null ? b.pl / b.p.cost : -1e9) - (a.pl !== null ? a.pl / a.p.cost : -1e9));
+  $('tHold').innerHTML = held.length ? held.map(({p, np, nv, pl}) => {
+    tCost += p.cost; if (np.p) { tVal += p.sh * np.p; tNet += nv; }
+    return `<tr data-code="${p.code}" class="clickable"><td class="name">${esc(p.name || p.code)}</td><td>${kindTag(p.kind)}</td><td>${fmt(Math.round(p.cost))}원</td>
+      <td>${fmt(Math.round(p.cost / p.sh))}원</td>
+      <td>${np.p ? `${fmt(np.p)}원${np.live ? '' : ' <span class="muted">(전날 종가)</span>'}` : '-'}</td>
+      <td>${np.p ? fmt(Math.round(p.sh * np.p)) + '원' : '-'}</td>
+      <td class="${pc(pl)}">${pl !== null ? wonK(pl) : '-'}</td>
+      <td class="${pc(pl)}">${pl !== null ? pct(pl, p.cost) : '-'}</td></tr>`;
+  }).join('') : `<tr><td colspan="8" class="empty">보유 종목이 없습니다.</td></tr>`;
+  ps.forEach(p => tReal += p.real);
+  // 매매 기록: 기록한 순서대로 (먼저 기록한 것이 위, 새로 기록한 것이 아래)
+  if (!TR.to) TR.to = today();
+  if (!TR.from) TR.from = new Date(Date.now() + 9 * 3600e3 - 7 * 864e5).toISOString().slice(0, 10);   // 기본: 최근 1주일
+  $('tFrom').value = TR.from; $('tTo').value = TR.to;
+  const inR = d => d >= TR.from && d <= TR.to;
+  const rows = ps.filter(p => p.ts.some(t => inR(t.d)))                              // 고른 구간 안에 거래가 있는 종목만
+    .sort((a, b) => Math.min(...a.ts.map(t => t.id)) - Math.min(...b.ts.map(t => t.id)));
+  $('tHist').innerHTML = rows.length ? rows.map(p => {
+    const heldNow = p.sh > 0, sold = p.sellAmt > 0;
+    const state = heldNow ? (sold ? '<span class="tag go">일부 매도</span>' : '<span class="tag go">보유중</span>') : '<span class="tag wait">전량 매도</span>';
+    const realTxt = sold ? `<span class="${pc(p.real)}">${heldNow ? '' : '<b>최종</b> '}${wonK(p.real)} (${pct(p.real, p.soldCost)})</span>` : '-';
+    return `<tr data-code="${p.code}" class="clickable"><td class="dcol">${p.first || ''}</td><td class="name">${esc(p.name || p.code)}</td><td>${kindTag(p.kind)}</td><td>${state}</td>
+      <td>${fmt(Math.round(p.buyAmt))}원</td><td>${realTxt}</td><td>${esc((p.memo || '').slice(0, 24))}${(p.memo || '').length > 24 ? '…' : ''}</td></tr>`;
+  }).join('') : `<tr><td colspan="7" class="empty">${TR.list.length ? '이 기간에는 매매 기록이 없습니다.' : '아직 기록이 없습니다. 순매수 순위 표의 "매수" 버튼이나 아래 "직접 기록하기"로 기록해 보세요.'}</td></tr>`;
+  // 보는 구간 안에서 판 것들의 실현손익 합계
+  const sells = TR.list.filter(t => t.side === 'S' && inR(t.d) && t._real !== undefined);
+  const rSum = sells.reduce((a, t) => a + t._real, 0), rCost = sells.reduce((a, t) => a + t._cost, 0);
+  $('tHistSum').innerHTML = TR.list.length ? `<tr class="sumrow"><td colspan="5">실현손익 합계 <span class="muted">(매도 ${sells.length}건)</span></td>
+    <td class="${pc(rSum)}">${sells.length ? `${wonK(rSum)} (${pct(rSum, rCost)})` : '-'}</td><td></td></tr>` : '';
+  const tPl = tNet - tCost;
+  $('tSumBox').hidden = !TR.list.length;
+  $('tSum').innerHTML = `<tr><td>${fmt(Math.round(tCost))}원</td><td>${fmt(Math.round(tVal))}원</td>
+    <td class="${pc(tPl)}">${wonK(tPl)} (${pct(tPl, tCost) || '0.00%'})</td><td class="${pc(tReal)}">${wonK(tReal)}</td></tr>`;
+  $('tNote').textContent = (TR.sync === 'ok' ? `저장: 이 기기 + GitHub 비공개 저장소(${TRADE_REPO})` : TR.sync.startsWith('err') ? `저장: 이 기기에만 (GitHub 저장 실패 ${TR.sync.slice(3)} · ${TRADE_REPO} 저장소와 키 권한을 확인해 주세요)` : '저장: 이 기기에만 (공유 편집 키가 없음)')
+    + ' · 수수료 0.015%(매수·매도)와 매도 세금 0.20%(키움 온라인 기준)를 빼고 계산';
+}
+// 팝업: 매수하기
+function tdOpen(title, html){ $('tdTitle').textContent = title; $('tdBody').innerHTML = html; if (!$('tDlg').open) $('tDlg').showModal(); }
+$('tdClose').onclick = () => $('tDlg').close();
+async function openBuy(code){
+  const r = BY[code]; if (!r) return;
+  tdOpen(`${r.name} 매수`, '<p class="muted">실시간 가격 불러오는 중…</p>');
+  const np = await livePrice(code);
+  tdOpen(`${r.name} 매수`, `
+    <div class="tdrow"><span>매수 단가</span><b>${np.p ? fmt(np.p) + '원' : '-'} ${np.live ? '<span class="muted">(지금 실시간)</span>' : '<span class="muted">(실시간 없음 · 전날 종가)</span>'}</b></div>
+    <label class="lbl">유형</label><div class="seg" id="bKind"><button data-v="단기"${(posOf(code).kind || '단기') === '단기' ? ' class="on"' : ''}>단기</button><button data-v="스윙"${posOf(code).kind === '스윙' ? ' class="on"' : ''}>스윙</button></div>
+    <label class="lbl">매수 금액 (원) <span class="muted">↑↓ 키로 100만 원씩</span></label><input type="text" inputmode="numeric" id="bAmt" class="money" placeholder="예: 1,000,000">
+    <label class="lbl">메모</label><textarea id="bMemo" placeholder="매수 이유, 목표가, 손절가 등"></textarea>
+    <div class="tdbtns"><button class="mbtn big" id="bOk">매수 기록</button></div>`);
+  moneyInput($('bAmt')); $('bAmt').focus();
+  $('bKind').querySelectorAll('button').forEach(b => b.onclick = () => { $('bKind').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); });
+  $('bOk').onclick = async () => {
+    const amt = numVal($('bAmt')); if (!(amt > 0)) { $('bAmt').focus(); return; }
+    const p = (await livePrice(code)).p || np.p;                 // 누른 순간 가격으로 한 번 더
+    const kind = ($('bKind').querySelector('.on') || {}).dataset?.v || '단기';
+    TR.list.push({id: Date.now(), d: today(), code, name: r.name, side: 'B', amt, p, kind, memo: $('bMemo').value.trim()});
+    await saveTrades(); $('tDlg').close();
+    if (S.view === 'trade') renderTrade();
+    flash(`${r.name} ${fmt(amt)}원 매수 기록 (단가 ${fmt(p)}원)`);
+  };
+}
+// 팝업: 종목 하나의 거래 내역 (금액·단가·메모 수정, 지우기, 추가 매수, 매도)
+function openPos(code){
+  const p = posOf(code), np = nowPrice(code);
+  const held = p.sh > 0, val = held && np.p ? p.sh * np.p * (1 - FEE - TAX) : null, cur = val !== null ? val - p.cost : null;
+  tdOpen(`${p.name || code}`, `
+    <div class="tdrow"><span>상태</span><b>${held ? (p.sellAmt ? '일부 매도 · 보유중' : '보유중') : '전량 매도'}</b></div>
+    <div class="tdrow"><span>유형</span><div class="seg" id="pKind"><button data-v="단기"${p.kind === '단기' ? ' class="on"' : ''}>단기</button><button data-v="스윙"${p.kind === '스윙' ? ' class="on"' : ''}>스윙</button></div></div>
+    ${held ? `<div class="tdrow"><span>현재가 / 평균 매수가</span><b>${np.p ? fmt(np.p) + '원' : '-'}${np.live ? '' : ' (전날 종가)'} / ${fmt(Math.round(p.cost / p.sh))}원</b></div>
+    <div class="tdrow"><span>현재 손익 (보유분)</span><b class="${pc(cur)}">${cur !== null ? `${wonK(cur)} (${pct(cur, p.cost)})` : '-'}</b></div>` : ''}
+    ${p.sellAmt ? `<div class="tdrow"><span>${held ? '실현 손익' : '최종 손익'}</span><b class="${pc(p.real)}">${wonK(p.real)} (${pct(p.real, p.soldCost)})</b></div>` : ''}
+    <label class="lbl">거래 내역</label>
+    <table class="tdlist"><thead><tr><th>날짜</th><th>구분</th><th>금액(원)</th><th>단가(원)</th><th>메모</th><th></th></tr></thead><tbody>
+    ${p.ts.map(t => `<tr data-tid="${t.id}"><td>${t.d}</td><td class="${t.side === 'B' ? 'pos' : 'neg'}">${t.side === 'B' ? '매수' : '매도'}</td>
+      <td><input class="num" data-f="amt" type="number" value="${Math.round(t.amt)}"></td><td><input class="num" data-f="p" type="number" value="${t.p}"></td>
+      <td><input data-f="memo" value="${esc(t.memo || '')}"></td><td><button class="del" data-deltid="${t.id}" title="이 거래 지우기">✕</button></td></tr>`).join('')}
+    </tbody></table>
+    <div class="tdbtns"><button class="mbtn" id="pSave">저장</button><button class="mbtn" id="pBuy">추가 매수</button>
+      ${held ? `<button class="mbtn big" id="pSell" style="background:#1A1A1A;border-color:#1A1A1A">매도</button>` : ''}</div>`);
+  $('tdBody').querySelectorAll('[data-deltid]').forEach(b => b.onclick = async () => {
+    if (!confirm('이 거래를 지울까요?')) return;
+    TR.list = TR.list.filter(t => String(t.id) !== b.dataset.deltid);
+    await saveTrades(); renderTrade(); if (TR.list.some(t => t.code === code)) openPos(code); else $('tDlg').close();
+  });
+  $('pSave').onclick = async () => {
+    $('tdBody').querySelectorAll('tr[data-tid]').forEach(tr => {
+      const t = TR.list.find(x => String(x.id) === tr.dataset.tid); if (!t) return;
+      const a = Number(tr.querySelector('[data-f=amt]').value), pr = Number(tr.querySelector('[data-f=p]').value);
+      if (a > 0) t.amt = a; if (pr > 0) t.p = pr; t.memo = tr.querySelector('[data-f=memo]').value.trim();
+    });
+    await saveTrades(); renderTrade(); openPos(code); flash('저장했어요');
+  };
+  $('pKind').querySelectorAll('button').forEach(b => b.onclick = async () => {
+    TR.list.forEach(t => { if (t.code === code && t.side === 'B') t.kind = b.dataset.v; });
+    await saveTrades(); renderTrade(); openPos(code);
+  });
+  $('pBuy').onclick = () => openBuy(code);
+  if ($('pSell')) $('pSell').onclick = () => openSell(code);
+}
+async function openSell(code){
+  const p0 = posOf(code);
+  tdOpen(`${p0.name} 매도`, '<p class="muted">실시간 가격 불러오는 중…</p>');
+  const np = await livePrice(code), p = posOf(code), full = np.p ? Math.round(p.sh * np.p) : 0;
+  tdOpen(`${p.name} 매도`, `
+    <div class="tdrow"><span>매도 단가</span><b>${np.p ? fmt(np.p) + '원' : '-'} ${np.live ? '<span class="muted">(지금 실시간)</span>' : '<span class="muted">(실시간 없음 · 전날 종가)</span>'}</b></div>
+    <div class="tdrow"><span>평균 매수가 / 남은 매수금액</span><b>${fmt(Math.round(p.cost / p.sh))}원 / ${fmt(Math.round(p.cost))}원</b></div>
+    <label class="lbl">매도 금액 (원, 지금 가격 기준 · 전량이면 ${fmt(full)}원)</label><input type="text" inputmode="numeric" id="sAmt" class="money" value="${fmt(full)}">
+    <p class="muted" id="sCost" style="font-size:12px;margin:4px 0 0"></p>
+    <label class="lbl">메모</label><textarea id="sMemo" placeholder="매도 이유"></textarea>
+    <div class="tdbtns"><button class="mbtn" id="sHalf">절반</button><button class="mbtn" id="sAll">전량</button><button class="mbtn big" id="sOk" style="background:#1A1A1A;border-color:#1A1A1A">매도 기록</button></div>`);
+  moneyInput($('sAmt'), showCostLater);
+  function showCostLater(){ showCost(); }
+  const showCost = () => { const a = numVal($('sAmt')) || 0; $('sCost').textContent = `수수료 약 ${fmt(Math.round(a * FEE))}원 · 세금 약 ${fmt(Math.round(a * TAX))}원 → 받는 돈 약 ${fmt(Math.round(a * (1 - FEE - TAX)))}원`; };
+  showCost();
+  $('sHalf').onclick = () => { $('sAmt').value = fmt(Math.round(full / 2)); showCost(); };
+  $('sAll').onclick = () => { $('sAmt').value = fmt(full); showCost(); };
+  $('sOk').onclick = async () => {
+    const pr = (await livePrice(code)).p || np.p, P = posOf(code);
+    let amt = numVal($('sAmt')); if (!(amt > 0) || !pr) return;
+    const maxAmt = P.sh * pr; if (amt > maxAmt || Math.abs(amt - maxAmt) < pr) amt = maxAmt;   // 남은 것보다 많거나 거의 전량이면 전량
+    TR.list.push({id: Date.now(), d: today(), code, name: P.name, side: 'S', amt, p: pr, memo: $('sMemo').value.trim()});
+    await saveTrades(); renderTrade(); openPos(code);
+    flash(`${P.name} ${fmt(Math.round(amt))}원 매도 기록 (단가 ${fmt(pr)}원)`);
+  };
+}
+function flash(msg){ let el = $('flashMsg'); if (!el) { el = document.createElement('div'); el.id = 'flashMsg'; el.className = 'flash'; document.body.appendChild(el); } el.textContent = msg; el.classList.add('on'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('on'), 2500); }
+document.addEventListener('click', e => {
+  const bb = e.target.closest('[data-buy]'); if (bb) { e.stopPropagation(); e.preventDefault(); openBuy(bb.dataset.buy); }
+}, true);
+$('tHist').addEventListener('click', e => { const tr = e.target.closest('tr[data-code]'); if (tr) openPos(tr.dataset.code); });
+$('tHold').addEventListener('click', e => { const tr = e.target.closest('tr[data-code]'); if (tr && BY[tr.dataset.code]) openDetail(tr.dataset.code); });
+$('tStock').addEventListener('change', async () => { const r = findStock($('tStock').value); if (r && !$('tPrice').value) { const np = await livePrice(r.code); if (np.p) $('tPrice').placeholder = `지금 ${fmt(np.p)}원${np.live ? '' : ' (전날 종가)'}`; } });
+$('tAdd').onclick = async () => {
+  const r = findStock($('tStock').value), amt = numVal($('tAmt')), d = $('tDate').value;
+  if (!r) { $('tMsg').textContent = '목록에 있는 종목을 골라 주세요.'; return; }
+  let p = Number($('tPrice').value); if (!(p > 0)) p = (await livePrice(r.code)).p || 0;
+  if (!(amt > 0) || !(p > 0) || !d) { $('tMsg').textContent = '날짜와 금액을 넣어 주세요.'; return; }
+  TR.list.push({id: Date.now(), d, code: r.code, name: r.name, side: 'B', amt, p, kind: TR.kind || '단기', memo: $('tMemo').value.trim()});
+  $('tMsg').textContent = `${r.name} ${fmt(amt)}원 매수 기록했어요.`;
+  $('tAmt').value = ''; $('tPrice').value = ''; $('tMemo').value = ''; $('tStock').value = '';
+  await saveTrades(); renderTrade();
+};
+moneyInput($('tAmt'));
+['tFrom', 'tTo'].forEach(id => $(id).addEventListener('change', () => {
+  let f = $('tFrom').value || TR.from, t = $('tTo').value || TR.to;
+  if (f > t) [f, t] = [t, f];                                                      // 거꾸로 고르면 바꿔 줌
+  TR.from = f; TR.to = t; renderTrade();
+}));
+$('tKind').querySelectorAll('button').forEach(b => b.onclick = () => { TR.kind = b.dataset.v; $('tKind').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); });
 $('dClose').onclick = () => $('dlg').close();
 $('dlg').addEventListener('close', () => { if (QUOTE.dtimer) { clearInterval(QUOTE.dtimer); QUOTE.dtimer = null; } });
 $('dlg').addEventListener('close', () => { clearChart(); chartCode = null; $('tv').innerHTML = ''; });
@@ -3693,7 +4025,7 @@ $('gearBtn').onclick = e => { e.stopPropagation(); const p = $('gearPanel'); p.h
 document.addEventListener('click', e => { if (!e.target.closest('.gearwrap')) { $('gearPanel').hidden = true; $('gearBtn').setAttribute('aria-expanded', 'false'); } });
 applySubs(); drawShare();
 render();
-loadShared();
+loadShared().then(loadTradesRemote);
 </script>
 </body>
 </html>
