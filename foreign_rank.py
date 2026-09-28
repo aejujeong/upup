@@ -1833,7 +1833,9 @@ tr.morerow td{text-align:center;background:#fff !important;padding:10px}
 .lg{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--gray);margin-right:14px}
 .lg i{display:inline-block;width:18px;height:0;border-top:3px solid}
 .asofnote{background:#1A1A1A;color:#fff;padding:10px 14px;border-radius:8px;font-size:14px;margin:0 0 14px}
-#asof,#retMain{width:190px}
+#asof,#asofDate,#retDate{width:170px;font:inherit;font-size:14px;padding:5px 10px;height:32px;border-radius:6px;border:1px solid var(--olive);background:#fff;color:var(--ink)}
+.snapmsg{margin:4px 0 0;font-size:12px;color:var(--gray);min-height:0}
+.snapmsg:empty{display:none}
 .asofpair{display:flex;align-items:center;gap:8px}
 .tilde{font-size:18px;color:var(--gray)}
 select#retMain.retto{font:inherit;font-size:14px;padding:6px 10px;height:32px;margin:0;border-radius:6px;border:1px solid var(--olive);width:190px}
@@ -1976,7 +1978,8 @@ td.st{text-align:center;width:44px}
 
   <div class="bar">
     <div class="field rk"><label>기준일</label>
-      <div class="asofpair"><select id="asof"></select><span class="tilde" id="retTilde" hidden>~</span><select class="retto" id="retMain" hidden aria-label="기준일 이후 수익률 끝날"></select></div></div>
+      <div class="asofpair"><input type="date" id="asofDate" aria-label="기준일"><select id="asof" hidden></select><span class="tilde" id="retTilde" hidden>~</span><input type="date" id="retDate" hidden aria-label="기준일 이후 수익률 끝날"></div>
+      <p class="snapmsg" id="snapMsg"></p></div>
     <div class="field"><label>보기</label>
       <div class="seg" id="watchf">
         <button data-v="ALL" class="on">전체</button><button data-v="W" id="wBtn">관심종목</button>
@@ -2463,7 +2466,7 @@ function fillRetTo(){
   if (i >= 0) for (let k = i + 1; k < HD.length - 1; k++) dates.push([k - i, HD[k]]);   // 기준일 다음 날부터 최신 전날까지 (최신은 '~최신')
   const key = [S.asof, RETTO.n].join('|');
   document.querySelectorAll('select.retto').forEach(sel => {
-    const pre = sel.id === 'retMain' ? '' : '~';
+    const pre = '~';
     if (sel.dataset.key !== S.asof) {
       sel.innerHTML = RET_OPTS.map(([n, t]) => {
         const d = n ? retEndDate(n) : null, off = n && !d;
@@ -2526,7 +2529,7 @@ async function setAsof(d){
     });
     S.asof = d;
   } catch (e) {
-    S.asof = ''; $('asof').value = '';
+    S.asof = ''; $('asof').value = ''; $('asofDate').value = HD[HD.length - 1];
     alert('그날 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.');
   }
   S.page = 1; render();
@@ -3213,7 +3216,9 @@ $('secRows').addEventListener('click', e => {
 });
 $('flowBtn').onclick = () => { S.flowOpen = !S.flowOpen; render(); };
 function render(){
-  $('retTilde').hidden = $('retMain').hidden = !S.asof;
+  $('retTilde').hidden = $('retDate').hidden = !S.asof;
+  $('asofDate').value = S.asof || HD[HD.length - 1];
+  if (S.asof) { const i = HD.indexOf(S.asof); $('retDate').min = HD[i + 1] || HD[HD.length - 1]; $('retDate').max = HD[HD.length - 1]; $('retDate').value = RETTO.date || HD[HD.length - 1]; }
   $('danBtn').classList.toggle('on', !!S.dan); $('danBtn').textContent = S.dan ? '단타 필터 켜짐 ✓' : '단타 필터';
   if (S.asof) fillRetTo();
   document.body.classList.toggle('pat', S.view === 'pat');
@@ -3628,6 +3633,28 @@ seg($('view'), v => S.view = v);
   sel.innerHTML = `<option value="">최신 (${DAYS[ND - 1]})</option>` +
     HD.slice(ND - 1, -1).reverse().map(d => `<option value="${d}">${d}</option>`).join('');
   sel.onchange = e => setAsof(e.target.value);
+  // 달력: 휴장일을 고르면 그 전 거래일로 맞춤 (기준일), 끝날은 그다음 거래일로 맞춤
+  const first = HD[ND - 1], last = HD[HD.length - 1];
+  const wd = d => '일월화수목금토'[new Date(d + 'T00:00:00').getDay()];
+  const ad = $('asofDate'); ad.min = first; ad.max = last; ad.value = last;
+  ad.onchange = () => {
+    let v = ad.value; if (!v) { ad.value = S.asof || last; return; }
+    let d = [...HD].reverse().find(x => x <= v) || first;
+    if (d < first) d = first;
+    $('snapMsg').textContent = d !== v ? `${v}(${wd(v)})는 휴장일이라 ${d}(${wd(d)})로 맞췄어요.` : '';
+    ad.value = d;
+    const want = d === last ? '' : d;
+    if (want !== S.asof) { sel.value = want; setAsof(want); }
+  };
+  const rd = $('retDate');
+  rd.onchange = () => {
+    const i = HD.indexOf(S.asof); if (i < 0) return;
+    let v = rd.value || last;
+    let d = HD.find(x => x >= v && x > S.asof) || last;
+    $('snapMsg').textContent = d !== v && v <= last ? `${v}(${wd(v)})는 휴장일이라 ${d}(${wd(d)})로 맞췄어요.` : '';
+    rd.value = d;
+    setRetTo(d === last ? 0 : 'd' + (HD.indexOf(d) - i));
+  };
 })();
 [...new Set(DATA.map(r => r.sec).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko')).forEach(v => {
   const o = document.createElement('option'); o.value = v; o.textContent = v; $('secf').appendChild(o);
