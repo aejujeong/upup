@@ -2129,6 +2129,7 @@ function marketOpen(){
 }
 async function fetchQuotes(codes){
   if (!QUOTE_API || !codes.length) return;
+  if (QUOTE.failAt && Date.now() - QUOTE.failAt < 120000) return;       // 실패 직후 2분은 쉬기 (중계·한투 과다 요청 방지)
   const uniq = [...new Set(codes)];
   try {
     for (let k = 0; k < uniq.length; k += 30) {
@@ -2138,13 +2139,13 @@ async function fetchQuotes(codes){
       Object.assign(QUOTE.data, j.data || {});
       QUOTE.t = j.t ? new Date(j.t) : new Date();
     }
-    QUOTE.err = '';
-  } catch (e) { QUOTE.err = `실시간 시세를 불러오지 못했습니다 (${e.message || e})`; }
+    QUOTE.err = ''; QUOTE.failAt = 0;
+  } catch (e) { QUOTE.err = `실시간 시세를 불러오지 못했습니다 (${e.message || e})`; QUOTE.failAt = Date.now(); }
 }
 const qtime = () => QUOTE.t ? QUOTE.t.toLocaleTimeString('ko-KR', {hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Seoul'}) : '';
 function liveHtml(code, withTime){
   const q = QUOTE.data[code];
-  if (!q) return QUOTE.err && withTime ? `<span class="muted">${esc(QUOTE.err)}</span>` : '<span class="muted">-</span>';
+  if (!q) return QUOTE.err ? `<span class="muted" title="${esc(QUOTE.err)}">${withTime ? esc(QUOTE.err) : '불러오기 실패'}</span>` : '<span class="muted">-</span>';
   if (q.err) return `<span class="muted">${esc(q.err)}</span>`;
   const c = q.rate > 0 ? 'pos' : q.rate < 0 ? 'neg' : '';
   return `<span class="${c}">${fmt(q.price)}원 ${plus(q.rate)}${fmt(q.rate, 2)}%</span>${withTime ? `<span class="t">${qtime()} ${marketOpen() ? '실시간' : '장 마감 후'}</span>` : ''}`;
@@ -2295,7 +2296,7 @@ const COLS = [
   {k:null,   t:'시장', cell: (r) => `<td>${r.mkt}</td>`},
   {k:'sec',  t:'업종', cell: (r) => `<td class="sec" title="${esc(r.sec || '')}">${r.sec ? esc(r.sec) : '<span class="muted">-</span>'}</td>`},
   {k:'sub',  t:'세부 섹터', cell: (r) => `<td class="sec" title="${esc(r.sub || '')}">${r.sub && r.sub !== '미분류' ? esc(r.sub) : '<span class="muted">-</span>'}</td>`},
-  {k:'live', t:() => `실시간 현재가${QUOTE.t ? ` (${qtime()})` : ''}`, show: () => S.watch === 'W' && !!QUOTE_API, cell: (r) => `<td class="livec">${liveHtml(r.code)}</td>`},
+  {k:'live', t:() => `실시간 현재가${QUOTE.err ? ' (오류)' : QUOTE.t ? ` (${qtime()})` : ''}`, show: () => S.watch === 'W' && !!QUOTE_API, cell: (r) => `<td class="livec">${liveHtml(r.code)}</td>`},
   {k:'cap',  t:'시가총액(억)', cell: (r) => `<td>${fmt(r.cap)}</td>`},
   {k:'rt',   t:'등락률', cell: (r) => { const v = RT(r, S.per); return v === null || v === undefined ? '<td><span class="muted">-</span></td>' : pctTd(v); }},
   {k:'own',  t:'외국인 보유율', cell: (r) => `<td>${fmt(r.own, 2)}%</td>`},
@@ -3204,6 +3205,7 @@ function render(){
 
   drawHead();
   $('flowBtn').textContent = S.flowOpen ? '수급 칸 접기 ◂' : '외국인·기관 따로 보기 ▸';
+  if (S.watch === 'W' && QUOTE.err) $('info').title = QUOTE.err;
   $('info').textContent = total
     ? `조건에 맞는 ${fmt(total)}개 종목 중 ${fmt(off + 1)}~${fmt(off + rows.length)}위 (${S.page} / ${pages} 페이지)`
     : '조건에 맞는 종목이 없습니다';
