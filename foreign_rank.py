@@ -618,6 +618,7 @@ def load_sectors():
     return (saved or {}).get("map") or {}, (saved or {}).get("prod") or {}
 
 
+QUOTE_API = os.environ.get("QUOTE_API", "https://upup-quote.vercel.app/api/price")   # 실시간 현재가 중계 주소 (한국투자증권 오픈API)
 REF_SHEET = "1CRxMKK8YpduGmJlpAeku8Y76WMDq3pJvHnFCJ9vahEk"   # 참고용 장기 사이클 표 (구글 시트, 링크 공유 필요)
 
 
@@ -1687,6 +1688,7 @@ def main():
     html = html.replace("__CHARTS__", json.dumps(CHARTS, separators=(",", ":")) if INLINE_CHARTS else "null")
     html = html.replace("__PATTERN__", json.dumps(PATTERN, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__CYCLE__", json.dumps(CYCLE, ensure_ascii=False, separators=(",", ":")))
+    html = html.replace("__QUOTE_API__", json.dumps(QUOTE_API))
     html = html.replace("__CYCHIST__", json.dumps(CYCLE_HIST, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__CYCREF__", json.dumps(CYCLE_REF, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__HIST__", json.dumps(HIST, separators=(",", ":")) if INLINE_CHARTS else "null")
@@ -1781,6 +1783,9 @@ details.notebox > summary .more{color:var(--olive);font-weight:700;margin-left:6
 details.notebox > summary .more::after{content:" ▾"}
 details.notebox[open] > summary .more::after{content:" ▴"}
 details.notebox .pnote{margin:6px 0 10px}
+.live{margin:4px 0 0;font-size:15px;font-weight:700}
+.live .t{font-size:12px;font-weight:400;color:var(--gray);margin-left:6px}
+td.livec{white-space:nowrap}
 .flowopt{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:0 0 10px;font-size:14px}
 .flowopt > span:first-child{font-weight:700}
 .flowopt .note{margin:0;font-size:12px}
@@ -2078,7 +2083,7 @@ td.st{text-align:center;width:44px}
 
 <dialog id="dlg" aria-labelledby="dName"><div class="dbody">
   <div class="dh">
-    <div><h2 id="dName"></h2></div>
+    <div><h2 id="dName"></h2><p class="live" id="dLive"></p></div>
     <div class="dbtns"><button class="dstar" id="dStar"></button><button class="close" id="dClose">닫기</button></div>
   </div>
   <div class="tbl info"><table class="small"><tbody id="dInfo"></tbody></table></div>
@@ -2115,6 +2120,46 @@ const CHARTS = __CHARTS__ || {};
 const HISTIN = __HIST__ || {};
 const HD = META.hist || [];
 const PAT = __PATTERN__;
+// ---- 실시간 현재가 (한국투자증권 오픈API → Vercel 중계) : 관심종목 보기와 상세 창에서만 ----
+const QUOTE_API = __QUOTE_API__;
+const QUOTE = {data: {}, t: null, err: '', timer: null, dtimer: null};
+function marketOpen(){
+  const k = new Date(Date.now() + 9 * 3600e3), d = k.getUTCDay(), m = k.getUTCHours() * 60 + k.getUTCMinutes();
+  return d >= 1 && d <= 5 && m >= 8 * 60 + 55 && m <= 15 * 60 + 40;
+}
+async function fetchQuotes(codes){
+  if (!QUOTE_API || !codes.length) return;
+  const uniq = [...new Set(codes)];
+  try {
+    for (let k = 0; k < uniq.length; k += 30) {
+      const res = await fetch(`${QUOTE_API}?codes=${uniq.slice(k, k + 30).join(',')}`);
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || res.status);
+      Object.assign(QUOTE.data, j.data || {});
+      QUOTE.t = j.t ? new Date(j.t) : new Date();
+    }
+    QUOTE.err = '';
+  } catch (e) { QUOTE.err = `실시간 시세를 불러오지 못했습니다 (${e.message || e})`; }
+}
+const qtime = () => QUOTE.t ? QUOTE.t.toLocaleTimeString('ko-KR', {hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Seoul'}) : '';
+function liveHtml(code, withTime){
+  const q = QUOTE.data[code];
+  if (!q) return QUOTE.err && withTime ? `<span class="muted">${esc(QUOTE.err)}</span>` : '<span class="muted">-</span>';
+  if (q.err) return `<span class="muted">${esc(q.err)}</span>`;
+  const c = q.rate > 0 ? 'pos' : q.rate < 0 ? 'neg' : '';
+  return `<span class="${c}">${fmt(q.price)}원 ${plus(q.rate)}${fmt(q.rate, 2)}%</span>${withTime ? `<span class="t">${qtime()} ${marketOpen() ? '실시간' : '장 마감 후'}</span>` : ''}`;
+}
+// 관심종목 보기일 때 30초마다 관심종목 현재가 갱신
+async function refreshWatchQuotes(){
+  if (S.view !== 'rank' || S.watch !== 'W' || !WATCH.size) return;
+  await fetchQuotes([...WATCH]);
+  if (S.view === 'rank' && S.watch === 'W') render();
+}
+function syncWatchTimer(){
+  const on = S.view === 'rank' && S.watch === 'W' && WATCH.size && QUOTE_API;
+  if (on && !QUOTE.timer) { refreshWatchQuotes(); QUOTE.timer = setInterval(() => { if (marketOpen()) refreshWatchQuotes(); }, 30000); }
+  if (!on && QUOTE.timer) { clearInterval(QUOTE.timer); QUOTE.timer = null; }
+}
 const CYC0 = __CYCLE__;
 const CYCH = __CYCHIST__ || {};
 // 기준일을 고르면 그 달 기준으로 계산해 둔 주기를 쓴다 (없으면 null)
@@ -2250,6 +2295,7 @@ const COLS = [
   {k:null,   t:'시장', cell: (r) => `<td>${r.mkt}</td>`},
   {k:'sec',  t:'업종', cell: (r) => `<td class="sec" title="${esc(r.sec || '')}">${r.sec ? esc(r.sec) : '<span class="muted">-</span>'}</td>`},
   {k:'sub',  t:'세부 섹터', cell: (r) => `<td class="sec" title="${esc(r.sub || '')}">${r.sub && r.sub !== '미분류' ? esc(r.sub) : '<span class="muted">-</span>'}</td>`},
+  {k:'live', t:() => `실시간 현재가${QUOTE.t ? ` (${qtime()})` : ''}`, show: () => S.watch === 'W' && !!QUOTE_API, cell: (r) => `<td class="livec">${liveHtml(r.code)}</td>`},
   {k:'cap',  t:'시가총액(억)', cell: (r) => `<td>${fmt(r.cap)}</td>`},
   {k:'rt',   t:'등락률', cell: (r) => { const v = RT(r, S.per); return v === null || v === undefined ? '<td><span class="muted">-</span></td>' : pctTd(v); }},
   {k:'own',  t:'외국인 보유율', cell: (r) => `<td>${fmt(r.own, 2)}%</td>`},
@@ -2273,6 +2319,7 @@ function val(r, k){
   if (k === 'sec') return r.sec ? `${r.sec}\u0001${!r.sub || r.sub === '미분류' ? '\uffff' : r.sub}` : null;   // 섹터 → 세부 섹터 순, 미분류는 맨 뒤
   if (k === 'sub') return r.sub && r.sub !== '미분류' ? `${r.sub}\u0001${r.sec || ''}` : null;
   if (k === 'dist' && S.asof) { const x = r.h && r.h.sr; if (!x) return null; return x.st === 'at' ? -3 : x.st === 'in' ? -2 : x.st === 'app' ? -1 : (x.dist === null || x.dist === undefined ? null : Math.abs(x.dist)); }   // 근접 → 구간 안 → 접근 → 가까운 순
+  if (k === 'live') { const q = QUOTE.data[r.code]; return q && !q.err ? q.rate : null; }
   if (k === 'rt') return RT(r, S.per);
   if (k === 'net' || k === 'pct') return AA(r, S.per)[k];
   if (k === 'inet') return BB(r, S.per).net;
@@ -3121,6 +3168,7 @@ $('secRows').addEventListener('click', e => {
 });
 $('flowBtn').onclick = () => { S.flowOpen = !S.flowOpen; render(); };
 function render(){
+  syncWatchTimer();
   if (S.asof) fillRetTo();
   document.body.classList.toggle('pat', S.view === 'pat');
   document.body.classList.toggle('secv', S.view === 'sec');
@@ -3442,7 +3490,16 @@ document.addEventListener('change', async e => {
   await setSub(code, v === '__auto' ? null : v);
   openDetail(code);
 });
+async function refreshDetailQuote(){
+  if (!DET || !DET.r || !$('dlg').open) return;
+  const code = DET.r.code;
+  await fetchQuotes([code]);
+  if (DET.r && DET.r.code === code) $('dLive').innerHTML = liveHtml(code, true);
+}
 function openDetail(code){
+  $('dLive').innerHTML = QUOTE_API ? '<span class="muted">실시간 시세 불러오는 중…</span>' : '';
+  if (QUOTE.dtimer) clearInterval(QUOTE.dtimer);
+  if (QUOTE_API) { setTimeout(refreshDetailQuote, 0); QUOTE.dtimer = setInterval(() => { if (marketOpen()) refreshDetailQuote(); }, 20000); }
   const r = BY[code]; if (!r) return;
   const d = r.a['1'], t = r.a['10'], m = r.a['M'], di = r.b['1'], ti = r.b['10'], mi = r.b['M'];
   $('dName').textContent = r.name;
@@ -3485,6 +3542,7 @@ $('body').addEventListener('keydown', e => {
   if (tr && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openDetail(tr.dataset.code); }
 });
 $('dClose').onclick = () => $('dlg').close();
+$('dlg').addEventListener('close', () => { if (QUOTE.dtimer) { clearInterval(QUOTE.dtimer); QUOTE.dtimer = null; } });
 $('dlg').addEventListener('close', () => { clearChart(); chartCode = null; $('tv').innerHTML = ''; });
 $('dlg').addEventListener('click', e => { if (e.target === $('dlg')) $('dlg').close(); });
 
