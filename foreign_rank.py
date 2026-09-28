@@ -1795,6 +1795,9 @@ details.notebox .pnote{margin:6px 0 10px}
 .live{margin:4px 0 0;font-size:15px;font-weight:700}
 .live .t{font-size:12px;font-weight:400;color:var(--gray);margin-left:6px}
 td.livec{white-space:nowrap}
+.perrow{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+.perrow .tabs{margin-bottom:0}
+#danBtn.on{background:var(--olive);color:#fff}
 .flowopt{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;margin:0 0 10px;font-size:14px}
 .flowopt > span:first-child{font-weight:700}
 .flowopt .note{margin:0;font-size:12px}
@@ -1830,7 +1833,10 @@ tr.morerow td{text-align:center;background:#fff !important;padding:10px}
 .lg{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--gray);margin-right:14px}
 .lg i{display:inline-block;width:18px;height:0;border-top:3px solid}
 .asofnote{background:#1A1A1A;color:#fff;padding:10px 14px;border-radius:8px;font-size:14px;margin:0 0 14px}
-#asof{width:190px}
+#asof,#retMain{width:190px}
+.asofpair{display:flex;align-items:center;gap:8px}
+.tilde{font-size:18px;color:var(--gray)}
+select#retMain.retto{font:inherit;font-size:14px;padding:6px 10px;height:32px;margin:0;border-radius:6px;border:1px solid var(--olive);width:190px}
 .range{color:var(--gray);font-size:14px;margin:0 0 14px}
 .bar{display:flex;flex-wrap:wrap;gap:14px 22px;align-items:flex-end;
   padding:16px 18px;background:#fff;border:1px solid var(--olive);border-radius:10px;margin-bottom:14px}
@@ -1958,20 +1964,19 @@ td.st{text-align:center;width:44px}
     <button data-v="rank" class="on">순매수 순위</button><button data-v="sec">섹터</button><button data-v="pat">패턴 찾기</button>
   </div>
   <div id="rankTop">
+  <div class="perrow">
   <div class="tabs" id="per">
     <button data-v="1">전날 순매수</button><button data-v="10" class="on">10일 순매수</button><button data-v="M">한달 순매수</button>
+  </div>
+  <button class="mbtn" id="danBtn" title="지지선 구간 안 + 흑자 + 합산 시총 대비 정렬 + 전날·10일·한달 합산/시총 모두 10위 안">단타 필터</button>
   </div>
   <p class="range" id="range"></p>
   <p class="asofnote" id="asofNote" hidden></p>
   </div>
 
   <div class="bar">
-    <div class="field"><label>단타 필터</label>
-      <div class="seg" id="danf"><button data-v="off" class="on">끔</button><button data-v="on" title="지지선 구간 안 + 흑자 + 합산 시총 대비 정렬 + 전날·10일·한달 합산/시총 모두 10위 안">켬</button></div></div>
     <div class="field rk"><label>기준일</label>
-      <select id="asof"></select></div>
-    <div class="field" id="retField" hidden><label>수익률 끝날</label>
-      <select class="retto" aria-label="기준일 이후 수익률 끝날"></select></div>
+      <div class="asofpair"><select id="asof"></select><span class="tilde" id="retTilde" hidden>~</span><select class="retto" id="retMain" hidden aria-label="기준일 이후 수익률 끝날"></select></div></div>
     <div class="field"><label>보기</label>
       <div class="seg" id="watchf">
         <button data-v="ALL" class="on">전체</button><button data-v="W" id="wBtn">관심종목</button>
@@ -2458,11 +2463,12 @@ function fillRetTo(){
   if (i >= 0) for (let k = i + 1; k < HD.length - 1; k++) dates.push([k - i, HD[k]]);   // 기준일 다음 날부터 최신 전날까지 (최신은 '~최신')
   const key = [S.asof, RETTO.n].join('|');
   document.querySelectorAll('select.retto').forEach(sel => {
+    const pre = sel.id === 'retMain' ? '' : '~';
     if (sel.dataset.key !== S.asof) {
       sel.innerHTML = RET_OPTS.map(([n, t]) => {
         const d = n ? retEndDate(n) : null, off = n && !d;
-        return `<option value="${n}"${off ? ' disabled' : ''}>~${t}${d ? ` (${d.slice(5)})` : off ? ' (데이터 없음)' : ''}</option>`;
-      }).join('') + (dates.length ? `<optgroup label="날짜로 고르기">${dates.map(([n, d]) => `<option value="d${n}">~${d} (${n}거래일 뒤)</option>`).join('')}</optgroup>` : '');
+        return `<option value="${n}"${off ? ' disabled' : ''}>${pre}${t}${d ? ` (${d.slice(5)})` : off ? ' (데이터 없음)' : ''}</option>`;
+      }).join('') + (dates.length ? `<optgroup label="날짜로 고르기">${dates.map(([n, d]) => `<option value="d${n}">${pre}${d} (${n}거래일 뒤)</option>`).join('')}</optgroup>` : '');
       sel.dataset.key = S.asof;
     }
     const want = RETTO.pick || String(RETTO.n);
@@ -3207,7 +3213,8 @@ $('secRows').addEventListener('click', e => {
 });
 $('flowBtn').onclick = () => { S.flowOpen = !S.flowOpen; render(); };
 function render(){
-  $('retField').hidden = !S.asof;
+  $('retTilde').hidden = $('retMain').hidden = !S.asof;
+  $('danBtn').classList.toggle('on', !!S.dan); $('danBtn').textContent = S.dan ? '단타 필터 켜짐 ✓' : '단타 필터';
   if (S.asof) fillRetTo();
   document.body.classList.toggle('pat', S.view === 'pat');
   document.body.classList.toggle('secv', S.view === 'sec');
@@ -3640,15 +3647,16 @@ seg($('allf'), v => S.allf = v);
 // 단타 필터: 켜면 지지선 구간 안·흑자만·합산 시총 대비 정렬·30개씩으로 맞추고, 전날·10일·한달 합산/시총 모두 10위 안인 종목만
 const DAN_TOP = 10;
 function setSeg(id, v){ $(id).querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); }
-seg($('danf'), v => {
-  S.dan = v === 'on';
+$('danBtn').onclick = () => {
+  S.dan = !S.dan;
   if (S.dan) {
     S.sr = 'IN'; setSeg('srf', 'IN');
     S.pf = 'P'; setSeg('pf', 'P');
     S.sort = 'spct'; S.dir = -1; $('sort').value = 'spct';
     S.top = 30; $('top').value = '30';
   }
-});
+  S.page = 1; render();
+};
 $('sort').onchange = e => { S.sort = e.target.value; S.dir = (S.sort === 'dist' || S.sort === 'per') ? 1 : -1; S.page = 1; render(); };
 $('minCap').oninput = e => { S.minCap = Number(e.target.value) || 0; S.page = 1; render(); };
 $('top').onchange = e => { S.top = Number(e.target.value); S.page = 1; render(); };
