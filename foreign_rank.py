@@ -1671,9 +1671,18 @@ def tlog(stage):
     print(f"[시간] {stage}: 시작부터 {(time.time() - T_START) / 60:.1f}분")
 
 
+DATA_READY_HOUR = 18           # 외국인·기관 매매가 확정되는 시각(한국시간). 이보다 이르면 오늘은 아직 계산에 넣지 않음
+
+
 def main():
-    end = sys.argv[1] if len(sys.argv) > 1 else dt.datetime.now(KST).strftime("%Y%m%d")
-    days_all = trading_days(end, HISTORY)
+    now = dt.datetime.now(KST)
+    end = sys.argv[1] if len(sys.argv) > 1 else now.strftime("%Y%m%d")
+    days_all = trading_days(end, HISTORY + 1)
+    # 장중이나 장 마감 직후에 수동으로 돌리면 오늘 시세는 반쪽이고 외국인·기관 매매는 0이라, 오늘은 빼고 전 거래일까지로 만든다
+    if len(sys.argv) <= 1 and days_all and days_all[-1] == now.strftime("%Y%m%d") and now.hour < DATA_READY_HOUR:
+        print(f"지금은 {now:%H:%M}이라 오늘({days_all[-1]}) 데이터가 아직 확정되지 않아, 전 거래일({days_all[-2]})까지로 만듭니다.")
+        days_all = days_all[:-1]
+    days_all = days_all[-HISTORY:]
     data = collect(days_all)
     meta = {
         "days": [f"{d[:4]}-{d[4:6]}-{d[6:]}" for d in days_all[-MONTH:]],
@@ -2132,11 +2141,13 @@ async function fetchQuotes(codes){
   if (QUOTE.failAt && Date.now() - QUOTE.failAt < 120000) return;       // 실패 직후 2분은 쉬기 (중계·한투 과다 요청 방지)
   const uniq = [...new Set(codes)];
   try {
-    for (let k = 0; k < uniq.length; k += 30) {
-      const res = await fetch(`${QUOTE_API}?codes=${uniq.slice(k, k + 30).join(',')}`);
+    for (let k = 0; k < uniq.length; k += 20) {
+      const res = await fetch(`${QUOTE_API}?codes=${uniq.slice(k, k + 20).join(',')}`);
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || res.status);
-      Object.assign(QUOTE.data, j.data || {});
+      Object.entries(j.data || {}).forEach(([c, v]) => {            // 이번에 실패한 종목은 직전 가격을 그대로 둠
+        if (!v.err || !QUOTE.data[c] || QUOTE.data[c].err) QUOTE.data[c] = v;
+      });
       QUOTE.t = j.t ? new Date(j.t) : new Date();
     }
     QUOTE.err = ''; QUOTE.failAt = 0;
@@ -2150,16 +2161,25 @@ function liveHtml(code, withTime){
   const c = q.rate > 0 ? 'pos' : q.rate < 0 ? 'neg' : '';
   return `<span class="${c}">${fmt(q.price)}원 ${plus(q.rate)}${fmt(q.rate, 2)}%</span>${withTime ? `<span class="t">${qtime()} ${marketOpen() ? '실시간' : '장 마감 후'}</span>` : ''}`;
 }
-// 관심종목 보기일 때 30초마다 관심종목 현재가 갱신
-async function refreshWatchQuotes(){
-  if (S.view !== 'rank' || S.watch !== 'W' || !WATCH.size) return;
-  await fetchQuotes([...WATCH]);
-  if (S.view === 'rank' && S.watch === 'W') render();
-}
-function syncWatchTimer(){
-  const on = S.view === 'rank' && S.watch === 'W' && WATCH.size && QUOTE_API;
-  if (on && !QUOTE.timer) { refreshWatchQuotes(); QUOTE.timer = setInterval(() => { if (marketOpen()) refreshWatchQuotes(); }, 30000); }
-  if (!on && QUOTE.timer) { clearInterval(QUOTE.timer); QUOTE.timer = null; }
+// 실시간 현재가: 관심종목 보기이거나, 걸러진 종목이 LIVE_MAX개 이하일 때(섹터·수급 필터 등) 지금 페이지 종목만 받아옴
+const LIVE_MAX = 40;
+const LIVE = {on: false, codes: [], timer: null, busy: false, tried: {}};
+function syncLive(codes){
+  LIVE.codes = codes;
+  if (!LIVE.on || !codes.length) { if (LIVE.timer) { clearInterval(LIVE.timer); LIVE.timer = null; } return; }
+  const now = Date.now();
+  const missing = codes.filter(c => !QUOTE.data[c] && !(LIVE.tried[c] && now - LIVE.tried[c] < 60000));   // 처음 보는 종목만 바로 (1분 안에 시도한 건 다시 안 함)
+  if (missing.length && !LIVE.busy) {
+    missing.forEach(c => LIVE.tried[c] = now);
+    LIVE.busy = true;
+    fetchQuotes(missing).finally(() => { LIVE.busy = false; if (S.view === 'rank') render(); });
+  }
+  if (!LIVE.timer) LIVE.timer = setInterval(async () => {
+    if (!marketOpen() || LIVE.busy || !LIVE.on || !LIVE.codes.length) return;
+    LIVE.busy = true;
+    try { await fetchQuotes(LIVE.codes); } finally { LIVE.busy = false; }
+    if (S.view === 'rank') render();
+  }, 30000);
 }
 const CYC0 = __CYCLE__;
 const CYCH = __CYCHIST__ || {};
@@ -2296,7 +2316,7 @@ const COLS = [
   {k:null,   t:'시장', cell: (r) => `<td>${r.mkt}</td>`},
   {k:'sec',  t:'업종', cell: (r) => `<td class="sec" title="${esc(r.sec || '')}">${r.sec ? esc(r.sec) : '<span class="muted">-</span>'}</td>`},
   {k:'sub',  t:'세부 섹터', cell: (r) => `<td class="sec" title="${esc(r.sub || '')}">${r.sub && r.sub !== '미분류' ? esc(r.sub) : '<span class="muted">-</span>'}</td>`},
-  {k:'live', t:() => `실시간 현재가${QUOTE.err ? ' (오류)' : QUOTE.t ? ` (${qtime()})` : ''}`, show: () => S.watch === 'W' && !!QUOTE_API, cell: (r) => `<td class="livec">${liveHtml(r.code)}</td>`},
+  {k:'live', t:() => `실시간 현재가${QUOTE.err ? ' (오류)' : QUOTE.t ? ` (${qtime()})` : ''}`, show: () => LIVE.on, cell: (r) => `<td class="livec">${liveHtml(r.code)}</td>`},
   {k:'cap',  t:'시가총액(억)', cell: (r) => `<td>${fmt(r.cap)}</td>`},
   {k:'rt',   t:'등락률', cell: (r) => { const v = RT(r, S.per); return v === null || v === undefined ? '<td><span class="muted">-</span></td>' : pctTd(v); }},
   {k:'own',  t:'외국인 보유율', cell: (r) => `<td>${fmt(r.own, 2)}%</td>`},
@@ -3169,7 +3189,6 @@ $('secRows').addEventListener('click', e => {
 });
 $('flowBtn').onclick = () => { S.flowOpen = !S.flowOpen; render(); };
 function render(){
-  syncWatchTimer();
   if (S.asof) fillRetTo();
   document.body.classList.toggle('pat', S.view === 'pat');
   document.body.classList.toggle('secv', S.view === 'sec');
@@ -3202,6 +3221,8 @@ function render(){
   S.page = Math.min(Math.max(1, S.page), pages);
   const off = (S.page - 1) * S.top;
   rows = rows.slice(off, off + S.top);
+  LIVE.on = !!QUOTE_API && S.view === 'rank' && (S.watch === 'W' || total <= LIVE_MAX);
+  syncLive(LIVE.on ? rows.slice(0, 60).map(r => r.code) : []);
 
   drawHead();
   $('flowBtn').textContent = S.flowOpen ? '수급 칸 접기 ◂' : '외국인·기관 따로 보기 ▸';
