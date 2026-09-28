@@ -2330,7 +2330,15 @@ async function loadShared(){
       SH.loaded = true;
     } else SH.err = `불러오기 실패 (${res.status})`;
   } catch (e) { SH.err = '불러오기 실패'; }
-  if (SH.data.watch) { WATCH = new Set(SH.data.watch); try { localStorage.setItem(WKEY, JSON.stringify([...WATCH])); } catch (e) {} }
+  // 키가 있는 기기에서 처음 한 번은 이 기기 관심종목과 저장소 관심종목을 합쳐서 올림 (예전에 키 없이 찍어 둔 관심종목이 빠지지 않게)
+  let merged = false; try { merged = localStorage.getItem('upup-watch-merged') === '1'; } catch (e) {}
+  if (SH.token && SH.loaded && !merged) {
+    const union = new Set([...(SH.data.watch || []), ...WATCH]);
+    const changed = !SH.data.watch || union.size !== SH.data.watch.length;
+    SH.data.watch = [...union]; WATCH = union;
+    try { localStorage.setItem(WKEY, JSON.stringify([...WATCH])); localStorage.setItem('upup-watch-merged', '1'); } catch (e) {}
+    if (changed) saveShared();
+  } else if (SH.data.watch) { WATCH = new Set(SH.data.watch); try { localStorage.setItem(WKEY, JSON.stringify([...WATCH])); } catch (e) {} }
   applySubs(); drawShare(); render();
 }
 function applySubs(){
