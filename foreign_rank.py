@@ -2017,7 +2017,7 @@ td.st{text-align:center;width:44px}
   <div class="tabs" id="per">
     <button data-v="1">전날 순매수</button><button data-v="10" class="on">10일 순매수</button><button data-v="M">한달 순매수</button>
   </div>
-  <button class="mbtn" id="danBtn" title="지지선 구간 안 + 흑자 + 합산 시총 대비 정렬 + 전날·10일·한달 합산/시총 모두 10위 안(업종·시장 안에서 매긴 순위)">단타 필터</button>
+  <button class="mbtn" id="danBtn" title="지지선 구간 안 + 흑자 + 합산 시총 대비 정렬 + 전날·10일·한달 합산/시총 모두 10위 안(지지 구간 안·흑자 종목끼리 매긴 순위)">단타 필터</button>
   </div>
   <p class="range" id="range"></p>
   <p class="asofnote" id="asofNote" hidden></p>
@@ -3338,9 +3338,11 @@ function render(){
     r.cap >= S.minCap &&
     (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q)));
   if (S.dan) {
-    // 10위는 보기·업종·세부 섹터·시장·시총 안에서 매김 (지지선·실적·수급 필터와 상관없이) → 지지선을 넓혀도 결과가 줄지 않음
+    // 10위는 '단타 후보'(지지 구간 안 + 흑자) 종목끼리 매김. 보기·업종·세부 섹터·시장·시총은 반영하고,
+    // 화면의 지지선·실적·수급 버튼과는 상관없이 고정 → 버튼을 바꿔도 결과가 들쭉날쭉하지 않음
+    const inZone = r => { const st = S.asof ? (r.h && r.h.sr ? r.h.sr.st : null) : (r.sr && r.sr.st); return st === 'at' || st === 'in'; };
     const pool = DATA.filter(r => (S.watch === 'ALL' || WATCH.has(r.code)) && (!S.sec || r.sec === S.sec) && (!S.sub || (r.sub || '미분류') === S.sub) &&
-      (S.mkt === 'ALL' || r.mkt === S.mkt) && r.cap >= S.minCap && (!S.asof || r.h));
+      (S.mkt === 'ALL' || r.mkt === S.mkt) && r.cap >= S.minCap && (!S.asof || r.h) && inZone(r) && r.eps > 0);
     const top10 = p => new Set(pool.slice().sort((a, b) => (AA(b, p).pct + BB(b, p).pct) - (AA(a, p).pct + BB(a, p).pct)).slice(0, DAN_TOP).map(r => r.code));
     const s1 = top10('1'), s10 = top10('10'), sM = top10('M');
     rows = rows.filter(r => s1.has(r.code) && s10.has(r.code) && sM.has(r.code));
