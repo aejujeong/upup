@@ -3981,7 +3981,9 @@ seg($('view'), v => S.view = v);
     let v = ad.value; if (!v) { ad.value = S.asof || last; return; }
     let d = [...HD].reverse().find(x => x <= v) || first;
     if (d < first) d = first;
-    $('snapMsg').textContent = d !== v ? `${v}(${wd(v)})는 휴장일이라 ${d}(${wd(d)})로 맞췄어요.` : '';
+    $('snapMsg').textContent = v > last ? `${v} 데이터는 아직 없어요 (매일 저녁 6시 반 이후 갱신). 최신인 ${last}(${wd(last)})로 보여드려요.`
+      : v < first ? `${v}은 데이터가 없어서, 볼 수 있는 가장 이른 날인 ${first}로 맞췄어요.`
+      : d !== v ? `${v}(${wd(v)})는 휴장일이라 ${d}(${wd(d)})로 맞췄어요.` : '';
     ad.value = d;
     const want = d === last ? '' : d;
     if (want !== S.asof) { sel.value = want; setAsof(want); }
@@ -3991,7 +3993,8 @@ seg($('view'), v => S.view = v);
     const i = HD.indexOf(S.asof); if (i < 0) return;
     let v = rd.value || last;
     let d = HD.find(x => x >= v && x > S.asof) || last;
-    $('snapMsg').textContent = d !== v && v <= last ? `${v}(${wd(v)})는 휴장일이라 ${d}(${wd(d)})로 맞췄어요.` : '';
+    $('snapMsg').textContent = v > last ? `${v} 데이터는 아직 없어요. 최신인 ${last}까지로 계산했어요.`
+      : d !== v ? `${v}(${wd(v)})는 휴장일이라 ${d}(${wd(d)})로 맞췄어요.` : '';
     rd.value = d;
     setRetTo(d === last ? 0 : 'd' + (HD.indexOf(d) - i));
   };
