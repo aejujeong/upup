@@ -2141,8 +2141,8 @@ async function fetchQuotes(codes){
   if (QUOTE.failAt && Date.now() - QUOTE.failAt < 120000) return;       // 실패 직후 2분은 쉬기 (중계·한투 과다 요청 방지)
   const uniq = [...new Set(codes)];
   try {
-    for (let k = 0; k < uniq.length; k += 20) {
-      const res = await fetch(`${QUOTE_API}?codes=${uniq.slice(k, k + 20).join(',')}`);
+    for (let k = 0; k < uniq.length; k += 30) {
+      const res = await fetch(`${QUOTE_API}?codes=${uniq.slice(k, k + 30).join(',')}`);
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || res.status);
       Object.entries(j.data || {}).forEach(([c, v]) => {            // 이번에 실패한 종목은 직전 가격을 그대로 둠
@@ -2151,6 +2151,12 @@ async function fetchQuotes(codes){
       QUOTE.t = j.t ? new Date(j.t) : new Date();
     }
     QUOTE.err = ''; QUOTE.failAt = 0;
+    // 초당 요청 초과로 빠진 종목은 30초를 기다리지 않고 5초 뒤 한 번 더
+    const again = uniq.filter(c => QUOTE.data[c] && QUOTE.data[c].err && /초당/.test(QUOTE.data[c].err));
+    if (again.length && !QUOTE.retrying) {
+      QUOTE.retrying = true;
+      setTimeout(async () => { await fetchQuotes(again); QUOTE.retrying = false; if (S.view === 'rank') render(); if ($('dlg').open && DET && DET.r) $('dLive').innerHTML = liveHtml(DET.r.code, true); }, 5000);
+    }
   } catch (e) { QUOTE.err = `실시간 시세를 불러오지 못했습니다 (${e.message || e})`; QUOTE.failAt = Date.now(); }
 }
 const qtime = () => QUOTE.t ? QUOTE.t.toLocaleTimeString('ko-KR', {hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Seoul'}) : '';
