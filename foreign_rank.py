@@ -2017,7 +2017,7 @@ td.st{text-align:center;width:44px}
   <div class="tabs" id="per">
     <button data-v="1">전날 순매수</button><button data-v="10" class="on">10일 순매수</button><button data-v="M">한달 순매수</button>
   </div>
-  <button class="mbtn" id="danBtn" title="지지선 구간 안 + 흑자 + 합산 시총 대비 정렬 + 전날·10일·한달 합산/시총 모두 10위 안(지지 구간 안·흑자 종목끼리 매긴 순위)">단타 필터</button>
+  <button class="mbtn" id="danBtn" title="지지선 구간 안 + 흑자 + 모두 순매수 + 합산 시총 대비 정렬 + 전날·10일·한달 합산/시총 모두 10위 안(지지 구간 안·흑자·모두 순매수 종목끼리 매긴 순위)">단타 필터</button>
   </div>
   <p class="range" id="range"></p>
   <p class="asofnote" id="asofNote" hidden></p>
@@ -2495,6 +2495,8 @@ function plCell(r){
 }
 // 지지선 상태: at 지지선 근접 / in 지지 구간 안 / app 구간 접근 (모두 최신 종가 기준)
 // 수급 모두 순매수: 외국인·기관 모두, 지금 보는 기간과 비교 기간(한달 또는 전날) 모두 플러스 (표의 수급 칸이 전부 빨간색)
+// 외국인·기관 모두, 지금 탭과 비교 기간 모두 순매수 (단타 후보 조건, 수급 버튼과 상관없이)
+function posAll(r){ const o = OTHER[S.per]; return AA(r, S.per).net > 0 && BB(r, S.per).net > 0 && AA(r, o).net > 0 && BB(r, o).net > 0; }
 function allPos(r){
   if (S.allf !== 'POS') return true;
   const o = OTHER[S.per];
@@ -3338,11 +3340,8 @@ function render(){
     r.cap >= S.minCap &&
     (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q)));
   if (S.dan) {
-    // 10위는 '단타 후보'(지지 구간 안 + 흑자) 종목끼리 매김. 보기·업종·세부 섹터·시장·시총은 반영하고,
-    // 화면의 지지선·실적·수급 버튼과는 상관없이 고정 → 버튼을 바꿔도 결과가 들쭉날쭉하지 않음
-    const inZone = r => { const st = S.asof ? (r.h && r.h.sr ? r.h.sr.st : null) : (r.sr && r.sr.st); return st === 'at' || st === 'in'; };
-    const pool = DATA.filter(r => (S.watch === 'ALL' || WATCH.has(r.code)) && (!S.sec || r.sec === S.sec) && (!S.sub || (r.sub || '미분류') === S.sub) &&
-      (S.mkt === 'ALL' || r.mkt === S.mkt) && r.cap >= S.minCap && (!S.asof || r.h) && inZone(r) && r.eps > 0);
+    // 10위는 지금 화면에 걸러진 종목들끼리 매김 (버튼을 바꾸면 그 조건 그대로 반영)
+    const pool = rows;
     const top10 = p => new Set(pool.slice().sort((a, b) => (AA(b, p).pct + BB(b, p).pct) - (AA(a, p).pct + BB(a, p).pct)).slice(0, DAN_TOP).map(r => r.code));
     const s1 = top10('1'), s10 = top10('10'), sM = top10('M');
     rows = rows.filter(r => s1.has(r.code) && s10.has(r.code) && sM.has(r.code));
@@ -4022,11 +4021,14 @@ seg($('allf'), v => S.allf = v);
 // 단타 필터: 켜면 지지선 구간 안·흑자만·합산 시총 대비 정렬·30개씩으로 맞추고, 전날·10일·한달 합산/시총 모두 10위 안인 종목만
 const DAN_TOP = 10;
 function setSeg(id, v){ $(id).querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); }
+const danPreset = () => S.sr === 'IN' && S.pf === 'P' && S.allf === 'POS' && S.sort === 'spct' && S.top === 30;
 $('danBtn').onclick = () => {
-  S.dan = !S.dan;
+  // 꺼져 있으면 켜면서 단타 조건으로 맞춤 / 켜진 채로 버튼을 바꿨으면 다시 단타 조건으로 맞춤 / 그대로면 끔
+  S.dan = !S.dan || !danPreset();
   if (S.dan) {
     S.sr = 'IN'; setSeg('srf', 'IN');
     S.pf = 'P'; setSeg('pf', 'P');
+    S.allf = 'POS'; setSeg('allf', 'POS');
     S.sort = 'spct'; S.dir = -1; $('sort').value = 'spct';
     S.top = 30; $('top').value = '30';
   }
