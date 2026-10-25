@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
-"""과거 데이터 받기 (검증용 · 한 번만 실행)
+"""과거 데이터 받기 (검증용 · 한 번만 실행) — 종목별로 기간 전체를 한 번에 받는 방식
 
-코스피·코스닥 전 종목의 날짜별
+종목마다 START~END 기간의
   - 일봉: 시가·고가·저가·종가·거래량
   - 외국인·기관 순매수 금액 (백만 원)
-과 매월 첫 거래일의
-  - 시가총액 (억 원) · EPS
-를 받아서 bt/연도.json.gz 로 저장한다.
+을 받아서 bt/t/종목코드.json.gz 로 저장한다. (상장폐지된 종목도 그해 목록에 있었으면 포함)
+매년 첫 거래일의 시가총액(억 원)·EPS 는 bt/t/_monthly.json.gz 에 저장한다.
 
-이미 받은 날짜는 건너뛰므로, 시간이 모자라 멈춰도 다시 실행하면 이어서 받는다.
-홈페이지 매일 갱신(foreign_rank.py)과는 별개라 홈페이지에는 영향이 없다.
+이미 받은 종목은 건너뛰므로 멈춰도 다시 실행하면 이어서 받는다.
+한국거래소가 요청을 막으면 기다렸다 다시 시도하고, 계속 막히면 바로 멈춘다.
 """
-import datetime as dt
 import gzip
 import json
 import os
@@ -22,137 +20,124 @@ from pykrx import stock
 
 START = os.environ.get("BT_START", "2015-01-01").replace("-", "")
 END = os.environ.get("BT_END", "2024-10-31").replace("-", "")
-MAX_MIN = float(os.environ.get("BT_MAX_MIN", "320"))     # 이 시간(분)이 지나면 저장하고 멈춤
-OUT = Path(os.environ.get("BT_DIR", "bt"))
-OUT.mkdir(exist_ok=True)
-MARKETS = ("KOSPI", "KOSDAQ")
+MAX_MIN = float(os.environ.get("BT_MAX_MIN", "320"))
+GAP = float(os.environ.get("BT_GAP", "1.2"))            # 요청 사이 쉬는 시간(초)
+OUT = Path(os.environ.get("BT_DIR", "bt")) / "t"
+OUT.mkdir(parents=True, exist_ok=True)
 T0 = time.time()
+fails_in_row = 0
 
 
-def elapsed_min():
+def mins():
     return (time.time() - T0) / 60
 
 
-def col(df, *names):
-    for n in names:
-        if n in df.columns:
-            return df[n]
-    return None
-
-
-def retry(fn, tries=4):
-    for k in range(tries):
+def call(fn):
+    """한 번 요청. 막히면 30초·60초·120초 쉬고 다시. 그래도 안 되면 None."""
+    global fails_in_row
+    for wait in (0, 30, 60, 120):
+        if wait:
+            print(f"    막힘 → {wait}초 쉬고 다시", flush=True)
+            time.sleep(wait)
         try:
-            return fn()
-        except Exception as e:                # 한국거래소가 가끔 응답을 안 줄 때
-            print(f"  다시 시도 {k + 1}/{tries}: {e}")
-            time.sleep(3 * (k + 1))
+            df = fn()
+            time.sleep(GAP)
+            if df is not None and not df.empty:
+                fails_in_row = 0
+                return df
+        except Exception as e:
+            print(f"    오류: {str(e)[:120]}", flush=True)
+    fails_in_row += 1
     return None
 
 
-def trading_days(start, end):
-    df = retry(lambda: stock.get_market_ohlcv(start, end, "005930"))   # 삼성전자 시세로 거래일 목록
-    if df is None or df.empty:
-        raise SystemExit("거래일 목록을 불러오지 못했습니다. KRX 접속 상태를 확인해 주세요.")
-    return [d.strftime("%Y%m%d") for d in df.index]
+def year_starts():
+    out = []
+    for y in range(int(START[:4]), int(END[:4]) + 1):
+        d = stock.get_nearest_business_day_in_a_week(f"{y}0105", prev=True) if hasattr(stock, "get_nearest_business_day_in_a_week") else f"{y}0102"
+        out.append(max(d, START))
+    return out
 
 
-def load_year(y):
-    f = OUT / f"{y}.json.gz"
+def ticker_list(days):
+    tickers = {}
+    for d in days:
+        for m in ("KOSPI", "KOSDAQ"):
+            try:
+                for t in stock.get_market_ticker_list(d, market=m):
+                    tickers.setdefault(t, m)
+            except Exception as e:
+                print(f"  {d} {m} 종목 목록 오류: {e}", flush=True)
+            time.sleep(GAP)
+    return tickers
+
+
+def yearly_caps(days):
+    f = OUT / "_monthly.json.gz"
     if f.exists():
-        with gzip.open(f, "rt", encoding="utf-8") as fp:
-            return json.load(fp)
-    return {"days": {}, "monthly": {}}
+        return
+    data = {}
+    for d in days:
+        row = {}
+        for m in ("KOSPI", "KOSDAQ"):
+            cap = call(lambda: stock.get_market_cap(d, market=m))
+            fun = call(lambda: stock.get_market_fundamental(d, market=m))
+            if cap is not None and "시가총액" in cap.columns:
+                for t in cap.index:
+                    row.setdefault(t, [None, None])[0] = round(float(cap.loc[t, "시가총액"]) / 1e8)
+            if fun is not None and "EPS" in fun.columns:
+                for t in fun.index:
+                    row.setdefault(t, [None, None])[1] = float(fun.loc[t, "EPS"])
+        data[d] = row
+        print(f"  {d} 시가총액·EPS {len(row)}종목", flush=True)
+    with gzip.open(f, "wt", encoding="utf-8") as fp:
+        json.dump(data, fp, separators=(",", ":"))
 
 
-def save_year(y, data):
-    f = OUT / f"{y}.json.gz"
-    tmp = f.with_suffix(".tmp")
-    with gzip.open(tmp, "wt", encoding="utf-8", compresslevel=9) as fp:
-        json.dump(data, fp, ensure_ascii=False, separators=(",", ":"))
-    tmp.replace(f)
-
-
-def fetch_day(day):
-    """그날 전 종목: code -> [시가, 고가, 저가, 종가, 거래량, 외국인 순매수(백만), 기관 순매수(백만)]"""
-    out = {}
-    for m in MARKETS:
-        df = retry(lambda: stock.get_market_ohlcv(day, market=m))
-        if df is None or df.empty:
+def one_ticker(t):
+    o = call(lambda: stock.get_market_ohlcv(START, END, t))
+    if o is None:
+        return None
+    v = call(lambda: stock.get_market_trading_value_by_date(START, END, t))
+    rows = []
+    for d in o.index:
+        r = o.loc[d]
+        c = int(r.get("종가", 0) or 0)
+        if not c:
             continue
-        o, h, l, c, v = (col(df, "시가"), col(df, "고가"), col(df, "저가"), col(df, "종가"), col(df, "거래량"))
-        for t in df.index:
-            if c is None or not c[t]:
-                continue
-            out[t] = [int(o[t]), int(h[t]), int(l[t]), int(c[t]), int(v[t]), None, None]
-        for k, who in ((5, "외국인"), (6, "기관합계")):
-            net = retry(lambda: stock.get_market_net_purchases_of_equities(day, day, m, who))
-            if net is None or net.empty:
-                continue
-            nv = col(net, "순매수거래대금")
-            ba, sa = col(net, "매수거래대금"), col(net, "매도거래대금")
-            for t in net.index:
-                if t not in out:
-                    continue
-                if nv is not None:
-                    val = float(nv[t])
-                elif ba is not None and sa is not None:
-                    val = float(ba[t]) - float(sa[t])
-                else:
-                    continue
-                out[t][k] = round(val / 1e6)
-        time.sleep(0.2)
-    return out
-
-
-def fetch_month(day):
-    """매월 첫 거래일: code -> [시가총액(억), EPS]"""
-    out = {}
-    for m in MARKETS:
-        cap = retry(lambda: stock.get_market_cap(day, market=m))
-        fun = retry(lambda: stock.get_market_fundamental(day, market=m))
-        if cap is not None and not cap.empty:
-            cc = col(cap, "시가총액")
-            for t in cap.index:
-                out.setdefault(t, [None, None])[0] = round(float(cc[t]) / 1e8) if cc is not None else None
-        if fun is not None and not fun.empty:
-            ee = col(fun, "EPS")
-            for t in fun.index:
-                if ee is not None:
-                    out.setdefault(t, [None, None])[1] = float(ee[t])
-    return out
+        fn = inn = None
+        if v is not None and d in v.index:
+            fr = v.loc[d]
+            f_ = fr.get("외국인합계", fr.get("외국인", None))
+            i_ = fr.get("기관합계", None)
+            fn = round(float(f_) / 1e6) if f_ is not None else None
+            inn = round(float(i_) / 1e6) if i_ is not None else None
+        rows.append([d.strftime("%Y-%m-%d"), int(r.get("시가", 0)), int(r.get("고가", 0)), int(r.get("저가", 0)), c, int(r.get("거래량", 0)), fn, inn])
+    return rows
 
 
 def main():
-    days = trading_days(START, END)
-    print(f"받을 기간: {days[0]} ~ {days[-1]} · 거래일 {len(days)}일")
-    by_year = {}
-    for d in days:
-        by_year.setdefault(d[:4], []).append(d)
-    for y, ds in by_year.items():
-        data = load_year(y)
-        todo = [d for d in ds if d not in data["days"]]
-        print(f"[{y}] 이미 받은 날 {len(ds) - len(todo)}일 · 남은 날 {len(todo)}일")
-        last_month = None
-        for n, d in enumerate(ds):
-            mkey = d[:6]
-            if mkey != last_month:                     # 그 달 첫 거래일
-                last_month = mkey
-                if d not in data["monthly"]:
-                    data["monthly"][d] = fetch_month(d)
-            if d in data["days"]:
-                continue
-            data["days"][d] = fetch_day(d)
-            if n % 10 == 0:
-                print(f"  {d} 받음 ({len(data['days'])}/{len(ds)}) · {elapsed_min():.0f}분 지남")
-                save_year(y, data)
-            if elapsed_min() > MAX_MIN:
-                save_year(y, data)
-                print(f"시간이 다 돼서 멈춥니다. 다시 실행하면 {d} 다음부터 이어서 받아요.")
-                return
-        save_year(y, data)
-        print(f"[{y}] 끝 · 파일 {(OUT / f'{y}.json.gz').stat().st_size / 1e6:.1f}MB")
-    print("모두 받았습니다.")
+    days = year_starts()
+    print(f"기간 {START} ~ {END} · 해마다 첫 거래일 {days}", flush=True)
+    yearly_caps(days)
+    tickers = ticker_list(days)
+    done = {p.name.split(".")[0] for p in OUT.glob("*.json.gz")}
+    todo = [t for t in sorted(tickers) if t not in done]
+    print(f"종목 {len(tickers)}개 · 이미 받은 {len(tickers) - len(todo)}개 · 남은 {len(todo)}개", flush=True)
+    for n, t in enumerate(todo, 1):
+        rows = one_ticker(t)
+        if rows is not None:
+            with gzip.open(OUT / f"{t}.json.gz", "wt", encoding="utf-8") as fp:
+                json.dump({"m": tickers[t], "b": rows}, fp, separators=(",", ":"))
+        if n % 20 == 0:
+            print(f"  {n}/{len(todo)} · {t} {len(rows) if rows else 0}일 · {mins():.0f}분", flush=True)
+        if fails_in_row >= 8:
+            print("한국거래소가 계속 막고 있어서 멈춥니다. 나중에 다시 실행하면 이어서 받아요.", flush=True)
+            return
+        if mins() > MAX_MIN:
+            print("시간이 다 돼서 멈춥니다. 다시 실행하면 이어서 받아요.", flush=True)
+            return
+    print("모두 받았습니다.", flush=True)
 
 
 if __name__ == "__main__":
