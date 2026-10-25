@@ -21,7 +21,10 @@ from pykrx import stock
 START = os.environ.get("BT_START", "2015-01-01").replace("-", "")
 END = os.environ.get("BT_END", "2024-10-31").replace("-", "")
 MAX_MIN = float(os.environ.get("BT_MAX_MIN", "320"))
-GAP = float(os.environ.get("BT_GAP", "1.2"))            # 요청 사이 쉬는 시간(초)
+GAP = float(os.environ.get("BT_GAP", "1.0"))            # 요청 사이 쉬는 시간(초)
+SHARD = int(os.environ.get("BT_SHARD", "0"))            # 여러 개로 나눠 받을 때 내 번호
+SHARDS = int(os.environ.get("BT_SHARDS", "1"))          # 몇 개로 나누나
+MINCAP = float(os.environ.get("BT_MINCAP", "1000"))     # 해마다 첫 거래일 중 한 번이라도 시가총액이 이 값(억) 이상이었던 종목만
 OUT = Path(os.environ.get("BT_DIR", "bt")) / "t"
 OUT.mkdir(parents=True, exist_ok=True)
 T0 = time.time()
@@ -75,7 +78,8 @@ def ticker_list(days):
 def yearly_caps(days):
     f = OUT / "_monthly.json.gz"
     if f.exists():
-        return
+        with gzip.open(f, "rt", encoding="utf-8") as fp:
+            return json.load(fp)
     data = {}
     for d in days:
         row = {}
@@ -90,8 +94,10 @@ def yearly_caps(days):
                     row.setdefault(t, [None, None])[1] = float(fun.loc[t, "EPS"])
         data[d] = row
         print(f"  {d} 시가총액·EPS {len(row)}종목", flush=True)
-    with gzip.open(f, "wt", encoding="utf-8") as fp:
-        json.dump(data, fp, separators=(",", ":"))
+    if SHARD == 0:
+        with gzip.open(f, "wt", encoding="utf-8") as fp:
+            json.dump(data, fp, separators=(",", ":"))
+    return data
 
 
 def one_ticker(t):
@@ -119,10 +125,14 @@ def one_ticker(t):
 def main():
     days = year_starts()
     print(f"기간 {START} ~ {END} · 해마다 첫 거래일 {days}", flush=True)
-    yearly_caps(days)
+    caps = yearly_caps(days)
     tickers = ticker_list(days)
+    big = {t for row in caps.values() for t, v in row.items() if v and v[0] is not None and v[0] >= MINCAP}
+    tickers = {t: m for t, m in tickers.items() if t in big}
+    mine = [t for i, t in enumerate(sorted(tickers)) if i % SHARDS == SHARD]
     done = {p.name.split(".")[0] for p in OUT.glob("*.json.gz")}
-    todo = [t for t in sorted(tickers) if t not in done]
+    todo = [t for t in mine if t not in done]
+    print(f"시가총액 {MINCAP:.0f}억 이상이었던 종목 {len(tickers)}개 중 내 몫(번호 {SHARD}/{SHARDS}) {len(mine)}개", flush=True)
     print(f"종목 {len(tickers)}개 · 이미 받은 {len(tickers) - len(todo)}개 · 남은 {len(todo)}개", flush=True)
     for n, t in enumerate(todo, 1):
         rows = one_ticker(t)
@@ -133,10 +143,10 @@ def main():
             print(f"  {n}/{len(todo)} · {t} {len(rows) if rows else 0}일 · {mins():.0f}분", flush=True)
         if fails_in_row >= 8:
             print("한국거래소가 계속 막고 있어서 멈춥니다. 나중에 다시 실행하면 이어서 받아요.", flush=True)
-            return
+            raise SystemExit(3)
         if mins() > MAX_MIN:
-            print("시간이 다 돼서 멈춥니다. 다시 실행하면 이어서 받아요.", flush=True)
-            return
+            print("이번 로그인 시간이 다 돼서 멈춥니다. 새로 로그인해서 이어서 받아요.", flush=True)
+            raise SystemExit(3)
     print("모두 받았습니다.", flush=True)
 
 
