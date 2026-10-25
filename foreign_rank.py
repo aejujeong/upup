@@ -861,6 +861,7 @@ def collect(days_all):
     allp = allp.drop_duplicates(subset=["code", "day"], keep="last").set_index("code")
     tlog("시세·매매 데이터 받기 끝")
     print("지지선 계산 중... (코스피·코스닥 합산)")
+    ohl = {}
     for t, g in allp.groupby(level=0, sort=False):
         r = rows.get(t)
         if not r or len(g) < 30:
@@ -882,6 +883,7 @@ def collect(days_all):
         k20 = min(20, len(c))
         r["tv"] = round(sum(x * y for x, y in zip(c[-k20:], vol[-k20:])) / k20 / 1e8, 1) if k20 else 0   # 20일 평균 거래대금(억)
         series[t] = (dlist, c, vol)
+        ohl[t] = (dlist, l, c, vol)                                   # 매매 신호 계산용 (수정주가)
         last = c[-1]
         def pack(lst):
             return [{
@@ -915,9 +917,25 @@ def collect(days_all):
         r["d"] = [x if x else [0, 0, 0, 0] for x in r["d"]]
         r["di"] = [x if x else [0, 0, 0, 0] for x in r["di"]]
     tlog("지지선·차트 계산 끝")
-    save_hist(rows, hn, adj, days_net, srh)
+    try:
+        sigh = calc_signals(rows, ohl, hn, days_net, srh, hist_set)
+        print(f"매매 신호: 눌림 ★ {sum(1 for r in rows.values() if 1 <= r.get('sig', 0) <= 4)}개, 밀집 돌파 {sum(1 for r in rows.values() if r.get('sig') == 5)}개")
+    except Exception as e:
+        print(f"매매 신호 계산 중 문제가 생겨 이번에는 건너뜁니다: {e}")
+        sigh = {}
+    for r in rows.values():
+        r.setdefault("sig", 0)
+    tlog("매매 신호 계산 끝")
+    save_hist(rows, hn, adj, days_net, srh, sigh)
     tlog("과거 시점 파일 저장 끝")
-    global PATTERN
+    global PATTERN, DANBT
+    try:
+        DANBT = dan_backtest(rows, series, hn, days_net, srh)
+        if DANBT:
+            v = DANBT["v"]["1"]
+            print(f"단타 필터 과거 검증: {v['dates']}일, {v['picks']}건, 다음날 플러스 {v['h']['1']['win']}%")
+    except Exception as e:
+        print(f"단타 필터 검증 중 문제가 생겨 이번에는 건너뜁니다: {e}")
     try:
         PATTERN = find_patterns(rows, series, hn, days_net)
     except Exception as e:
@@ -1006,6 +1024,78 @@ PRE_AHEAD = (0, 2)             # 선진입: 다음 TOP 예상 시기가 지금�
 def _num(x):
     t = f"{x:.1f}"
     return t[:-2] if t.endswith(".0") else t
+
+
+DANBT = None
+DAN_HOLDS = (1, 5, 10, 20)     # 단타 필터 검증: 다음날, 5거래일, 10거래일, 한달(20거래일) 뒤
+
+
+def dan_backtest(rows, series, hn, days_net, srh, top=10):
+    """과거 날마다 단타 기본 조건(지지 구간 안 + 흑자 + 모두 순매수 + 전날·10일·한달 합산/시총 모두 10위 안)에 걸린 종목이
+    며칠 뒤 플러스였는지 셈. 업종·시장은 전체. 흑자 여부는 지금 실적 기준이라 과거엔 조금 다를 수 있음."""
+    import numpy as np
+    codes = [t for t in rows if t in hn and t in series]
+    if not codes:
+        return None
+    D, n = len(days_net), len(codes)
+    di = {d: j for j, d in enumerate(days_net)}
+    C = np.full((n, D), np.nan); F = np.zeros((n, D)); I = np.zeros((n, D)); ST = np.zeros((n, D), dtype=np.int8)
+    for k, t in enumerate(codes):
+        dl, cl, _ = series[t]
+        for d, c in zip(dl, cl):
+            j = di.get(d)
+            if j is not None and c:
+                C[k, j] = c
+        fl = hn[t]
+        for j in range(min(D, len(fl["f"]))):
+            x, y = fl["f"][j], fl["i"][j]
+            if x: F[k, j] = x[0] - x[1]
+            if y: I[k, j] = y[0] - y[1]
+        for d, v in (srh.get(t) or {}).items():
+            j = di.get(d)
+            if j is not None and v:
+                ST[k, j] = v[0]
+    eps = np.array([(rows[t].get("eps") or 0) > 0 for t in codes])
+    last_c = np.array([series[t][1][-1] if series[t][1] else np.nan for t in codes], dtype=float)
+    cap = np.array([rows[t].get("cap") or 0 for t in codes], dtype=float)
+    cF = np.concatenate([np.zeros((n, 1)), np.cumsum(F, axis=1)], axis=1)
+    cI = np.concatenate([np.zeros((n, 1)), np.cumsum(I, axis=1)], axis=1)
+    win = lambda cs, j, w: cs[:, j + 1] - cs[:, j + 1 - w]
+    hist_start = max(20, D - NET_HISTORY)
+    out = {}
+    for var, (a, b) in {"1": (1, 20), "10": (10, 20)}.items():          # 전날·한달 탭 / 10일 탭 기준 '모두 순매수'
+        res = {h: [] for h in DAN_HOLDS}; base = {h: [0, 0] for h in DAN_HOLDS}; used = 0; picks = 0
+        for j in range(hist_start, D - 1):
+            capd = cap * C[:, j] / last_c
+            ok = np.isfinite(C[:, j]) & (capd > 0)
+            pos = (win(cF, j, a) > 0) & (win(cI, j, a) > 0) & (win(cF, j, b) > 0) & (win(cI, j, b) > 0)
+            pool = ok & eps & ((ST[:, j] == 2) | (ST[:, j] == 3)) & pos
+            idx = np.where(pool)[0]
+            for h in DAN_HOLDS:                                          # 전체 종목 기준선
+                if j + h < D:
+                    r = C[:, j + h] / C[:, j] - 1; m = ok & np.isfinite(r)
+                    base[h][0] += int((r[m] > 0).sum()); base[h][1] += int(m.sum())
+            if not len(idx):
+                continue
+            used += 1
+            sel = None
+            for w in (1, 10, 20):
+                sc = (win(cF, j, w) + win(cI, j, w))[idx] / capd[idx]
+                topk = set(idx[np.argsort(-sc)[:top]].tolist())
+                sel = topk if sel is None else sel & topk
+            for k in sel:
+                picks += 1
+                for h in DAN_HOLDS:
+                    if j + h < D and np.isfinite(C[k, j + h]):
+                        res[h].append(C[k, j + h] / C[k, j] - 1)
+        hs = {}
+        for h in DAN_HOLDS:
+            v = np.array(res[h]) * 100
+            hs[str(h)] = {"n": int(len(v)), "win": round(float((v > 0).mean() * 100), 1) if len(v) else None,
+                          "avg": round(float(v.mean()), 2) if len(v) else None, "med": round(float(np.median(v)), 2) if len(v) else None,
+                          "base": round(base[h][0] / base[h][1] * 100, 1) if base[h][1] else None}
+        out[var] = {"dates": used, "picks": picks, "h": hs}
+    return {"from": days_net[hist_start], "to": days_net[D - 2], "top": top, "v": out}
 
 
 def _mfmt(k):
@@ -1637,24 +1727,107 @@ def find_failures(rows, series, hn, didx, tmpls, tset, weights=None):
     return fails, stat
 
 
-def save_hist(rows, hn, adj, days_net, srh=None):
+def calc_signals(rows, ohl, hn, days_net, srh, hist_set):
+    """날짜별 매매 신호 (과거 2년 데이터 검증 결과로 정한 두 가지)
+    1~4 = 눌림 ★: 50일·거래량가중100일·200일·400일선에 위에서 내려와 처음 닿고 위에서 마감 + 지지 구간 + 좋은 조건
+          (좋은 조건: 시장 최근 20일 +8% 미만, 흑자, 닿기 전 10일 하락 -9% 이내, 기관 20일 중 8일 이상 순매수, 시총 3천억 이상)
+    5   = 밀집 돌파: 네 이동평균선이 5% 안에 몰리고 60일 박스권(20% 안)이던 종목이 거래량 평소 2배로 네 선 위로 첫 돌파"""
+    import numpy as np
+    D = len(days_net)
+    sw, swr = np.zeros(D), np.zeros(D)                                # 시장 20일 등락 (시총 가중)
+    for t, (dl, l, c, v) in ohl.items():
+        r = rows.get(t)
+        if not r or not c or not r.get("cap") or not c[-1]:
+            continue
+        cm = dict(zip(dl, c))
+        for j in range(20, D):
+            a, b = cm.get(days_net[j]), cm.get(days_net[j - 20])
+            if a and b:
+                w = r["cap"] * b / c[-1]
+                sw[j] += w; swr[j] += (a / b - 1) * 100 * w
+    mkt = {days_net[j]: swr[j] / sw[j] for j in range(20, D) if sw[j] > 0}
+    out = {}
+    for t, (dl, l, c, v) in ohl.items():
+        r = rows.get(t)
+        n = len(c)
+        if not r or n < 420:
+            continue
+        C, V, L = np.array(c, float), np.array(v, float), np.array(l, float)
+        def sma(w):
+            cs = np.cumsum(np.insert(C, 0, 0.0)); o = np.full(n, np.nan); o[w - 1:] = (cs[w:] - cs[:-w]) / w; return o
+        m50, m200, m400 = sma(50), sma(200), sma(400)
+        cv, vv = np.cumsum(np.insert(C * V, 0, 0.0)), np.cumsum(np.insert(V, 0, 0.0))
+        den = vv[100:] - vv[:-100]
+        vw = np.full(n, np.nan); vw[99:] = np.where(den > 0, (cv[100:] - cv[:-100]) / np.where(den > 0, den, 1), np.nan)
+        lines = {1: m50, 2: vw, 3: m200, 4: m400}
+        idays = {}                                                      # 그날까지 20일 중 기관 순매수한 날
+        inst = (hn.get(t) or {}).get("i")
+        if inst:
+            flags = [1 if (x and x[0] - x[1] > 0) else 0 for x in inst]
+            for j in range(min(len(flags), D)):
+                idays[days_net[j]] = sum(flags[max(0, j - 19): j + 1])
+        last_touch = {k: -99 for k in lines}
+        eps_ok = (r.get("eps") or 0) > 0
+        res = {}
+        for k in range(400, n):
+            touched = {}
+            for code, m in lines.items():
+                if np.isnan(m[k]):
+                    continue
+                if L[k] <= m[k] * 1.01 and C[k] >= m[k]:
+                    touched[code] = k - last_touch[code] > 10           # 직전 10일 안에 닿은 적 없으면 '처음 닿음'
+                    last_touch[code] = k
+            d = dl[k]
+            if d not in hist_set:
+                continue
+            sig = 0
+            st = ((srh.get(t) or {}).get(d) or [None])[0]
+            if (any(touched.values()) and st in (2, 3) and eps_ok and mkt.get(d, 99) < 8 and C[k - 10] > 0
+                    and C[k] / C[k - 10] - 1 > -0.09 and idays.get(d, 0) >= 8 and r["cap"] * C[k] / C[-1] >= 3000):
+                for code in (3, 2, 1, 4):                               # 같은 날 여러 선이면 성적 좋았던 선 먼저
+                    if touched.get(code) and sum(1 for q in range(1, 11) if C[k - q] > lines[code][k - q]) >= 8:
+                        sig = code
+                        break
+            if not sig:
+                ms = [m50[k], vw[k], m200[k], m400[k]]
+                if not any(np.isnan(ms)) and min(ms) > 0:
+                    hi, lo = max(ms), min(ms)
+                    if hi / lo - 1 <= 0.05 and C[k] > hi and C[k - 1] <= max(m50[k - 1], vw[k - 1], m200[k - 1], m400[k - 1]):
+                        box, va = C[k - 59:k + 1], V[k - 20:k].mean()
+                        if box.min() > 0 and box.max() / box.min() - 1 <= 0.20 and va > 0 and V[k] >= 2 * va:
+                            sig = 5
+            if sig:
+                res[d] = sig
+        out[t] = res
+        r["sig"] = res.get(dl[-1], 0)
+    return out
+
+
+def save_hist(rows, hn, adj, days_net, srh=None, sigh=None):
     """날짜별로 '그날까지의 누적 순매수'와 수정주가를 저장한다. 두 날짜의 누적값 차이 = 그 사이 순매수."""
     cum = {t: [0, 0] for t in rows}
+    win = {t: [[], []] for t in rows}                              # 최근 20일 외국인·기관 순매수 여부 (1/0)
     first = len(days_net) - NET_HISTORY
     for j, day in enumerate(days_net):
         snap = {}
         for t in rows:
             x = hn.get(t)
+            df = di = 0
             if x:
                 if x["f"][j]:
-                    cum[t][0] += x["f"][j][0] - x["f"][j][1]
+                    df = x["f"][j][0] - x["f"][j][1]
+                    cum[t][0] += df
                 if x["i"][j]:
-                    cum[t][1] += x["i"][j][0] - x["i"][j][1]
+                    di = x["i"][j][0] - x["i"][j][1]
+                    cum[t][1] += di
+            w = win[t]
+            w[0].append(1 if df > 0 else 0); w[1].append(1 if di > 0 else 0)
+            if len(w[0]) > MONTH:
+                w[0].pop(0); w[1].pop(0)
             px = adj.get(t, {}).get(day)
             snap[t] = [cum[t][0], cum[t][1], None if px is None else round(px, 1)]
-            st = (srh or {}).get(t, {}).get(day)
-            if st:
-                snap[t] += st                                        # [그날 지지선 상태(0~3), 지지선까지 %, 저항까지 %]
+            st = (srh or {}).get(t, {}).get(day) or [None, None, None]
+            snap[t] += list(st) + [sum(w[0]), sum(w[1]), (sigh or {}).get(t, {}).get(day, 0)]   # [지지선 상태(0~3), 지지선까지 %, 저항까지 %, 외국인 순매수일(20일), 기관 순매수일(20일), 매매 신호(0~5)]
         if j < first:
             continue
         key = f"{day[:4]}-{day[4:6]}-{day[6:]}"
@@ -1697,6 +1870,7 @@ def main():
     html = html.replace("__META__", json.dumps(meta, ensure_ascii=False))
     html = html.replace("__CHARTS__", json.dumps(CHARTS, separators=(",", ":")) if INLINE_CHARTS else "null")
     html = html.replace("__PATTERN__", json.dumps(PATTERN, ensure_ascii=False, separators=(",", ":")))
+    html = html.replace("__DANBT__", json.dumps(DANBT, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__CYCLE__", json.dumps(CYCLE, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("__QUOTE_API__", json.dumps(QUOTE_API))
     html = html.replace("__TRADE_REPO__", json.dumps(TRADE_REPO))
@@ -1800,6 +1974,10 @@ td.livec{white-space:nowrap}
 .perrow{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
 .perrow .tabs{margin-bottom:0}
 #danBtn.on{background:var(--olive);color:#fff}
+.danbt{border:1px solid var(--olive);border-radius:10px;padding:10px 14px;margin:10px 0 0;font-size:13px}
+.danbt table{border-collapse:collapse;margin-top:6px}
+.danbt th,.danbt td{border:1px solid #E7D3D3;padding:5px 12px;text-align:left}
+.danbt th{background:var(--olive);color:#fff;font-weight:700;text-align:center}
 body.tradev .bar, body.tradev #asofNote{display:none !important}
 .topts input[type=checkbox]{width:auto;height:auto;margin:0 6px 0 0;vertical-align:middle}
 .flash{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#1A1A1A;color:#fff;padding:10px 16px;border-radius:999px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:50}
@@ -1849,6 +2027,16 @@ tr.clickable{cursor:pointer}
 .flowopt > span:first-child{font-weight:700}
 .flowopt .note{margin:0;font-size:12px}
 .myn{width:52px;padding:2px 6px;font-size:13px;margin:0 3px}
+.regime{border:1.5px solid #2F6DB5;background:#EAF1FA;border-radius:10px;padding:10px 14px;margin:0 0 12px;font-size:14px}
+.regime b{color:#2F6DB5;font-size:16px;margin-right:8px}
+.regime.hot{border-color:var(--red);background:#FBF0EF}.regime.hot b{color:var(--red)}
+.sigb{display:inline-block;font-size:12.5px;font-weight:700;padding:2px 9px;border-radius:999px;white-space:nowrap;cursor:help}
+.sigb small{font-weight:500;font-size:11.5px;opacity:.9}
+.sigb.good{background:var(--olive);color:#fff}
+.sigb.brk{background:#2F6DB5;color:#fff}
+.fdays b{font-weight:700}.fdays .okd{color:var(--olive)}
+.hotchk{display:inline-flex;gap:6px;align-items:center;font-size:14px;cursor:pointer;height:34px}
+.hotchk input{accent-color:var(--red);width:16px;height:16px}
 .mktwarn{background:#1A1A1A;color:#fff;border-radius:8px;padding:10px 14px;font-size:14px;font-weight:600;margin:0 0 8px}
 .flowok{display:inline-block;font-size:11px;font-weight:800;color:var(--sup);border:1px solid var(--sup);border-radius:999px;padding:1px 7px;margin-left:4px;vertical-align:middle}
 tr.morerow td{text-align:center;background:#fff !important;padding:10px}
@@ -2013,12 +2201,14 @@ td.st{text-align:center;width:44px}
     <button data-v="sec" class="on">섹터</button><button data-v="rank">순매수 순위</button><button data-v="pat">패턴 찾기</button><button data-v="trade">매매</button>
   </div>
   <div id="rankTop">
+  <div class="regime" id="regimeBar" hidden></div>
   <div class="perrow">
   <div class="tabs" id="per">
     <button data-v="1">전날 순매수</button><button data-v="10" class="on">10일 순매수</button><button data-v="M">한달 순매수</button>
   </div>
-  <button class="mbtn" id="danBtn" title="지지선 구간 안 + 흑자 + 모두 순매수 + 합산 시총 대비 정렬 + 전날·10일·한달 합산/시총 모두 10위 안(지지 구간 안·흑자·모두 순매수 종목끼리 매긴 순위)">단타 필터</button>
+  <button class="mbtn" id="danBtn" title="지지선 구간 안 + 흑자 + 시총 구간별 수급(대형: 외국인 20일 중 15일+, 중형: 외국인 또는 기관 15일+, 소형: 기관 15일+, 중소형은 한달 순매도 하위 20% 제외) + 보통·약세장 과열 제외, 지지선 가까운 순">단타 필터</button>
   </div>
+  <div class="danbt" id="danBt" hidden></div>
   <p class="range" id="range"></p>
   <p class="asofnote" id="asofNote" hidden></p>
   </div>
@@ -2027,6 +2217,12 @@ td.st{text-align:center;width:44px}
     <div class="field rk"><label>기준일</label>
       <div class="asofpair"><input type="date" id="asofDate" aria-label="기준일"><select id="asof" hidden></select><span class="tilde" id="retTilde" hidden>~</span><input type="date" id="retDate" hidden aria-label="기준일 이후 수익률 끝날"></div>
       <p class="snapmsg" id="snapMsg"></p></div>
+    <div class="field rk"><label>신호</label>
+      <div class="seg" id="sigf"><button data-v="ALL" class="on">전체</button><button data-v="GOOD" title="이평선(50·거래량가중100·200·400일선)에 위에서 내려와 처음 닿고 지지 구간 + 좋은 조건">눌림 ★</button><button data-v="BRK" title="이평선이 몰린 박스권에서 거래량 2배로 첫 돌파">밀집 돌파</button></div></div>
+    <div class="field rk"><label>시총 구간</label>
+      <div class="seg" id="szf"><button data-v="ALL" class="on">전체</button><button data-v="대형">대형 1조 이상</button><button data-v="중형">중형 3천억~1조</button><button data-v="소형">소형 3천억 미만</button></div></div>
+    <div class="field rk"><label>&nbsp;</label>
+      <label class="hotchk" title="보통·약세장에서 최근 20일 +20% 이상 또는 3달 +30% 이상 오른 종목"><input type="checkbox" id="hotf" checked> 과열 종목 숨기기</label></div>
     <div class="field"><label>보기</label>
       <div class="seg" id="watchf">
         <button data-v="ALL" class="on">전체</button><button data-v="W" id="wBtn">관심종목</button>
@@ -2100,7 +2296,7 @@ td.st{text-align:center;width:44px}
     <h2 class="ph">단기·선진입·추세 지속 섹터 후보 종목</h2>
     <details class="notebox"><summary>추천 섹터 안에서 수급·위치·실적·과열로 점수 매긴 상위 종목 <span class="more">자세히 보기</span></summary><p class="pnote" id="pickNote"></p></details>
     <div class="tbl"><table class="ptbl ktbl">
-      <thead><tr><th>섹터</th><th>순위</th><th>종목명</th><th>총점</th><th>수급 (40)</th><th>위치 (25)</th><th>실적 (15)</th><th>패턴 (10)</th><th>과열 회피 (10)</th><th class="asofc">기준일 이후<br><select class="retto" aria-label="등락 비교 끝날"></select></th><th>선별 이유</th></tr></thead>
+      <thead><tr><th>섹터</th><th>순위</th><th>종목명</th><th>총점</th><th>수급 (30)</th><th>위치 (20)</th><th>실적 (25)</th><th>패턴 (10)</th><th>과열 회피 (15)</th><th class="asofc">기준일 이후<br><select class="retto" aria-label="등락 비교 끝날"></select></th><th>선별 이유</th></tr></thead>
       <tbody id="pickRows"></tbody>
     </table></div>
     <h2 class="ph">진입 판단 기준 과거 검증</h2>
@@ -2283,6 +2479,21 @@ function syncLive(codes){
     if (S.view === 'rank') render();
   }, 30000);
 }
+const DANBT = __DANBT__;
+function renderDanBt(){
+  const box = $('danBt'); if (!box) return;
+  const v = DANBT && DANBT.v && DANBT.v[S.per === '10' ? '10' : '1'];
+  box.hidden = !(S.dan && S.view === 'rank' && v);
+  if (box.hidden) return;
+  const lab = {1: '다음날', 5: '5거래일 뒤', 10: '10거래일 뒤', 20: '한달(20거래일) 뒤'};
+  const c = x => x === null ? '' : x > 0 ? 'pos' : x < 0 ? 'neg' : '';
+  box.innerHTML = `<b>단타 필터 과거 검증</b> <span class="muted">${DANBT.from.slice(2,4)}.${DANBT.from.slice(4,6)}.${DANBT.from.slice(6)} ~ ${DANBT.to.slice(2,4)}.${DANBT.to.slice(4,6)}.${DANBT.to.slice(6)} · 기본 조건(구간 안·흑자·모두 순매수·세 기간 ${DANBT.top}위 안, 업종·시장 전체)이 걸린 날 ${v.dates}일 · 종목 ${v.picks}건</span>
+    <table><thead><tr><th>보는 기간</th><th>건수</th><th>플러스 확률</th><th>평균 수익률</th><th>중간값</th><th>전체 종목 플러스 확률</th></tr></thead><tbody>
+    ${Object.entries(v.h).map(([h, x]) => `<tr><td>${lab[h]}</td><td>${fmt(x.n)}건</td><td><b>${x.win === null ? '-' : fmt(x.win, 1) + '%'}</b></td>
+      <td class="${c(x.avg)}">${x.avg === null ? '-' : plus(x.avg) + fmt(x.avg, 2) + '%'}</td><td class="${c(x.med)}">${x.med === null ? '-' : plus(x.med) + fmt(x.med, 2) + '%'}</td>
+      <td class="muted">${x.base === null ? '-' : fmt(x.base, 1) + '%'}</td></tr>`).join('')}</tbody></table>
+    <p class="muted" style="margin:6px 0 0">그날 종가에 사서 그 뒤 종가로 계산한 수익률이고, 수수료·세금은 넣지 않았어요. 흑자 여부는 지금 실적 기준이라 과거와 조금 다를 수 있어요.</p>`;
+}
 const CYC0 = __CYCLE__;
 const CYCH = __CYCHIST__ || {};
 // 기준일을 고르면 그 달 기준으로 계산해 둔 주기를 쓴다 (없으면 null)
@@ -2296,7 +2507,7 @@ const CREF = __CYCREF__;
 const REFBY = Object.fromEntries(((CREF && CREF.secs) || []).map(x => [x.sec.replace(/\s/g, ''), x]));
 const refOf = sec => REFBY[(sec || '').replace(/\s/g, '')];
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'10', mkt:'ALL', sr:'IN', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', allf:'ALL', dan:false, flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:true, myMin:2, myMax:12, view:'sec', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
+const S = {per:'10', mkt:'ALL', sr:'IN', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', allf:'ALL', dan:false, sigf:'ALL', szf:'ALL', hideHot:true, flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:true, myMin:2, myMax:12, view:'sec', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
 const RT = (r, p) => S.asof ? (r.h ? r.h.rt[p] : null) : (r.rt ? r.rt[p] : null);   // 기간 등락률
 const AA = (r, p) => S.asof ? r.h.a[p] : r.a[p];   // 외국인 (기준일 반영)
 const BB = (r, p) => S.asof ? r.h.b[p] : r.b[p];   // 기관 (기준일 반영)
@@ -2423,6 +2634,7 @@ const COLS = [
   {k:null,   t:'관심', cell: (r) => `<td class="st">${starBtn(r.code)}</td>`},
   {k:null,   t:'순위', cell: (r, x) => `<td>${x.rank}</td>`},
   {k:'name', t:'종목명', cell: (r) => `<td class="name">${esc(r.name)}</td>`},
+  {k:'sig',  t:'신호', cell: (r) => `<td>${sigBadge(sigOf(r))}</td>`},
   {k:null,   t:'코드', cell: (r) => `<td class="code">${r.code}</td>`},
   {k:null,   t:'시장', cell: (r) => `<td>${r.mkt}</td>`},
   {k:'sec',  t:'업종', cell: (r) => `<td class="sec" title="${esc(r.sec || '')}">${r.sec ? esc(r.sec) : '<span class="muted">-</span>'}</td>`},
@@ -2443,6 +2655,9 @@ const COLS = [
   {k:'eps',  t:'실적', cell: (r) => `<td>${plCell(r)}</td>`},
   {k:'per',  t:'PER', cell: (r) => `<td>${r.eps > 0 && r.per > 0 ? fmt(r.per, 1) + '배' : '<span class="muted">-</span>'}</td>`},
   {k:'dist', t:'지지선', cell: (r) => `<td>${srCell(r)}</td>`},
+  {k:'fdays', t:'20일 중 순매수한 날', cell: (r) => { const f = fDays(r), i = iDays(r); if (f === null && i === null) return '<td><span class="muted">-</span></td>';
+    const sz = sizeOf(r), fo = sz !== '소형' && f >= 15, io = sz !== '대형' && i >= 15;
+    return `<td class="fdays" title="${sz} · 대형은 외국인, 중형은 외국인 또는 기관, 소형은 기관이 15일 이상이면 ✓">외 <b class="${fo ? 'okd' : ''}">${f ?? '-'}</b> · 기 <b class="${io ? 'okd' : ''}">${i ?? '-'}</b>${fo || io ? ' ✓' : ''}</td>`; }},
   {k:null, t:'매수', cell: (r) => `<td><button class="buybtn" data-buy="${r.code}">매수</button></td>`},
   {k:'tspct', t:'오늘 기준 한달 합산/시총', show: () => !!S.asof, cell: (r) => pctTd(r.a.M.pct + r.b.M.pct, 'cmp ')},
   {k:'ret',  t:() => `기준일 이후 수익률 (~${retEndLabel()})`, show: () => !!S.asof, cell: (r, x) => x.rt === null || x.rt === undefined ? '<td><span class="muted">-</span></td>' : `<td class="${x.rt > 0 ? 'pos' : x.rt < 0 ? 'neg' : ''}">${plus(x.rt)}${fmt(x.rt, 1)}%</td>`},
@@ -2453,6 +2668,8 @@ function val(r, k){
   if (k === 'sub') return r.sub && r.sub !== '미분류' ? `${r.sub}\u0001${r.sec || ''}` : null;
   if (k === 'dist' && S.asof) { const x = r.h && r.h.sr; if (!x) return null; return x.st === 'at' ? -3 : x.st === 'in' ? -2 : x.st === 'app' ? -1 : (x.dist === null || x.dist === undefined ? null : Math.abs(x.dist)); }   // 근접 → 구간 안 → 접근 → 가까운 순
   if (k === 'live') { const q = QUOTE.data[r.code]; return q && !q.err ? q.rate : null; }
+  if (k === 'sig') return sigOf(r) || null;
+  if (k === 'fdays') { const f = fDays(r), i = iDays(r); return f === null && i === null ? null : Math.max(f || 0, i || 0); }
   if (k === 'rt') return RT(r, S.per);
   if (k === 'net' || k === 'pct') return AA(r, S.per)[k];
   if (k === 'inet') return BB(r, S.per).net;
@@ -2613,6 +2830,7 @@ async function setAsof(d){
              'M': px && aM[2] ? (px / aM[2] - 1) * 100 : null},
         px, cap: capD,
         sr: c && c.length > 3 ? {st: [null, 'app', 'in', 'at'][c[3]] || null, dist: c[4], room: c[5]} : null,   // 그날 기준 지지선
+        fd: c && c.length > 6 ? c[6] : null, id: c && c.length > 7 ? c[7] : null, sig: c && c.length > 8 ? c[8] : 0,                                  // 그날 기준 20일 중 외국인·기관 순매수한 날
       };
       const q0 = s60 && s60[r.code] && s60[r.code][2], y0 = s250 && s250[r.code] && s250[r.code][2];
       r.h.q = px && q0 ? (px / q0 - 1) * 100 : null;
@@ -2919,7 +3137,7 @@ function ensureRolling(){
     const daysNow = [], daysPrev = []; for (let k = 0; k < RR.avg; k++) { if (i - k - RR.win >= 0) daysNow.push(i - k); if (i - RR.win - k - RR.win >= 0) daysPrev.push(i - RR.win - k); }
     RR.data = cur ? {cur, prev, market, to: date, from: HD[daysNow[daysNow.length - 1]], prevTo: daysPrev.length ? HD[daysPrev[0]] : null} : {none: true};
     RR.loading = null;
-    if (S.view === 'sec') renderSec();
+    if (S.view === 'sec') renderSec(); else if (S.view === 'rank') render();
   }).catch(() => { RR.data = {none: true}; RR.loading = null; });
 }
 function mpCell(sec){
@@ -3123,7 +3341,7 @@ $('refBox').addEventListener('click', e => {
   render(); window.scrollTo({top: 0, behavior: 'smooth'});
 });
 // ---- 진입 검토 섹터 후보 선별 (점수 기준은 가설: 수급 40, 위치 25, 실적 15, 패턴 10, 과열 회피 10) ----
-const PICK = {minCap: 1000, minTv: 10, maxQ: 50, perSec: 5};
+const PICK = {minCap: 1000, minTv: 10, maxQ: 50, maxQnorm: 30, perSec: 5, hot: 20};
 function pickStocks(){
   if (!CYC || !CYC.rows) return [];
   const views = cycRowsView().filter(x => isPick(x.label) && !(S.stabMin && (stabOf(x.sec) ?? 99) < S.stabMin) && (!S.my || myOk(x.sec)));
@@ -3138,59 +3356,52 @@ function pickStocks(){
     const CAP = r => H ? (r.h.cap || r.cap) : r.cap;
     const A = (r, p) => H ? r.h.a[p] : r.a[p], Bq = (r, p) => H ? r.h.b[p] : r.b[p];
     const all = DATA.filter(r => r.sec === sec && (!H || r.h));
-    const cand = all.filter(r => CAP(r) >= PICK.minCap && (r.tv || 0) >= PICK.minTv && Q(r) !== null && Q(r) !== undefined && Q(r) <= PICK.maxQ);
+    // ---- 과거 데이터 검증을 반영한 점수 (100점): 실적 25 · 수급 30 · 위치 20 · 패턴 10 · 과열 회피 15 ----
+    const reg = regime(), strong = reg === '강세', weak = reg === '약세';
+    const maxQ = strong ? PICK.maxQ : PICK.maxQnorm;                    // 3달 등락 상한: 강세장 +50%, 보통·약세장 +30%
+    const hot = r => { const m = RT(r, 'M'); return m !== null && m !== undefined && m >= PICK.hot; };
+    const cand = all.filter(r => CAP(r) >= PICK.minCap && (r.tv || 0) >= PICK.minTv && Q(r) !== null && Q(r) !== undefined && Q(r) <= maxQ && !(weak && hot(r)));
     if (!cand.length) return;
-    const flowPct = r => A(r, 'M').pct + Bq(r, 'M').pct;
-    const sorted = cand.map(flowPct).sort((x, y) => x - y);
-    const pctRank = v => sorted.length > 1 ? sorted.filter(x => x <= v).length / sorted.length : 1;
+    const amtRank = (() => { const v = cand.map(r => A(r, 'M').net + Bq(r, 'M').net).sort((x, y) => x - y); return x => v.length > 1 ? v.filter(y => y <= x).length / v.length : 1; })();
     const perMed = median(all.filter(r => r.eps > 0 && r.per > 0).map(r => r.per));
     const yAvg = mean(all.map(Y).filter(v => v !== null && v !== undefined));
     const qAvg = mean(all.map(Q).filter(v => v !== null && v !== undefined));
     const scored = cand.map(r => {
-      const why = [];
-      // 수급 40
-      const fp = flowPct(r), f10 = A(r, '10').net + Bq(r, '10').net;
-      const days = H ? (r.h.days || []).map(v => v > 0 ? 1 : 0) : r.d.map((x, i) => (x[0] - x[1]) + (r.di[i][0] - r.di[i][1]) > 0 ? 1 : 0);
-      const dayRatio = days.length ? days.reduce((x, y) => x + y, 0) / days.length : 0;
-      let flow = (fp > 0 ? pctRank(fp) * 25 : 0) + (f10 > 0 ? 7 : 0) + dayRatio * 8;
-      if (fp > 0) why.push(`외국인·기관 한달 순매수 시총의 ${plus(fp)}${fmt(fp, 2)}%`);
-      if (f10 > 0) why.push('10일도 순매수');
-      why.push(`한달 중 ${Math.round(dayRatio * days.length)}일 순매수`);
-      // 위치 25
-      let pos = 0; const sr = H ? null : r.sr, hs = H && r.h ? r.h.sr : null;
-      if (hs) {                                          // 기준일: 그날 기준 지지선 상태로 위치 점수
-        if (hs.st === 'at') { pos += 15; why.push('그날 지지선 근접'); }
-        else if (hs.st === 'in') { pos += 10; why.push('그날 지지 구간 안'); }
-        else if (hs.st === 'app') { pos += 6; why.push('그날 지지 구간 접근'); }
-        else if (hs.dist !== null && hs.dist !== undefined) pos += 15 * Math.max(0, 1 - Math.abs(hs.dist) / 20);
-        if (hs.room === null || hs.room === undefined) { pos += 10; why.push('위쪽 저항선 없음'); }
-        else { pos += Math.min(10, hs.room / 2); why.push(`저항까지 ${plus(hs.room)}${fmt(hs.room, 1)}%`); }
-      }
-      if (sr && sr.levels && sr.levels.length) {
-        if (sr.st === 'at') { pos += 15; why.push('지지선 근접'); }
-        else if (sr.st === 'in') { pos += 10; why.push('지지 구간 안'); }
-        else if (sr.st === 'app') { pos += 6; why.push('지지 구간 접근'); }
-        else if (sr.dist !== null) { const d = Math.abs(sr.dist); pos += 15 * Math.max(0, 1 - d / 20); if (d <= 10) why.push(`지지선까지 ${fmt(d, 1)}%`); }
-      }
-      const above = sr && sr.res ? sr.res.filter(lv => lv.top > r.price) : [];
-      if (H) {}
-      else if (!above.length) { pos += 10; why.push('위쪽 저항선 없음'); }
-      else {
-        const room = Math.max(0, Math.min(...above.map(lv => (lv.btm - r.price) / r.price * 100)));
-        pos += Math.min(10, room / 2); why.push(`저항까지 ${plus(room)}${fmt(room, 1)}%`);
-      }
-      // 실적 15
+      const why = [], sz = sizeOf(r), fd = fDays(r) || 0, idd = iDays(r) || 0;
+      // 실적 25: 모든 시기·기간에 통한 유일한 기준
       let earn = 0;
-      if (r.eps > 0) { earn += 10; if (perMed && r.per > 0 && r.per < perMed) { earn += 5; why.push(`PER ${fmt(r.per, 1)}배 (섹터 중간 ${fmt(perMed, 1)}배보다 낮음)`); } else why.push('흑자'); }
-      // 패턴 10
+      if (r.eps > 0) { earn += 18; if (perMed && r.per > 0 && r.per < perMed) { earn += 7; why.push(`PER ${fmt(r.per, 1)}배 (섹터 중간 ${fmt(perMed, 1)}배보다 낮음)`); } else why.push('흑자'); }
+      else why.push('적자');
+      // 수급 30: 시총 구간별로 통한 잣대가 다름
+      const fNet = A(r, 'M').net, iNet = Bq(r, 'M').net, amt = fNet + iNet;
+      let flow = (amt > 0 ? amtRank(amt) * 6 : 0);                       // 섹터 안 금액 순위 6
+      if (sz === '대형') { flow += fd / 20 * 18 + (fNet > 0 ? 6 : 0); why.push(`대형 · 외국인 20일 중 ${fd}일 순매수`); }
+      else if (sz === '중형') { flow += Math.max(fd, idd) / 20 * 18 + (heavySell(r) ? 0 : 6); why.push(`중형 · 외국인 ${fd}일 · 기관 ${idd}일 순매수`); }
+      else { flow += idd / 20 * 18 + (heavySell(r) ? 0 : 6); why.push(`소형 · 기관 20일 중 ${idd}일 순매수`); }
+      if (sz !== '대형' && heavySell(r)) why.push('한달 순매도 하위 20%');
+      if (amt > 0) why.push(`외국인·기관 한달 ${won(amt, true)}`);
+      // 위치 20: 근접만 의미 있었음, 강세장에서는 절반
+      let pos = 0; const sr = H ? null : r.sr, hs = H && r.h ? r.h.sr : null;
+      const st = hs ? hs.st : (sr && sr.levels && sr.levels.length ? sr.st : null);
+      if (st === 'at') { pos += 12; why.push('지지선 근접'); } else if (st === 'in') { pos += 5; why.push('지지 구간 안'); } else if (st === 'app') { pos += 2; why.push('지지 구간 접근'); }
+      let room = null;
+      if (hs) room = hs.room;
+      else if (sr) { const above = sr.res ? sr.res.filter(lv => lv.top > r.price) : []; room = above.length ? Math.max(0, Math.min(...above.map(lv => (lv.btm - r.price) / r.price * 100))) : null; }
+      if (hs || sr) { if (room === null || room === undefined) { pos += 8; why.push('위쪽 저항선 없음'); } else { pos += Math.min(8, room / 2.5); why.push(`저항까지 ${plus(room)}${fmt(room, 1)}%`); } }
+      if (strong) pos /= 2;
+      // 패턴 10 (따로 검증 안 함, 그대로)
       const ps = H ? null : patBy[r.code]; const pat = ps ? Math.max(0, Math.min(1, (ps - 60) / 30)) * 10 : 0;
       if (ps && pat >= 3) why.push(`급등 직전 패턴 유사도 ${fmt(ps, 1)}`);
-      // 과열 회피 10
-      let cool = 0;
-      if (yAvg !== null && Y(r) !== null && Y(r) !== undefined && Y(r) < yAvg) cool += 5;
-      if (qAvg !== null && Q(r) < qAvg) cool += 5;
-      if (cool === 10) why.push('섹터 평균보다 덜 오름');
-      const total = H ? (hs ? (flow + pos + earn + cool) / 90 * 100 : (flow + earn + cool) / 65 * 100) : flow + pos + earn + pat + cool;   // 기준일: 패턴 점수(10) 없이 환산
+      // 과열 회피 15: 강세장에서는 감점 없음, 보통·약세장에서는 감점
+      let cool = 15;
+      if (!strong) {
+        cool = 0; const m20 = RT(r, 'M');
+        if (m20 === null || m20 === undefined || m20 < PICK.hot) cool += 7; else why.push(`최근 20일 ${plus(m20)}${fmt(m20, 1)}% (과열)`);
+        if (qAvg !== null && Q(r) !== null && Q(r) !== undefined && Q(r) < qAvg) cool += 4;
+        if (yAvg !== null && Y(r) !== null && Y(r) !== undefined && Y(r) < yAvg) cool += 4;
+        if (cool === 15) why.push('섹터 평균보다 덜 오름');
+      }
+      const total = H ? (earn + flow + pos + cool) / 90 * 100 : earn + flow + pos + pat + cool;   // 기준일: 패턴 점수(10) 없이 환산
       return {r, sec, total, flow, pos, earn, pat, cool, why, ret: H ? retSince(r) : null, lab: secLab[sec]};
     }).sort((x, y) => y.total - x.total).slice(0, PICK.perSec);
     out.push(...scored);
@@ -3200,7 +3411,8 @@ function pickStocks(){
 function renderPicks(){
   const list = pickStocks();
   const asofTxt = S.asof ? ` 지금은 기준일 ${S.asof} 모드라서 그날 기준 주기의 [단기]·[선진입] 섹터와 그날까지의 수급·등락률로 다시 골랐고, 위치(지지·저항) 점수는 그날까지의 봉으로 계산한 지지선으로 매기고, 그날 기준 값이 없는 패턴 점수만 빼서 90점을 100점으로 환산했습니다. 실적은 최신 결산 기준이고, "기준일 이후"는 그날 종가에서 고른 끝날(기본은 최신) 종가까지의 등락입니다.` : '';
-  $('pickNote').textContent = `[단기]·[선진입]·[추세 지속] 섹터 안에서 시총 ${fmt(PICK.minCap)}억 이상, 최근 20일 평균 거래대금 ${PICK.minTv}억 이상, 3달 등락률 +${PICK.maxQ}% 이하인 종목만 골라 점수를 매겼습니다. 수급 40점(외국인·기관 한달 합산 순매수의 시총 대비 섹터 내 순위, 10일 순매수 여부, 한달 중 순매수한 날 비율), 위치 25점(지지선과 가까울수록, 위쪽 저항선까지 여유가 클수록), 실적 15점(흑자, 섹터 중간보다 낮은 PER), 패턴 10점(급등 직전 패턴 유사도), 과열 회피 10점(1년·3달 등락률이 섹터 평균보다 낮음)이고, 섹터마다 상위 ${PICK.perSec}개를 보여줍니다. 점수 기준은 제가 정한 가설이라 매수 추천이 아니며, 이 기준이 실제로 잘 맞았는지는 따로 검증되지 않았습니다.` + asofTxt;
+  const reg = regime(), regTxt = {강세: '강세장', 보통: '보통', 약세: '약세장'}[reg];
+  $('pickNote').textContent = `지금 장세: ${regTxt} (시장 최근 20거래일 ${RR.data && !RR.data.none && RR.data.market !== null ? plus(RR.data.market) + fmt(RR.data.market, 1) + '%' : '계산 중'}, +5% 이상 강세·-5% 이하 약세). [단기]·[선진입]·[추세 지속] 섹터 안에서 시총 ${fmt(PICK.minCap)}억 이상, 최근 20일 평균 거래대금 ${PICK.minTv}억 이상, 3달 등락률 +${reg === '강세' ? PICK.maxQ : PICK.maxQnorm}% 이하인 종목만 골랐고${reg === '약세' ? ', 약세장이라 최근 20일 +20% 이상 오른 종목은 뺐습니다' : ''}. 점수는 지난 2년 데이터 검증 결과로 정했습니다. 실적 25점(흑자 18, 섹터 중간보다 낮은 PER 7: 모든 시기에 통한 유일한 기준), 수급 30점(시총 구간별로 통한 잣대가 달라 대형 1조 이상은 외국인 20일 중 순매수한 날 수, 중형 3천억~1조는 외국인·기관 중 많은 쪽, 소형은 기관 순매수일을 18점으로 보고, 섹터 안 순매수 금액 순위 6점, 대형은 외국인 순매수면 6점·중소형은 한달 순매도 하위 20%가 아니면 6점), 위치 20점(지지선 근접 12·구간 안 5·접근 2, 위쪽 저항선까지 여유 최대 8, 강세장에서는 절반), 패턴 10점, 과열 회피 15점(강세장은 만점, 보통·약세장은 최근 20일 +20% 미만 7, 3달·1년 등락이 섹터 평균보다 낮으면 각 4)이고, 섹터마다 상위 ${PICK.perSec}개를 보여줍니다. 검증에서도 차이는 몇 %p 수준이라 매수 추천이 아닌 참고용입니다.` + asofTxt;
   if (!list.length) { $('pickRows').innerHTML = `<tr><td colspan="11" class="empty">조건에 맞는 후보가 없습니다.</td></tr>`; return; }
   let prev = null, rank = 0;
   $('pickRows').innerHTML = list.map(x => {
@@ -3311,7 +3523,22 @@ $('secRows').addEventListener('click', e => {
   render(); window.scrollTo({top: 0, behavior: 'smooth'});
 });
 $('flowBtn').onclick = () => { S.flowOpen = !S.flowOpen; render(); };
+function renderRegime(){
+  const box = $('regimeBar'); if (!box) return;
+  if (S.view !== 'rank') { box.hidden = true; return; }
+  ensureRolling();
+  const m = RR.data && !RR.data.none ? RR.data.market : null;
+  if (m === null || m === undefined) { box.hidden = true; return; }
+  const reg = regime(), name = {강세: '강세장', 보통: '보통', 약세: '약세장'}[reg], mtxt = `${plus(m)}${fmt(m, 1)}%`;
+  const msg = m >= 8
+    ? `시장이 최근 한 달 사이 ${mtxt} 급등한 과열장이에요. 이런 때는 이평선에 눌려도 시장 조정에 같이 밀리는 경우가 많아서 눌림 ★ 신호가 나오지 않아요.`
+    : `시장이 최근 한 달 사이 8% 넘게 급등한 과열장이 아닐 때 눌림 ★ 신호가 잘 맞았어요. 지금은 한 달 사이 ${mtxt}라 이 조건에 해당해요.${reg === '강세' ? '' : ' 과열 종목(최근 20일 +20% 이상, 3달 +30% 이상)은 단타 필터와 후보 종목에서 빠져요.'}`;
+  box.className = 'regime' + (m >= 8 ? ' hot' : '');
+  box.innerHTML = `<b>${name}</b>${msg}`;
+  box.hidden = false;
+}
 function render(){
+  renderDanBt();
   $('retTilde').hidden = $('retDate').hidden = !S.asof;
   $('asofDate').value = S.asof || HD[HD.length - 1];
   if (S.asof) { const i = HD.indexOf(S.asof); $('retDate').min = HD[i + 1] || HD[HD.length - 1]; $('retDate').max = HD[HD.length - 1]; $('retDate').value = RETTO.date || HD[HD.length - 1]; }
@@ -3327,6 +3554,7 @@ function render(){
   $('tradeView').hidden = S.view !== 'trade';
   if (S.view === 'trade') { renderTrade(); return; }
   if (S.view === 'pat') { renderPat(); return; }
+  renderRegime();
   if (S.view === 'sec') { renderRange(); renderSec(); return; }
   renderRange();
   const q = S.q.trim().toLowerCase();
@@ -3336,15 +3564,13 @@ function render(){
     (!S.sub || (r.sub || '미분류') === S.sub) &&
     (S.pf === 'ALL' || (S.pf === 'P' ? r.eps > 0 : (r.eps !== null && r.eps < 0))) &&
     (S.mkt === 'ALL' || r.mkt === S.mkt) &&
-    srOk(r) && allPos(r) &&
+    srOk(r) && allPos(r) && sigOk(r) && szOk(r) && !(S.hideHot && overheat(r)) &&
     r.cap >= S.minCap &&
     (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q)));
   if (S.dan) {
-    // 10위는 지금 화면에 걸러진 종목들끼리 매김 (버튼을 바꾸면 그 조건 그대로 반영)
-    const pool = rows;
-    const top10 = p => new Set(pool.slice().sort((a, b) => (AA(b, p).pct + BB(b, p).pct) - (AA(a, p).pct + BB(a, p).pct)).slice(0, DAN_TOP).map(r => r.code));
-    const s1 = top10('1'), s10 = top10('10'), sM = top10('M');
-    rows = rows.filter(r => s1.has(r.code) && s10.has(r.code) && sM.has(r.code));
+    // 단타 필터: 시총 구간별로 통한 수급 조건 + 과열 제외 (지지선·흑자 등 나머지는 화면 버튼 그대로)
+    ensureRolling();
+    rows = rows.filter(r => flowOk(r) && !overheat(r));
   }
   const total = rows.length;
   rows.sort((a, b) => {
@@ -4018,22 +4244,75 @@ function fillSubSelect(){
 $('subf').onchange = e => { S.sub = e.target.value; S.page = 1; render(); };
 seg($('srf'), v => S.sr = v);
 seg($('allf'), v => S.allf = v);
+// ---- 과거 데이터 검증을 반영한 공통 기준 (단타 필터·후보 종목 점수) ----
+// 장세: 시장 전체(시총 가중) 최근 20거래일 등락 +5% 이상 강세, -5% 이하 약세, 그 사이 보통
+function regime(){ const m = RR.data && !RR.data.none ? RR.data.market : null; return m === null || m === undefined ? '보통' : m >= 5 ? '강세' : m <= MKT_WARN ? '약세' : '보통'; }
+// 최근 20거래일 중 외국인·기관이 순매수한 날 수
+const fDays = r => S.asof ? (r.h ? r.h.fd : null) : (r.d ? r.d.filter(x => x && x[0] - x[1] > 0).length : null);
+const iDays = r => S.asof ? (r.h ? r.h.id : null) : (r.di ? r.di.filter(x => x && x[0] - x[1] > 0).length : null);
+// 시총 구간: 대형 1조 이상, 중형 3천억~1조, 소형 3천억 미만
+const capNow = r => S.asof ? ((r.h && r.h.cap) || r.cap) : r.cap;
+const sizeOf = r => { const c = capNow(r); return c >= 10000 ? '대형' : c >= 3000 ? '중형' : '소형'; };
+// 외국인+기관 한달 순매도 하위 20% (시총 대비) — 중소형에서 가장 나빴던 구간
+const SELLQ = {key: null, cut: null};
+function sellCut(){
+  const key = S.asof || 'now';
+  if (SELLQ.key !== key) {
+    const v = DATA.filter(r => !S.asof || r.h).map(r => AA(r, 'M').pct + BB(r, 'M').pct).filter(x => isFinite(x)).sort((a, b) => a - b);
+    SELLQ.key = key; SELLQ.cut = v.length ? v[Math.floor(v.length * 0.2)] : -Infinity;
+  }
+  return SELLQ.cut;
+}
+const heavySell = r => (AA(r, 'M').pct + BB(r, 'M').pct) <= sellCut();
+// 시총 구간별로 통한 수급 조건 (외국인·기관 20일 중 15일 이상 순매수)
+function flowOk(r){
+  const sz = sizeOf(r), f = fDays(r) || 0, i = iDays(r) || 0;
+  if (sz === '대형') return f >= 15;                                   // 대형: 외국인 꾸준함만 통함
+  if (heavySell(r)) return false;                                      // 중소형: 순매도 하위 20%는 제외
+  if (sz === '중형') return f >= 15 || i >= 15;                        // 중형: 외국인 또는 기관 꾸준함
+  return i >= 15;                                                      // 소형: 기관 꾸준함 (외국인 꾸준함은 오히려 나빴음)
+}
+// 매매 신호 (1~4 눌림 ★ · 5 밀집 돌파). 기준일 모드에서는 그날 기준 신호
+const sigOf = r => S.asof ? (r.h ? r.h.sig || 0 : 0) : (r.sig || 0);
+const SIG_LINE = {1: '50일선', 2: '거래량가중100', 3: '200일선', 4: '400일선'};
+const SIG_HOLD = {1: '추천 보유 60일 · 손절 -10% (짧게는 효과 없음)', 2: '추천 보유 20~60일 · 손절 -10%', 3: '추천 보유 10~60일 · 손절 -10%', 4: '추천 보유 10일 안팎 · 손절 -5~-10%', 5: '추천 보유 1~3달 · 손절 -10% (-5%면 효과 대부분 사라짐)'};
+function sigBadge(v){
+  if (!v) return '<span class="muted">-</span>';
+  if (v === 5) return `<span class="sigb brk" title="이평선 네 개가 몰린 박스권에서 거래량 2배로 첫 돌파 · ${SIG_HOLD[5]}">밀집 돌파</span>`;
+  return `<span class="sigb good" title="${SIG_LINE[v]}에 위에서 내려와 처음 닿음 + 지지 구간 + 좋은 조건(시장 한 달 +8% 미만, 흑자, 완만한 하락, 기관 20일 중 8일+, 시총 3천억+) · ${SIG_HOLD[v]}">눌림 ★ <small>${SIG_LINE[v]}</small></span>`;
+}
+const sigOk = r => S.sigf === 'ALL' || (S.sigf === 'GOOD' ? (sigOf(r) >= 1 && sigOf(r) <= 4) : sigOf(r) === 5);
+const szOk = r => S.szf === 'ALL' || (Array.isArray(S.szf) ? S.szf.includes(sizeOf(r)) : sizeOf(r) === S.szf);
+function setSz(v){ S.szf = v; document.querySelectorAll('#szf button').forEach(b => b.classList.toggle('on', Array.isArray(v) ? v.includes(b.dataset.v) : b.dataset.v === v)); }
+function setSigf(v){ S.sigf = v; document.querySelectorAll('#sigf button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); }
+// 과열: 보통·약세장에서는 최근 20일 +20% 이상 또는 3달 +30% 이상이면 제외 (강세장에서는 제외하지 않음)
+const overheat = r => { if (regime() === '강세') return false; const m = RT(r, 'M'), q = RT(r, 'Q'); return (m !== null && m !== undefined && m >= 20) || (q !== null && q !== undefined && q >= 30); };
 // 단타 필터: 켜면 지지선 구간 안·흑자만·합산 시총 대비 정렬·30개씩으로 맞추고, 전날·10일·한달 합산/시총 모두 10위 안인 종목만
 const DAN_TOP = 10;
 function setSeg(id, v){ $(id).querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); }
-const danPreset = () => S.sr === 'IN' && S.pf === 'P' && S.allf === 'POS' && S.sort === 'spct' && S.top === 30;
+const danPreset = () => S.sr === 'IN' && S.pf === 'P' && S.allf === 'ALL' && S.sort === 'dist' && S.top === 30;
 $('danBtn').onclick = () => {
   // 꺼져 있으면 켜면서 단타 조건으로 맞춤 / 켜진 채로 버튼을 바꿨으면 다시 단타 조건으로 맞춤 / 그대로면 끔
   S.dan = !S.dan || !danPreset();
   if (S.dan) {
     S.sr = 'IN'; setSeg('srf', 'IN');
     S.pf = 'P'; setSeg('pf', 'P');
-    S.allf = 'POS'; setSeg('allf', 'POS');
-    S.sort = 'spct'; S.dir = -1; $('sort').value = 'spct';
+    S.allf = 'ALL'; setSeg('allf', 'ALL');
+    S.sort = 'dist'; S.dir = 1; $('sort').value = 'dist';
     S.top = 30; $('top').value = '30';
+    setSigf('ALL'); setSz('ALL');                                  // 단타 필터와 신호는 하나만
   }
   S.page = 1; render();
 };
+// 신호를 고르면 단타 필터는 꺼지고, 신호가 가려지지 않게 지지선·실적은 전체로. 눌림 ★은 시총 구간이 대형·중형으로 자동 표시
+document.querySelectorAll('#sigf button').forEach(b => b.onclick = () => {
+  const v = b.dataset.v; setSigf(v);
+  if (v !== 'ALL') { S.dan = false; S.sr = 'ALL'; setSeg('srf', 'ALL'); S.pf = 'ALL'; setSeg('pf', 'ALL'); }
+  setSz(v === 'GOOD' ? ['대형', '중형'] : 'ALL');
+  S.page = 1; render();
+});
+document.querySelectorAll('#szf button').forEach(b => b.onclick = () => { setSz(b.dataset.v); S.page = 1; render(); });
+$('hotf').onchange = e => { S.hideHot = e.target.checked; S.page = 1; render(); };
 $('sort').onchange = e => { S.sort = e.target.value; S.dir = (S.sort === 'dist' || S.sort === 'per') ? 1 : -1; S.page = 1; render(); };
 $('minCap').oninput = e => { S.minCap = Number(e.target.value) || 0; S.page = 1; render(); };
 $('top').onchange = e => { S.top = Number(e.target.value); S.page = 1; render(); };
