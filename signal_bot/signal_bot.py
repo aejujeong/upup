@@ -15,6 +15,7 @@ import math
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -49,8 +50,12 @@ def tg_send(text):
         headers={"Content-Type": "application/json"})
     try:
         urllib.request.urlopen(req, timeout=20).read()
+        return True
+    except urllib.error.HTTPError as e:
+        print(f"::error::텔레그램 전송 실패 {e.code} {e.read().decode()[:200]}")
     except Exception as e:  # noqa: BLE001
-        print("텔레그램 전송 실패:", e, file=sys.stderr)
+        print(f"::error::텔레그램 전송 실패 {e}")
+    return False
 
 
 def find_chat_id():
@@ -59,7 +64,9 @@ def find_chat_id():
         return ""
     j = get_json(f"https://api.telegram.org/bot{TOKEN}/getUpdates")
     if not j or not j.get("ok"):
+        print(f"::warning::텔레그램 getUpdates 실패: {str(j)[:200]}")
         return ""
+    print(f"::notice::텔레그램 받은 메시지 {len(j.get('result', []))}개")
     for u in reversed(j.get("result", [])):
         m = u.get("message") or u.get("edited_message") or {}
         cid = (m.get("chat") or {}).get("id")
@@ -542,8 +549,10 @@ def main():
     calm = btc15_calm(btc_d, btc_h)
 
     msgs = []
+    counts = {}
     for sym in ("BTCUSDT", "ETHUSDT", "SOXL"):
         data = load(sym)
+        counts[sym] = sum(len(v) for v in data.values())
         label, found = scan(sym, data, calm)
         for tf, b in data.items():
             if not b:
@@ -557,8 +566,10 @@ def main():
                         msgs.append((bar["t"], message(label, tf, bar, info, grade)))
             seen[key] = max(newest, prev or 0)
 
-    if first:
-        tg_send("신호 알림이 연결됐어요. 이제 BTC·ETH·SOXL 3분~일봉 매수 신호가 뜨면 5분 안팎으로 보내 드릴게요.")
+    print(f"::notice::토큰 {'있음' if TOKEN else '없음'} · 대화방 {'찾음' if CHAT_ID else '못 찾음'} · 데이터 " + " / ".join(f"{k}:{v}" for k, v in counts.items()))
+    if CHAT_ID and not state.get("hello"):
+        if tg_send("신호 알림이 연결됐어요. 이제 BTC·ETH·SOXL 3분~일봉 매수 신호가 뜨면 5분 안팎으로 보내 드릴게요."):
+            state["hello"] = True
     for _, m in sorted(msgs):
         tg_send(m)
         time.sleep(0.5)
