@@ -300,7 +300,7 @@ def sig_cross(b, I):
         ptop = max(a50[i - 1], a100[i - 1])
         if not (nn(top) and nn(ptop)):
             continue
-        if not (c[i] > top and c[i - 1] <= ptop):
+        if not (a50[i] < a100[i] and c[i] > top and c[i - 1] <= ptop):
             continue
         bl = sum(1 for k in range(i - 10, i) if c[k] < max(a50[k], a100[k]))
         if bl < 5:

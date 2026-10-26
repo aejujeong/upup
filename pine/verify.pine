@@ -503,7 +503,7 @@ ago(int t) =>
         mins < 60 ? str.tostring(mins, "#") + "분 전" : mins < 1440 ? str.tostring(mins / 60, "#") + "시간 전" : str.tostring(mins / 1440, "#") + "일 전"
 
 // ───────────────────────── 50·100 동시 돌파 (모든 봉 · 모든 시장) ─────────────────────────
-// 아래에서 50선·100선(거래량가중)을 다 넘어서 마감 · 직전 10봉 중 5봉 이상 위쪽 선(50·100 중 높은 선) 아래
+// 50선이 100선(거래량가중)보다 아래일 때만 · 100선을 넘어서 마감 · 직전 10봉 중 5봉 이상 100선 아래
 // 급등봉 제외: 200선이 위에 있는데 그 봉 고가가 200선까지 닿음 · 또는 몸통이 평소 움직임(ATR)의 3배 이상
 // 손절 = 진입가 - ATR 2배 · 익절 = 손절 폭의 2배 (손익비 1:2)
 // ★ = 직전 20봉 안 RSI 30 터치 + 직전 10봉 안 거래량 3배↑
@@ -545,7 +545,7 @@ f_xTF(string m, string t) =>
     bl  = math.sum(close < math.max(a50, av) ? 1 : 0, 10)[1]
     top = math.max(a50, av)
     [ex, star] = f_xExtra(m, t, top, a200, a400)
-    x   = close > top and close[1] <= math.max(a50[1], av[1]) and bl >= 5 and ex
+    x   = a50 < av and close > top and close[1] <= math.max(a50[1], av[1]) and bl >= 5 and ex
     sp  = (a200 > close and high >= a200) or math.abs(close - open) >= 3 * at[1]
     var int lastT = na
     var int lastB = na
@@ -553,7 +553,7 @@ f_xTF(string m, string t) =>
     if okX
         lastT := time
         lastB := bar_index
-    near = not okX and bl >= 5 and ex and close <= top and close >= top * 0.99
+    near = not okX and a50 < av and bl >= 5 and ex and close <= top and close >= top * 0.99
     [okX ? 2 : near ? 1 : 0, lastT, star, sp and x]
 
 // 지금 차트 봉
@@ -564,7 +564,7 @@ xBl  = math.sum(close < math.max(xA50, xAv) ? 1 : 0, 10)[1]
 xTop = math.max(xA50, xAv)
 xTf  = timeframe.isdaily ? "D" : tf
 [xEx, xStar] = f_xExtra(mkt, xTf, xTop, s200, s400)
-xRaw = close > xTop and close[1] <= math.max(xA50[1], xAv[1]) and xBl >= 5 and xEx
+xRaw = xA50 < xAv and close > xTop and close[1] <= math.max(xA50[1], xAv[1]) and xBl >= 5 and xEx
 xSp  = (s200 > close and high >= s200) or math.abs(close - open) >= 3 * xAt[1]
 var int xLastB = na
 xOk  = xRaw and not xSp and (na(xLastB) or bar_index - xLastB > 5)
