@@ -1,5 +1,5 @@
 //@version=6
-indicator("검증 근거 v2", overlay = true, max_labels_count = 300, max_lines_count = 200)
+indicator("검증 근거 v2", overlay = true, scale = scale.right, max_labels_count = 300, max_lines_count = 200)
 
 // ───────────────────────── 설정 ─────────────────────────
 mktIn   = input.string("자동", "시장", options = ["자동", "코인", "미국", "한국"])
