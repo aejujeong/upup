@@ -302,7 +302,7 @@ def sig_cross(b, I):
             continue
         if not (c[i] > top and c[i - 1] <= ptop):
             continue
-        bl = sum(1 for k in range(i - 10, i) if c[k] < min(a50[k], a100[k]))
+        bl = sum(1 for k in range(i - 10, i) if c[k] < max(a50[k], a100[k]))
         if bl < 5:
             continue
         x = b[i]
