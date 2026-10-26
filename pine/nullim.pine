@@ -4,7 +4,7 @@
 // 아래쪽에 '이평선 눌림 통계'를 붙였다. 개인용으로만 쓰고 퍼블리시하지 않는다.
 
 //@version=6
-indicator("S&R + 이평선 눌림 통계", "S&R + 눌림 v52", overlay = false, scale = scale.right, calc_bars_count = 10000, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
+indicator("S&R + 이평선 눌림 통계", "S&R + 눌림 v53", overlay = false, scale = scale.right, calc_bars_count = 10000, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
 
 //---------------------------------------------------------------------------------------------------------------------}
 // Constants & Types
@@ -96,7 +96,7 @@ dashboardPositionInput  = input.string(BOTTOM_LEFT, 'Position', group = DASHBOAR
 dashboardSizeInput      = input.string(SMALL, 'Size', group = DASHBOARD_GROUP, options = [TINY, SMALL, NORMAL, LARGE, HUGE])
 
 luxMarks = input.bool(false, 'LuxAlgo 저점·고점·깨짐·스윕 표시 (▲▼ ✖ ●)', group = 'Visuals & Styles', tooltip = '꺼도 지지·저항 상자와 계산은 그대로')
-showSRTxt = input.bool(false, '지지·저항 옆 작은 글자 보기 (E·S·SW·V·D)', group = 'Visuals & Styles')
+showSRTxt = input.bool(true, '지지·저항 옆 숫자 보기 (닿음·버팀·뚫고 되돌림·거래량·유지 봉수)', group = 'Visuals & Styles')
 
 // 확인 모드는 v49에서 뺐어요 (승률 통계 확인용이었음)
 chkOn = false
@@ -414,7 +414,7 @@ if levelsArray.size() > 0
                         l.extBoxId := na
                 
                 // Stats Label
-                string txt = str.format("E:{0} | S:{1} | SW:{2} | V:{3} | D:{4}", l.entries, l.strength, l.sweeps, format_val(l.tradedVolume), curD)
+                string txt = str.format("닿음 {0} · 버팀 {1} · 뚫고 되돌림 {2} · 거래량 {3} · {4}봉 유지", l.entries, l.strength, l.sweeps, format_val(l.tradedVolume), curD)
                 if not showSRTxt
                     if not na(l.statsLabel)
                         l.statsLabel.delete()
