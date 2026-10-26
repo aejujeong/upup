@@ -8,7 +8,7 @@ on:
         default: "2015-01-01"
       end:
         description: "끝일"
-        default: "2024-10-31"
+        default: "2026-10-23"
 
 permissions:
   contents: write             # 받은 파일을 저장소 bt/ 폴더에 올리기 위해 필요
@@ -21,26 +21,40 @@ jobs:
   backfill:
     runs-on: ubuntu-latest
     timeout-minutes: 350      # GitHub 한 번 실행 최대 6시간 안에서 멈춤
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]   # 종목을 4개로 나눠 동시에 받기
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - run: python backfill.py
+      - name: 받기 (50분마다 새로 로그인해서 이어 받기)
         timeout-minutes: 330
         env:
           BT_START: ${{ inputs.start }}
           BT_END: ${{ inputs.end }}
-          BT_MAX_MIN: "320"
+          BT_MAX_MIN: "50"
+          BT_SHARD: ${{ matrix.shard }}
+          BT_SHARDS: "4"
+          BT_MINCAP: "1000"
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            echo "=== ${i}번째 로그인 ==="
+            if python backfill.py; then break; fi
+          done
       - name: 받은 파일 저장소에 올리기 (중간에 멈춰도 받은 만큼 올림)
         if: always()
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
           git add bt
-          git commit -m "과거 데이터 받기: ${{ inputs.start }} ~ ${{ inputs.end }}" || echo "새로 받은 파일 없음"
-          git pull --rebase || true
-          git push || echo "올리기 실패"
+          git commit -m "과거 데이터 받기 ${{ matrix.shard }}/4: ${{ inputs.start }} ~ ${{ inputs.end }}" || echo "새로 받은 파일 없음"
+          for k in 1 2 3 4 5; do
+            git pull --rebase && git push && break
+            sleep $((RANDOM % 20 + 5))
+          done
