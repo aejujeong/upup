@@ -1,11 +1,17 @@
 name: signal-bot
 
-# 5분마다 BTC·ETH·SOXL 매수 신호 확인 → 텔레그램 전송
-# GitHub가 바쁠 때는 몇 분씩 늦게 실행될 수 있어요.
+# BTC·ETH·SOXL 매수 신호 확인 → 텔레그램 전송
+# GitHub 예약 실행(cron)이 이 저장소에서 잘 안 돌아서, 한 번 켜지면
+# 5시간 45분 동안 5분마다 확인하고, 끝나기 직전에 다음 실행을 스스로 켜는 방식.
+# 끊겼을 때를 대비해 매시 정각 예약도 같이 걸어 둠 (돌고 있으면 줄 서서 기다림).
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "7 * * * *"
   workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
 
 concurrency:
   group: signal-bot
@@ -14,7 +20,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
 
@@ -30,11 +36,20 @@ jobs:
           key: signal-state-${{ github.run_id }}
           restore-keys: signal-state-
 
-      - name: 신호 확인
+      - name: 5분마다 신호 확인 (5시간 45분)
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python signal_bot/signal_bot.py
+        run: |
+          end=$(( $(date +%s) + 345*60 ))
+          while [ $(date +%s) -lt $end ]; do
+            python signal_bot/signal_bot.py || echo "이번 회차 실패 · 다음 회차 계속"
+            now=$(date +%s)
+            # 다음 5분 정각 + 20초 (봉이 막 끝난 뒤 확인)
+            next=$(( (now / 300 + 1) * 300 + 20 ))
+            [ $next -ge $end ] && break
+            sleep $(( next - now ))
+          done
 
       - name: 상태 저장
         if: always()
@@ -42,3 +57,9 @@ jobs:
         with:
           path: state.json
           key: signal-state-${{ github.run_id }}
+
+      - name: 다음 실행 켜기
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run signal_bot.yml --ref main -R ${{ github.repository }}
