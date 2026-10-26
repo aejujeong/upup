@@ -19,8 +19,8 @@ showX   = input.bool(true, "표에 50·100 동시 돌파 줄 넣기", group = "5
 mkt = mktIn != "자동" ? mktIn : syminfo.type == "crypto" ? "코인" : (syminfo.country == "KR" or syminfo.prefix == "KRX") ? "한국" : "미국"
 tf  = timeframe.period
 isBTC = str.contains(syminfo.ticker, "BTC")
-// 여러 봉 계산은 어느 차트에서 보든 같은 데이터로: 장전·장후 포함으로 고정 (장 밖 신호도 놓치지 않게)
-regSym = ticker.modify(syminfo.tickerid, session.extended)
+// 여러 봉 계산은 지금 차트와 같은 데이터로 (24시간·장전장후 설정 그대로 따라감 · 차트 선과 똑같게)
+regSym = syminfo.tickerid
 
 rsi   = ta.rsi(close, 14)
 hasVolC = ta.cum(nz(volume)) > 0
