@@ -1,0 +1,44 @@
+name: signal-bot
+
+# 5분마다 BTC·ETH·SOXL 매수 신호 확인 → 텔레그램 전송
+# GitHub가 바쁠 때는 몇 분씩 늦게 실행될 수 있어요.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: signal-bot
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 지난번에 어디까지 확인했는지 기억 (같은 신호 두 번 안 보내게)
+      - name: 상태 불러오기
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: signal-state-${{ github.run_id }}
+          restore-keys: signal-state-
+
+      - name: 신호 확인
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python signal_bot/signal_bot.py
+
+      - name: 상태 저장
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: signal-state-${{ github.run_id }}
