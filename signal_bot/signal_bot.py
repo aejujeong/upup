@@ -62,6 +62,8 @@ def find_chat_id():
     """봇에게 보낸 메시지에서 내 대화방 번호를 찾는다."""
     if not TOKEN:
         return ""
+    me = get_json(f"https://api.telegram.org/bot{TOKEN}/getMe") or {}
+    print(f"::notice::이 토큰의 봇 아이디: @{(me.get('result') or {}).get('username')}")
     j = get_json(f"https://api.telegram.org/bot{TOKEN}/getUpdates")
     if not j or not j.get("ok"):
         print(f"::warning::텔레그램 getUpdates 실패: {str(j)[:200]}")
