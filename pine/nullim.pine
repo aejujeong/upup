@@ -1,0 +1,724 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+// 지지·저항 부분은 LuxAlgo 'Support & Resistance Pro Toolkit' 원본 그대로이고,
+// 아래쪽에 '이평선 눌림 통계'를 붙였다. 개인용으로만 쓰고 퍼블리시하지 않는다.
+
+//@version=6
+indicator("S&R + 이평선 눌림 통계", "S&R + 눌림 v52", overlay = false, scale = scale.right, calc_bars_count = 10000, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Constants & Types
+//---------------------------------------------------------------------------------------------------------------------{
+BULL_COLOR = #089981
+BEAR_COLOR = #f23645
+NONE_COLOR = #00000000
+
+DATA       = #DBDBDB
+HEADERS    = #808080
+BACKGROUND = #161616
+BORDERS    = #2E2E2E
+
+TOP_RIGHT    = 'Top Right'
+BOTTOM_RIGHT = 'Bottom Right'
+BOTTOM_LEFT  = 'Bottom Left'
+
+TINY   = 'Tiny'
+SMALL  = 'Small'
+NORMAL = 'Normal'
+LARGE  = 'Large'
+HUGE   = 'Huge'
+
+type level
+    float top
+    float btm
+    float basePrice
+    int   startBar
+    int   startTime
+    int   mitigationBar
+    int   mitigationTime
+    bool  isSupport
+    bool  isMitigated
+    bool  isUserHidden
+    int   entries
+    int   strength
+    int   sweeps
+    float tradedVolume
+    line  lineId
+    box   boxId
+    line  extLineId
+    box   extBoxId
+    label statsLabel
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Inputs
+//---------------------------------------------------------------------------------------------------------------------{
+G1 = 'Detection Settings'
+METHOD_PIVOTS   = 'Pivots'
+METHOD_DONCHIAN = 'Donchian'
+METHOD_CSID     = 'CSID'
+METHOD_ZIGZAG   = 'ZigZag'
+
+methodInput      = input.string(METHOD_DONCHIAN, 'Detection Method', group = G1, options = [METHOD_PIVOTS, METHOD_DONCHIAN, METHOD_CSID, METHOD_ZIGZAG])
+sensitivityInput = input.float(7.0, 'Swing Sensitivity', minval = 0.1, group = G1, tooltip = 'Lookback for Pivots/Donchian/CSID, Deviation % for ZigZag.')
+
+G2 = 'Zone & Level Sizing'
+displayTypeInput  = input.string('Zones', 'Display Style', options = ['Levels', 'Zones'], group = G2)
+atrPeriodInput    = input.int(200, 'ATR Period', minval = 1, group = G2)
+atrMultInput      = input.float(2.0, 'Zone Depth (ATR Mult)', minval = 0.0, group = G2)
+securityMultInput = input.float(0.0, 'Breakout Buffer (ATR Mult)', minval = 0.0, group = G2)
+
+G3 = 'Filtering & Visibility'
+OVERLAP_NONE        = 'None'
+OVERLAP_MERGE       = 'Merge Overlapping'
+OVERLAP_HIDE_OLD    = 'Hide Overlapping (Oldest Precedence)'
+OVERLAP_HIDE_YOUNG  = 'Hide Overlapping (Youngest Precedence)'
+overlapModeInput    = input.string(OVERLAP_HIDE_OLD, 'Overlap Handling', options = [OVERLAP_NONE, OVERLAP_MERGE, OVERLAP_HIDE_OLD, OVERLAP_HIDE_YOUNG], group = G3)
+maxLevelsInput      = input.int(5, 'Max Active (Unmitigated)', minval = 1, maxval = 50, group = G3)
+showBrokenSRInput   = input.bool(true, 'Show Broken S&R', group = G3)
+extendUnmitigated   = input.bool(true, 'Extend Active S&R', group = G3)
+
+G4 = 'Minimum Requirements'
+minEntriesInput  = input.int(0, 'Min Price Entries', minval = 0, group = G4)
+minStrengthInput = input.int(0, 'Min Overall Strength', minval = 0, group = G4)
+minSweepsInput   = input.int(0, 'Min Sweeps', minval = 0, group = G4)
+minVolumeInput   = input.float(0, 'Min Traded Volume', minval = 0, group = G4)
+minDurationInput = input.int(0, 'Min Duration (Bars)', minval = 0, group = G4)
+
+G5 = 'Visuals & Styles'
+supColorInput  = input.color(BULL_COLOR, 'Support Color', group = G5)
+resColorInput  = input.color(BEAR_COLOR, 'Resistance Color', group = G5)
+sweepHighlight = input.bool(true, 'Highlight Sweeps', group = G5)
+breakHighlight = input.bool(true, 'Highlight Breakouts', group = G5)
+
+DASHBOARD_GROUP = 'Dashboard'
+dashboardInput          = input.bool(false, 'Dashboard', group = DASHBOARD_GROUP)
+dashboardPositionInput  = input.string(BOTTOM_LEFT, 'Position', group = DASHBOARD_GROUP, options = [TOP_RIGHT, BOTTOM_RIGHT, BOTTOM_LEFT])
+dashboardSizeInput      = input.string(SMALL, 'Size', group = DASHBOARD_GROUP, options = [TINY, SMALL, NORMAL, LARGE, HUGE])
+
+luxMarks = input.bool(false, 'LuxAlgo 저점·고점·깨짐·스윕 표시 (▲▼ ✖ ●)', group = 'Visuals & Styles', tooltip = '꺼도 지지·저항 상자와 계산은 그대로')
+showSRTxt = input.bool(false, '지지·저항 옆 작은 글자 보기 (E·S·SW·V·D)', group = 'Visuals & Styles')
+
+// 확인 모드는 v49에서 뺐어요 (승률 통계 확인용이었음)
+chkOn = false
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Global ta.* Calls
+//---------------------------------------------------------------------------------------------------------------------{
+int sensInt = math.max(1, int(sensitivityInput))
+float globalAtr = ta.atr(atrPeriodInput)
+float cumRange  = ta.cum(math.abs(high - low))
+float donchHighest = ta.highest(high, sensInt)
+float donchLowest  = ta.lowest(low, sensInt)
+float csidHighest = ta.highest(high, sensInt)
+float csidLowest  = ta.lowest(low, sensInt)
+int   csidHbars   = ta.highestbars(high, sensInt)
+int   csidLbars   = ta.lowestbars(low, sensInt)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// User-Defined Functions
+//---------------------------------------------------------------------------------------------------------------------{
+get_atr() =>
+    float res = globalAtr
+    if na(res)
+        res := cumRange / (bar_index + 1)
+    res
+
+format_val(float val) =>
+    if val >= 1000000000
+        str.format("{0,number,#.#}B", val / 1000000000)
+    else if val >= 1000000
+        str.format("{0,number,#.#}M", val / 1000000)
+    else if val >= 1000
+        str.format("{0,number,#.#}K", val / 1000)
+    else
+        str.tostring(val, "#.#")
+
+var parsedDashboardPosition = switch dashboardPositionInput
+    TOP_RIGHT    => position.top_right
+    BOTTOM_RIGHT => position.bottom_right
+    BOTTOM_LEFT  => position.bottom_left
+
+var parsedDashboardSize = switch dashboardSizeInput
+    TINY   => size.tiny
+    SMALL  => size.small
+    NORMAL => size.normal
+    LARGE  => size.large
+    HUGE   => size.huge
+
+cell(table t_able, int column, int row, string data, color = #FFFFFF, align = text.align_right, color background = na, float height = 0) => 
+    t_able.cell(column, row, data, text_color = color, text_size = parsedDashboardSize, text_halign = align, bgcolor = background, height = height)
+
+divider(table t_able, int row, int lastColumn) =>    
+    string rowDivider = '━━━━━━━━━━━━━━'
+    t_able.merge_cells(0, row, lastColumn, row)
+    cell(t_able, 0, row, rowDivider, align = text.align_center, height = 0.5, color = BORDERS)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// Logic & Calculations
+//---------------------------------------------------------------------------------------------------------------------{
+var level[] levelsArray = array.new<level>()
+float currentAtr = get_atr()
+
+float ph = na
+float pl = na
+int phBar = na
+int plBar = na
+
+// Stats tracking
+var int totalSupCount = 0
+var int totalResCount = 0
+var int supMitigated = 0
+var int resMitigated = 0
+var int supDuration = 0
+var int resDuration = 0
+var int supSweepsCount = 0
+var int resSweepsCount = 0
+var float supCumVolume = 0.0
+var float resCumVolume = 0.0
+
+// Method 1: Pivots
+if methodInput == METHOD_PIVOTS
+    ph := ta.pivothigh(sensInt, sensInt)
+    pl := ta.pivotlow(sensInt, sensInt)
+    if not na(ph)
+        phBar := bar_index - sensInt
+    if not na(pl)
+        plBar := bar_index - sensInt
+
+// Method 2: Donchian (Alternating)
+var int donchOs = 0
+var float donchVal = na
+var int donchValLoc = na
+if methodInput == METHOD_DONCHIAN
+    donchOs := donchHighest > donchHighest[1] ? 1 : donchLowest < donchLowest[1] ? -1 : donchOs
+    if donchOs != donchOs[1]
+        if donchOs == 1 
+            pl := donchVal
+            plBar := donchValLoc
+            donchVal := high
+            donchValLoc := bar_index
+        else 
+            ph := donchVal
+            phBar := donchValLoc
+            donchVal := low
+            donchValLoc := bar_index
+    else
+        if donchOs == 1
+            if high >= nz(donchVal, -1.0e10)
+                donchVal := high
+                donchValLoc := bar_index
+        else if donchOs == -1
+            if low <= nz(donchVal, 1.0e10)
+                donchVal := low
+                donchValLoc := bar_index
+
+// Method 3: CSID
+var int bullCount = 0
+var int bearCount = 0
+if methodInput == METHOD_CSID
+    bullCount := close > open ? bullCount + 1 : 0
+    bearCount := close < open ? bearCount + 1 : 0
+    if bullCount == sensInt
+        ph := csidHighest
+        phBar := bar_index + csidHbars
+    if bearCount == sensInt
+        pl := csidLowest
+        plBar := bar_index + csidLbars
+
+// Method 4: ZigZag
+var float zzHigh = na, var float zzLow  = na, var int zzHighBar = na, var int zzLowBar = na, var int zzDir = 0 
+if methodInput == METHOD_ZIGZAG
+    float dev = (close * sensitivityInput) / 100
+    if zzDir == 0
+        zzHigh := high, zzLow := low, zzHighBar := bar_index, zzLowBar := bar_index, zzDir := close > open ? 1 : -1
+    else if zzDir == 1
+        if high > zzHigh
+            zzHigh := high, zzHighBar := bar_index
+        else if low < zzHigh - dev
+            ph := zzHigh, phBar := zzHighBar, zzLow := low, zzLowBar := bar_index, zzDir := -1
+    else
+        if low < zzLow
+            zzLow := low, zzLowBar := bar_index
+        else if high > zzLow + dev
+            pl := zzLow, plBar := zzLowBar, zzHigh := high, zzHighBar := bar_index, zzDir := 1
+
+// Highlight Swings
+if not na(ph) and luxMarks and not chkOn
+    label.new(time[bar_index - phBar], ph, "▼", xloc = xloc.bar_time, color = NONE_COLOR, textcolor = resColorInput, style = label.style_label_center, size = size.small, force_overlay = true)
+if not na(pl) and luxMarks and not chkOn
+    label.new(time[bar_index - plBar], pl, "▲", xloc = xloc.bar_time, color = NONE_COLOR, textcolor = supColorInput, style = label.style_label_center, size = size.small, force_overlay = true)
+
+// Creation & Overlap Logic
+handle_structure(float top, float btm, float base, int start, bool isSup) =>
+    bool shouldAdd = true
+    if levelsArray.size() > 0
+        for i = levelsArray.size() - 1 to 0
+            level l = levelsArray.get(i)
+            if not l.isMitigated and not l.isUserHidden and l.isSupport == isSup
+                bool overlaps = math.max(btm, l.btm) < math.min(top, l.top)
+                if overlaps
+                    if overlapModeInput == OVERLAP_HIDE_OLD
+                        shouldAdd := false
+                        break
+                    else if overlapModeInput == OVERLAP_HIDE_YOUNG
+                        l.isUserHidden := true
+                    else if overlapModeInput == OVERLAP_MERGE
+                        l.top := math.max(l.top, top)
+                        l.btm := math.min(l.btm, btm)
+                        shouldAdd := false
+                        break
+    if shouldAdd
+        level newL = level.new(top, btm, base, start, time[bar_index - start], 0, 0, isSup, false, false, 0, 0, 0, 0.0, na, na, na, na, na)
+        levelsArray.unshift(newL)
+        true
+    else
+        false
+
+if not na(ph)
+    if handle_structure(ph + currentAtr * securityMultInput, ph - currentAtr * atrMultInput, ph, phBar, false)
+        totalResCount += 1
+if not na(pl)
+    if handle_structure(pl + currentAtr * atrMultInput, pl - currentAtr * securityMultInput, pl, plBar, true)
+        totalSupCount += 1
+
+// Mitigation Loop
+if levelsArray.size() > 100
+    levelsArray.pop()
+
+int activeSupCount = 0
+int activeResCount = 0
+int activeTotal = 0
+
+// [눌림 통계용] 이번 봉이 '지금 화면에 보이는, 깨지지 않은 지지 구간' 안에 들어왔는지
+bool inSupNow = false
+float supTopNow = na
+float supBtmNow = na
+float nearTop = na
+float nearBtm = na
+
+if levelsArray.size() > 0
+    for i = 0 to levelsArray.size() - 1
+        level l = levelsArray.get(i)
+        if not l.isMitigated
+            if l.isSupport
+                if close < l.btm
+                    l.isMitigated := true
+                    l.mitigationBar := bar_index
+                    l.mitigationTime := time
+                    supMitigated += 1
+                    supDuration += (l.mitigationBar - l.startBar)
+                    supCumVolume += l.tradedVolume
+                    if breakHighlight and luxMarks and not chkOn
+                        label.new(time, low, "✖", xloc = xloc.bar_time, color = NONE_COLOR, textcolor = supColorInput, style = label.style_label_center, size = size.tiny, force_overlay = true)
+            else
+                if close > l.top
+                    l.isMitigated := true
+                    l.mitigationBar := bar_index
+                    l.mitigationTime := time
+                    resMitigated += 1
+                    resDuration += (l.mitigationBar - l.startBar)
+                    resCumVolume += l.tradedVolume
+                    if breakHighlight and luxMarks and not chkOn
+                        label.new(time, high, "✖", xloc = xloc.bar_time, color = NONE_COLOR, textcolor = resColorInput, style = label.style_label_center, size = size.tiny, force_overlay = true)
+            
+            if not l.isMitigated
+                if high >= l.btm and low <= l.top
+                    l.tradedVolume += volume
+                if l.isSupport
+                    if low <= l.top and close >= l.btm
+                        l.entries += 1
+                    if low < l.btm and math.min(close, open) > l.btm
+                        l.sweeps += 1
+                        supSweepsCount += 1
+                        if sweepHighlight and luxMarks and not chkOn
+                            label.new(time, low, "●", xloc = xloc.bar_time, color = NONE_COLOR, textcolor = supColorInput, style = label.style_label_center, size = size.small, force_overlay = true)
+                else
+                    if high >= l.btm and close <= l.top
+                        l.entries += 1
+                    if high > l.top and math.max(close, open) < l.top
+                        l.sweeps += 1
+                        resSweepsCount += 1
+                        if sweepHighlight and luxMarks and not chkOn
+                            label.new(time, high, "●", xloc = xloc.bar_time, color = NONE_COLOR, textcolor = resColorInput, style = label.style_label_center, size = size.small, force_overlay = true)
+
+        int curD = l.isMitigated ? l.mitigationBar - l.startBar : bar_index - l.startBar
+        bool meets = l.entries >= minEntriesInput and l.strength >= minStrengthInput and l.sweeps >= minSweepsInput and l.tradedVolume >= minVolumeInput and curD >= minDurationInput and not l.isUserHidden
+        bool show = false
+        if meets
+            if not l.isMitigated and activeTotal < maxLevelsInput
+                show := true
+                activeTotal += 1
+                if l.isSupport
+                    activeSupCount += 1
+                else
+                    activeResCount += 1
+            else if l.isMitigated and showBrokenSRInput
+                show := true
+
+        // [눌림 통계용] 화면에 보이는 깨지지 않은 지지 구간에 이번 봉 저가가 들어왔고 종가는 구간 아래로 안 깨졌으면 '지지 구간 안'
+        if show and not l.isMitigated and l.isSupport and low <= l.top and close >= l.btm
+            if not inSupNow
+                supTopNow := l.top
+                supBtmNow := l.btm
+            inSupNow := true
+        if show and not l.isMitigated and l.isSupport and l.top < close
+            if na(nearTop) or l.top > nearTop
+                nearTop := l.top
+                nearBtm := l.btm
+
+        if show
+            int endT = l.isMitigated ? l.mitigationTime : time
+            color c = l.isSupport ? supColorInput : resColorInput
+            float avgY = (l.top + l.btm) / 2
+            
+            // Primary Line/Box using xloc.bar_time
+            if na(l.lineId)
+                l.lineId := line.new(l.startTime, l.basePrice, endT, l.basePrice, xloc = xloc.bar_time, color = c, force_overlay = true)
+            else
+                l.lineId.set_xy1(l.startTime, l.basePrice)
+                l.lineId.set_xy2(endT, l.basePrice)
+            
+            if displayTypeInput == 'Zones'
+                if na(l.boxId)
+                    l.boxId := box.new(l.startTime, l.top, endT, l.btm, xloc = xloc.bar_time, border_color = NONE_COLOR, bgcolor = color.new(c, 85), force_overlay = true)
+                else
+                    l.boxId.set_left(l.startTime)
+                    l.boxId.set_top(l.top)
+                    l.boxId.set_right(endT)
+                    l.boxId.set_bottom(l.btm)
+            else
+                if not na(l.boxId)
+                    l.boxId.delete()
+                    l.boxId := na
+
+            // Extension objects using xloc.bar_index
+            if not l.isMitigated and extendUnmitigated
+                int endExt = bar_index + 25
+                if na(l.extLineId)
+                    l.extLineId := line.new(bar_index, l.basePrice, endExt, l.basePrice, xloc = xloc.bar_index, color = c, force_overlay = true)
+                else
+                    l.extLineId.set_xy1(bar_index, l.basePrice)
+                    l.extLineId.set_xy2(endExt, l.basePrice)
+                
+                if displayTypeInput == 'Zones'
+                    if na(l.extBoxId)
+                        l.extBoxId := box.new(bar_index, l.top, endExt, l.btm, xloc = xloc.bar_index, border_color = NONE_COLOR, bgcolor = color.new(c, 85), force_overlay = true)
+                    else
+                        l.extBoxId.set_left(bar_index)
+                        l.extBoxId.set_top(l.top)
+                        l.extBoxId.set_right(endExt)
+                        l.extBoxId.set_bottom(l.btm)
+                else
+                    if not na(l.extBoxId)
+                        l.extBoxId.delete()
+                        l.extBoxId := na
+                
+                // Stats Label
+                string txt = str.format("E:{0} | S:{1} | SW:{2} | V:{3} | D:{4}", l.entries, l.strength, l.sweeps, format_val(l.tradedVolume), curD)
+                if not showSRTxt
+                    if not na(l.statsLabel)
+                        l.statsLabel.delete()
+                        l.statsLabel := na
+                else if na(l.statsLabel)
+                    l.statsLabel := label.new(endExt, avgY, txt, xloc = xloc.bar_index, color = NONE_COLOR, textcolor = c, style = label.style_label_left, size = size.tiny, force_overlay = true)
+                else
+                    l.statsLabel.set_xy(endExt, avgY)
+                    l.statsLabel.set_text(txt)
+            else
+                if not na(l.extLineId)
+                    l.extLineId.delete()
+                    l.extLineId := na
+                if not na(l.extBoxId)
+                    l.extBoxId.delete()
+                    l.extBoxId := na
+                if not na(l.statsLabel)
+                    l.statsLabel.delete()
+                    l.statsLabel := na
+        else
+            if not na(l.lineId)
+                l.lineId.delete()
+                l.lineId := na
+            if not na(l.boxId)
+                l.boxId.delete()
+                l.boxId := na
+            if not na(l.extLineId)
+                l.extLineId.delete()
+                l.extLineId := na
+            if not na(l.extBoxId)
+                l.extBoxId.delete()
+                l.extBoxId := na
+            if not na(l.statsLabel)
+                l.statsLabel.delete()
+                l.statsLabel := na
+
+// Dashboard
+if dashboardInput and barstate.islast
+    var table t = table.new(parsedDashboardPosition, 4, 7, BACKGROUND, BORDERS, 1, BORDERS, 1, force_overlay = true)
+    t.merge_cells(0, 0, 3, 0)
+    cell(t, 0, 0, 'Support & Resistance Pro Statistics', DATA, text.align_center)
+    cell(t, 1, 1, 'Support', HEADERS, text.align_center)
+    cell(t, 2, 1, 'Resistance', HEADERS, text.align_center)
+    cell(t, 3, 1, 'Total', HEADERS, text.align_center)
+    
+    cell(t, 0, 2, 'Active / Total', HEADERS, text.align_left)
+    cell(t, 1, 2, str.format("{0} / {1}", activeSupCount, totalSupCount), DATA)
+    cell(t, 2, 2, str.format("{0} / {1}", activeResCount, totalResCount), DATA)
+    cell(t, 3, 2, str.format("{0} / {1}", activeTotal, totalSupCount + totalResCount), DATA)
+    
+    cell(t, 0, 3, 'Mitigated %', HEADERS, text.align_left)
+    cell(t, 1, 3, str.format("{0,number,#.#}%", supMitigated * 100 / math.max(1, totalSupCount)), DATA)
+    cell(t, 2, 3, str.format("{0,number,#.#}%", resMitigated * 100 / math.max(1, totalResCount)), DATA)
+    cell(t, 3, 3, str.format("{0,number,#.#}%", (supMitigated + resMitigated) * 100 / math.max(1, totalSupCount + totalResCount)), DATA)
+    
+    cell(t, 0, 4, 'Avg Duration', HEADERS, text.align_left)
+    cell(t, 1, 4, str.format("{0,number,#}b", supDuration / math.max(1, supMitigated)), DATA)
+    cell(t, 2, 4, str.format("{0,number,#}b", resDuration / math.max(1, resMitigated)), DATA)
+    cell(t, 3, 4, str.format("{0,number,#}b", (supDuration + resDuration) / math.max(1, supMitigated + resMitigated)), DATA)
+
+    cell(t, 0, 5, 'Avg Volume', HEADERS, text.align_left)
+    cell(t, 1, 5, format_val(supCumVolume / math.max(1, supMitigated)), DATA)
+    cell(t, 2, 5, format_val(resCumVolume / math.max(1, resMitigated)), DATA)
+    cell(t, 3, 5, format_val((supCumVolume + resCumVolume) / math.max(1, supMitigated + resMitigated)), DATA)
+    
+    cell(t, 0, 6, 'Total Sweeps', HEADERS, text.align_left)
+    cell(t, 1, 6, str.tostring(supSweepsCount), DATA)
+    cell(t, 2, 6, str.tostring(resSweepsCount), DATA)
+    cell(t, 3, 6, str.tostring(supSweepsCount + resSweepsCount), DATA)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// 이평선 눌림 통계
+// 50 · 거래량가중100 · 200 · 400선에 '위에서 내려와 처음 닿은' 경우를 모아서,
+// +3%/-3%, +5%/-5%, +10%/-5% 중 어느 쪽에 먼저 닿았는지를 선이 올라가는 중 / 내려가는 중으로 나눠 보여준다.
+// 위 표는 전체, 아래 표는 '그 시점에 화면에 보이던 깨지지 않은 지지 구간 안에서 닿은 경우'만.
+//---------------------------------------------------------------------------------------------------------------------{
+G6 = '이평선 눌림 통계'
+tolPct    = input.float(0.5, '선에 닿음으로 볼 범위 (%)', minval = 0, step = 0.1, group = G6)
+gap       = input.int(10, '처음 닿음: 직전 몇 봉 동안 안 닿았을 때', minval = 1, group = G6)
+aboveMin  = input.int(8, '위에서 내려옴: 직전 10봉 중 선 위에 있던 봉 수', minval = 0, maxval = 10, group = G6)
+slopeLen  = input.int(20, '선이 올라가는 중인지 비교할 봉 수', minval = 1, group = G6)
+reclaimWin = input.int(10, '되찾음: 닿거나 뚫린 뒤 몇 봉 안에', minval = 2, group = G6)
+showLines = input.bool(true, '이평선 그리기', group = G6)
+showMarks = input.bool(false, '처음 닿은 곳 표시 (▲)', group = G6)
+showRecl  = input.bool(false, '되찾은 곳 표시 (◆)', group = G6)
+showBrk   = input.bool(false, '돌파한 곳 표시 (↑)', group = G6)
+G8 = '표 모양'
+tblPos    = input.string('오른쪽 위', '지금 상태 표 위치', options = ['오른쪽 위', '오른쪽 가운데', '오른쪽 아래', '왼쪽 위', '왼쪽 아래'], group = G8)
+tblSize   = input.string('작게', '글씨 크기', options = ['아주 작게', '작게', '보통'], group = G8)
+showNow   = input.bool(true, '지금 상태 보기', group = G8)
+tSz  = tblSize == '아주 작게' ? size.tiny : tblSize == '작게' ? size.small : size.normal
+tSzT = tblSize == '보통' ? size.small : size.tiny
+BGC  = color.new(#1E1E1E, 0)
+recentN   = input.int(5, '지금 상태: 최근 몇 봉 안의 닿음까지 보여줄지', minval = 0, group = G6, tooltip = '0이면 지금 봉만')
+nearPct   = input.float(3.0, "지금 상태: 선 위 몇 % 이내면 '선 바로 위'", minval = 0.1, step = 0.5, group = G6)
+
+m50  = ta.sma(close, 50)
+bool hasVol = ta.cum(nz(volume)) > 0
+vw   = hasVol ? ta.vwma(close, 100) : ta.sma(close, 100)
+m200 = ta.sma(close, 200)
+m400 = ta.sma(close, 400)
+plot(showLines ? m50  : na, '50',            color.new(#4CAF50, 0), 2, force_overlay = true)
+plot(showLines ? vw   : na, '거래량가중 100', color.new(#B0B0B0, 0), 2, force_overlay = true)
+plot(showLines ? m200 : na, '200',           color.new(#E53935, 0), 2, force_overlay = true)
+plot(showLines ? m400 : na, '400',           color.new(#4FC3F7, 0), 2, force_overlay = true)
+
+// 직전 10봉 중 선 위 / 아래 마감 개수 (반복문 대신 미리 계산해서 가볍게)
+abv(float ma) =>
+    int(nz(math.sum(close > ma ? 1 : 0, 10)[1]))
+blw(float ma) =>
+    int(nz(math.sum(close < ma ? 1 : 0, 10)[1]))
+int ab0 = abv(m50)
+int ab1 = abv(vw)
+int ab2 = abv(m200)
+int ab3 = abv(m400)
+
+touchFirst(float ma, int ab) =>
+    var int last = -100000
+    bool tch = not na(ma) and low <= ma * (1 + tolPct / 100) and close >= ma
+    bool first = tch and bar_index - last > gap
+    if tch
+        last := bar_index
+    first and ab >= aboveMin
+
+bool t0 = touchFirst(m50, ab0)
+bool t1 = touchFirst(vw, ab1)
+bool t2 = touchFirst(m200, ab2)
+bool t3 = touchFirst(m400, ab3)
+reclaimed(float ma, bool firstT, int ab) =>
+    var int lastF = -100000
+    var bool broke = false
+    var bool done = true
+    bool ev = false
+    // 처음 닿음 없이 위에서 내려와 한 번에 선 아래로 마감한 봉도 되찾음의 시작으로 본다
+    bool breakDown = not na(ma) and not na(ma[1]) and close < ma and close[1] >= ma[1] and ab >= aboveMin
+    if firstT
+        lastF := bar_index
+        broke := false
+        done := false
+    else if breakDown and done
+        lastF := bar_index
+        broke := true
+        done := false
+    else if not done and not na(ma)
+        if bar_index - lastF > reclaimWin
+            done := true
+        else if close < ma
+            broke := true
+        else if broke
+            ev := true
+            done := true
+    ev
+
+bool rc0 = reclaimed(m50, t0, ab0)
+bool rc1 = reclaimed(vw, t1, ab1)
+bool rc2 = reclaimed(m200, t2, ab2)
+bool rc3 = reclaimed(m400, t3, ab3)
+
+// 돌파: 직전 10봉 중 aboveMin봉 이상 선 아래에서 마감했다가, 이번 봉이 선 위로 마감
+breakUp(float ma) =>
+    int bl = blw(ma)
+    not na(ma) and not na(ma[1]) and close > ma and close[1] <= ma[1] and bl >= aboveMin
+bool bk0 = breakUp(m50)
+bool bk1 = breakUp(vw)
+bool bk2 = breakUp(m200)
+bool bk3 = breakUp(m400)
+int nBk = (bk0 ? 1 : 0) + (bk1 ? 1 : 0) + (bk2 ? 1 : 0) + (bk3 ? 1 : 0)
+int bkKind = nBk >= 2 ? 3 : 2
+plotshape(showBrk and bk0, '50 돌파',            shape.arrowup, location.belowbar, #4CAF50, size = size.small, display = display.pane, force_overlay = true)
+plotshape(showBrk and bk1, '거래량가중100 돌파', shape.arrowup, location.belowbar, #B0B0B0, size = size.small, display = display.pane, force_overlay = true)
+plotshape(showBrk and bk2, '200 돌파',           shape.arrowup, location.belowbar, #E53935, size = size.small, display = display.pane, force_overlay = true)
+plotshape(showBrk and bk3, '400 돌파',           shape.arrowup, location.belowbar, #4FC3F7, size = size.small, display = display.pane, force_overlay = true)
+
+// 선별 최근 닿음 기록 (지금 상태용): 봉 번호, 종류(0 처음 닿음, 1 되찾음), 그때 지지 구간 안이었는지
+var int[] leB = array.new_int(4, -100000)
+var int[] leK = array.new_int(4, 0)
+var int[] leS = array.new_int(4, 0)
+var int[] leBp = array.new_int(4, -100000)
+var int[] leKp = array.new_int(4, 0)
+var int[] leSp = array.new_int(4, 0)
+bool[] tAll = array.from(t0, t1, t2, t3)
+bool[] rAll = array.from(rc0, rc1, rc2, rc3)
+bool[] bAll = array.from(bk0, bk1, bk2, bk3)
+for i = 0 to 3
+    // 이번 봉이 반영되기 전 = 직전 마감 봉까지의 기록
+    array.set(leBp, i, array.get(leB, i))
+    array.set(leKp, i, array.get(leK, i))
+    array.set(leSp, i, array.get(leS, i))
+for i = 0 to 3
+    if array.get(tAll, i) or array.get(rAll, i) or array.get(bAll, i)
+        array.set(leB, i, bar_index)
+        array.set(leK, i, array.get(tAll, i) ? 0 : array.get(rAll, i) ? 1 : bkKind)
+        array.set(leS, i, inSupNow ? 1 : 0)
+plotshape(showRecl and rc0, '50 되찾음',            shape.diamond, location.belowbar, #4CAF50, size = size.tiny, display = display.pane, force_overlay = true)
+plotshape(showRecl and rc1, '거래량가중100 되찾음', shape.diamond, location.belowbar, #B0B0B0, size = size.tiny, display = display.pane, force_overlay = true)
+plotshape(showRecl and rc2, '200 되찾음',           shape.diamond, location.belowbar, #E53935, size = size.tiny, display = display.pane, force_overlay = true)
+plotshape(showRecl and rc3, '400 되찾음',           shape.diamond, location.belowbar, #4FC3F7, size = size.tiny, display = display.pane, force_overlay = true)
+plotshape(showMarks and t0, '50 닿음',            shape.triangleup, location.belowbar, #4CAF50, size = size.tiny, display = display.pane, force_overlay = true)
+plotshape(showMarks and t1, '거래량가중100 닿음', shape.triangleup, location.belowbar, #B0B0B0, size = size.tiny, display = display.pane, force_overlay = true)
+plotshape(showMarks and t2, '200 닿음',           shape.triangleup, location.belowbar, #E53935, size = size.tiny, display = display.pane, force_overlay = true)
+plotshape(showMarks and t3, '400 닿음',           shape.triangleup, location.belowbar, #4FC3F7, size = size.tiny, display = display.pane, force_overlay = true)
+// ───────────────────────── 지금 상태 표 (이평선 위치 · 방향 · 최근 닿음) ─────────────────────────
+fmt(float v) => str.tostring(v, format.mintick)
+sl0 = (m50 / m50[slopeLen] - 1) * 100
+sl1 = (vw / vw[slopeLen] - 1) * 100
+sl2 = (m200 / m200[slopeLen] - 1) * 100
+sl3 = (m400 / m400[slopeLen] - 1) * 100
+lnName(int i) => i == 0 ? '50' : i == 1 ? (hasVol ? '거래량가중100' : '100 (거래량 없어 일반선)') : i == 2 ? '200' : '400'
+kindTxt(int k) => k == 0 ? '처음 닿음' : k == 1 ? '되찾음' : k == 2 ? '돌파' : '동시 돌파'
+tPos = tblPos == '오른쪽 위' ? position.top_right : tblPos == '오른쪽 가운데' ? position.middle_right : tblPos == '오른쪽 아래' ? position.bottom_right : tblPos == '왼쪽 위' ? position.top_left : position.bottom_left
+var table tb = table.new(tPos, 4, 6, bgcolor = BGC, border_color = color.new(#617B55, 0), border_width = 1, frame_color = color.new(#617B55, 0), frame_width = 1, force_overlay = true)
+cellT(int c, int r, string t, color bg, color fg = color.white, string tip = '') =>
+    table.cell(tb, c, r, t, text_color = fg, text_size = tSz, text_halign = c == 0 ? text.align_left : text.align_center, bgcolor = bg, tooltip = tip)
+
+if barstate.islast and showNow
+    hdBg = color.new(#617B55, 10)
+    supTxt = inSupNow ? '지지 안 ' + fmt(supBtmNow) + '~' + fmt(supTopNow) : na(nearTop) ? '지지 밖' : '지지 밖 · 아래 지지 ' + str.tostring((nearTop / close - 1) * 100, '#.#') + '%'
+    cellT(0, 0, '지금 상태 · ' + str.format_time(time, 'MM-dd HH:mm', 'Asia/Seoul') + ' · ' + fmt(close) + ' · ' + supTxt, hdBg)
+    table.merge_cells(tb, 0, 0, 3, 0)
+    cellT(0, 1, '선', hdBg)
+    cellT(1, 1, '위치', hdBg)
+    cellT(2, 1, '방향 (' + str.tostring(slopeLen) + '봉)', hdBg)
+    cellT(3, 1, '최근 닿음', hdBg)
+    mas = array.from(m50, vw, m200, m400)
+    sls = array.from(sl0, sl1, sl2, sl3)
+    for i = 0 to 3
+        ma = mas.get(i)
+        sl = sls.get(i)
+        string posT = na(ma) ? '봉 부족' : str.tostring(math.abs(close / ma - 1) * 100, '#.#') + '% ' + (close >= ma ? '위' : '아래')
+        bool near = not na(ma) and close >= ma and (close / ma - 1) * 100 <= nearPct
+        string dirT = na(sl) ? '-' : (sl >= 0 ? '↑ +' : '↓ ') + str.tostring(sl, '#.#') + '%'
+        int ago = bar_index - leB.get(i)
+        string recT = ago <= recentN ? kindTxt(leK.get(i)) + ' · ' + (ago == 0 ? '지금' : str.tostring(ago) + '봉 전') + (leS.get(i) == 1 ? ' · 지지 안' : '') : '-'
+        rowBg = color.new(#111111, 10)
+        cellT(0, i + 2, lnName(i), rowBg)
+        cellT(1, i + 2, posT, near ? color.new(#9E7B1A, 20) : rowBg, tip = near ? '선 바로 위 (' + str.tostring(nearPct) + '% 안)' : '')
+        cellT(2, i + 2, dirT, rowBg, sl >= 0 ? color.new(#81C784, 0) : color.new(#E57373, 0))
+        cellT(3, i + 2, recT, ago <= recentN ? color.new(#2e7d32, 40) : rowBg)
+
+// ───────────────────────── 아래 칸: RSI · 거래량 ─────────────────────────
+G9 = 'RSI · 거래량 (아래 칸)'
+rsiLen   = input.int(14, 'RSI 길이', minval = 2, group = G9)
+rsiMaLen = input.int(14, 'RSI 평균선 길이', minval = 1, group = G9)
+volLine  = input.float(0, '거래량 분홍 기준선 (0이면 자동: 화면에 보이는 가장 긴 막대 기준)', minval = 0, group = G9)
+volPct   = input.float(83.3, '자동 기준선 높이 (가장 긴 막대의 몇 %)', minval = 10, maxval = 100, group = G9)
+volH     = input.int(25, '거래량 막대 높이 (아래 칸 0~100 중 몇까지)', minval = 5, maxval = 60, group = G9)
+showVol  = input.bool(true, '거래량 보기', group = G9)
+showRsi  = input.bool(true, 'RSI 보기', group = G9)
+
+rsiV  = ta.rsi(close, rsiLen)
+rsiMa = ta.sma(rsiV, rsiMaLen)
+tfSec = timeframe.in_seconds()
+barsDay = tfSec >= 86400 ? 20 : math.max(1, math.min(2000, int(86400 / tfSec)))
+autoThr = 0.9 * ta.highest(volume, barsDay)
+// 거래량 막대는 화면에 보이는 범위만, 그 안의 가장 긴 막대 = 높이 volH 로 맞춰서 직접 그림
+// (예전처럼 봉마다 기준이 바뀌지 않아서 분홍선과 막대 높이가 항상 맞음)
+max_bars_back(volume, 3500)
+max_bars_back(time, 3500)
+max_bars_back(close, 3500)
+max_bars_back(open, 3500)
+var polyline[] vPolys = array.new<polyline>()
+var line vLine = na
+if barstate.islast and hasVol and showVol
+    for pl in vPolys
+        pl.delete()
+    vPolys.clear()
+    line.delete(vLine)
+    float vMax = 0.0
+    int iFrom = 0
+    int iTo = -1
+    for i = 0 to 3299
+        if i > bar_index
+            break
+        if time[i] < chart.left_visible_bar_time
+            break
+        if time[i] > chart.right_visible_bar_time
+            iFrom := i + 1
+        else
+            iTo := i
+            vMax := math.max(vMax, nz(volume[i]))
+    if vMax > 0 and iFrom <= iTo
+        lvl = volLine > 0 ? volLine : vMax * volPct / 100
+        up = array.new<chart.point>()
+        dn = array.new<chart.point>()
+        pk = array.new<chart.point>()
+        for i = iFrom to iTo
+            v = nz(volume[i])
+            h = v / vMax * volH
+            x = bar_index - i
+            arr = v >= lvl ? pk : close[i] >= open[i] ? up : dn
+            arr.push(chart.point.from_index(x, 0))
+            arr.push(chart.point.from_index(x, h))
+            arr.push(chart.point.from_index(x, 0))
+        if up.size() > 0
+            vPolys.push(polyline.new(up, line_color = color.new(#26a69a, 45), line_width = 2))
+        if dn.size() > 0
+            vPolys.push(polyline.new(dn, line_color = color.new(#ef5350, 45), line_width = 2))
+        if pk.size() > 0
+            vPolys.push(polyline.new(pk, line_color = color.new(#F48FB1, 0), line_width = 3))
+        yL = math.min(lvl / vMax * volH, volH * 1.2)
+        vLine := line.new(bar_index - iTo, yL, bar_index + 3, yL, color = color.new(#F48FB1, 0), width = 1, style = line.style_dashed)
+h70 = hline(70, '70', color.new(#787B86, 0), hline.style_dashed, display = showRsi ? display.all : display.none)
+h50 = hline(50, '50', color.new(#787B86, 50), hline.style_dotted, display = showRsi ? display.all : display.none)
+h30 = hline(30, '30', color.new(#787B86, 0), hline.style_dashed, display = showRsi ? display.all : display.none)
+fill(h70, h30, color.new(#7E57C2, 92), display = showRsi ? display.all : display.none)
+plot(showRsi ? rsiV : na, 'RSI', color.new(#7E57C2, 0), 1)
+plot(showRsi ? rsiMa : na, 'RSI 평균', color.new(#FFEB3B, 0), 1)

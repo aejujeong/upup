@@ -1,0 +1,694 @@
+//@version=6
+indicator("검증 근거 v2", overlay = true, max_labels_count = 300, max_lines_count = 200)
+
+// ───────────────────────── 설정 ─────────────────────────
+mktIn   = input.string("자동", "시장", options = ["자동", "코인", "미국", "한국"])
+btcSym  = input.symbol("BINANCE:BTCUSDT.P", "15분 신호 기준 BTC")
+vol1    = input.float(2500,  "1분 투매 거래량 기준 (BTC)", group = "투매 반등 거래량 (종목마다 바꿔 쓰기)")
+vol3    = input.float(6000,  "3분 투매 거래량 기준 (BTC)", group = "투매 반등 거래량 (종목마다 바꿔 쓰기)")
+vol5    = input.float(10000, "5분 투매 거래량 기준 (BTC)", group = "투매 반등 거래량 (종목마다 바꿔 쓰기)")
+big30   = input.float(3.0, "30분 돌파 봉 크기 (평소 봉의 몇 배)", minval = 1.3, step = 0.5)
+kospiS  = input.symbol("KRX:KOSPI", "코스피 지수", group = "한국")
+kosdaqS = input.symbol("KRX:KOSDAQ", "코스닥 지수", group = "한국")
+showOld = input.bool(true, "지난 신호도 차트에 표시")
+showMTF = input.bool(true, "여러 봉 표 보기", group = "여러 봉 표")
+showMin = input.bool(true, "여러 봉 표에 3분·5분 줄 넣기 (느리면 끄기)", group = "여러 봉 표")
+showX   = input.bool(true, "표에 50·100 동시 돌파 줄 넣기", group = "50·100 동시 돌파")
+
+// ───────────────────────── 기본 값 ─────────────────────────
+mkt = mktIn != "자동" ? mktIn : syminfo.type == "crypto" ? "코인" : (syminfo.country == "KR" or syminfo.prefix == "KRX") ? "한국" : "미국"
+tf  = timeframe.period
+isBTC = str.contains(syminfo.ticker, "BTC")
+// 여러 봉 계산은 어느 차트에서 보든 같은 데이터로: 장전·장후 포함으로 고정 (장 밖 신호도 놓치지 않게)
+regSym = ticker.modify(syminfo.tickerid, session.extended)
+
+rsi   = ta.rsi(close, 14)
+hasVolC = ta.cum(nz(volume)) > 0
+s50   = ta.sma(close, 50)
+vw100 = ta.vwma(close, 100)
+s100  = ta.sma(close, 100)
+s200  = ta.sma(close, 200)
+s400  = ta.sma(close, 400)
+rng   = high - low
+rAvg48 = ta.sma(rng, 48)[1]
+hh48  = ta.highest(high, 48)[1]
+vAvg20 = ta.sma(volume, 20)[1]
+vAvg48 = ta.sma(volume, 48)[1]
+body  = math.abs(close - open)
+bAvg20 = ta.sma(body, 20)[1]
+
+// 위에 있는 이평선 (50 · 거래량가중100 · 200 · 400) 중 rank 번째 (0 = 가장 가까운 선)
+f_above(float a, float b, float c, float d, float px, float minPct, int rank) =>
+    arr = array.new_float()
+    for v in array.from(a, b, c, d)
+        if not na(v) and v > px * (1 + minPct / 100)
+            arr.push(v)
+    arr.sort()
+    arr.size() > rank ? arr.get(rank) : arr.size() > 0 ? arr.get(arr.size() - 1) : na
+
+ok(bool c) => c ? "✓" : "✗"
+pct(float v) => (v >= 0 ? "+" : "") + str.tostring(v, "#.##") + "%"
+
+// 장세: 4시간 50선이 20봉 전보다 ±1%
+slope4h = request.security(regSym, "240", ((ta.sma(close, 50) / ta.sma(close, 50)[20] - 1) * 100)[1], lookahead = barmerge.lookahead_on)
+slopeD  = request.security(regSym, "D", ((ta.sma(close, 50) / ta.sma(close, 50)[20] - 1) * 100)[1], lookahead = barmerge.lookahead_on)
+dirW(float v, float th) => na(v) ? "-" : v > th ? "상승" : v < -th ? "하락" : "횡보"
+regime  = not barstate.islast ? "" : "단기 " + dirW(slope4h, 1) + " (4시간 50선 " + pct(nz(slope4h)) + ") · 큰 흐름 " + dirW(slopeD, 2) + " (일봉 50선 " + pct(nz(slopeD)) + ")"
+
+// 확정 고점(저항)·저점(지지) — 좌우 7봉, 종가로 안 깨진 것만
+var resLv = array.new_float()
+var supLv = array.new_float()
+ph = ta.pivothigh(high, 7, 7)
+pl = ta.pivotlow(low, 7, 7)
+if not na(ph)
+    resLv.push(ph)
+if not na(pl)
+    supLv.push(pl)
+if resLv.size() > 0
+    for i = resLv.size() - 1 to 0
+        if close > resLv.get(i)
+            resLv.remove(i)
+if supLv.size() > 0
+    for i = supLv.size() - 1 to 0
+        if close < supLv.get(i)
+            supLv.remove(i)
+while resLv.size() > 60
+    resLv.shift()
+while supLv.size() > 60
+    supLv.shift()
+f_resAbove(float px) =>
+    float r = na
+    for v in resLv
+        if v > px and (na(r) or v < r)
+            r := v
+    r
+
+// ───────────────────────── 결과 변수 ─────────────────────────
+string name  = "근거 없음"
+string conds = ""
+string ev    = ""
+string warn  = ""
+bool   buy   = false
+bool   wait_ = false
+float  sl    = na
+float  tp    = na
+string tpTxt = ""
+
+// ───────────────────────── 1·3·5분 투매 반등 (코인) ─────────────────────────
+volTh   = tf == "1" ? vol1 : tf == "3" ? vol3 : vol5
+dumpRaw = close < open and rsi <= 35 and volume >= volTh
+tgtDump = f_above(s50, vw100, s200, s400, close, 0.1, 0) * 0.999
+distDump = na(tgtDump) ? 2.0 : (tgtDump / close - 1) * 100
+// 지지 깨짐: 이 봉이 지지선을 종가로 뚫음
+supBroken = false
+for v in supLv
+    supBroken := supBroken or (open > v and close < v)
+
+if mkt == "코인" and (tf == "1" or tf == "3" or tf == "5")
+    slP   = tf == "1" ? 1.0 : tf == "3" ? 1.5 : 2.0
+    minD  = tf == "1" ? 0.0 : tf == "3" ? 1.5 : 3.0
+    name  := tf + "분 투매 반등" + (tf == "1" ? " (약함 · 검증 6개월)" : "")
+    conds := "음봉 " + ok(close < open) + " · RSI " + str.tostring(rsi, "#") + " (35↓) " + ok(rsi <= 35) + " · 거래량 " + str.tostring(volume, "#,###") + " (" + str.tostring(volTh, "#,###") + "↑) " + ok(volume >= volTh) + "\n목표 선까지 " + pct(distDump) + " (" + str.tostring(minD, "#.#") + "%↑ 필요) " + ok(distDump >= minD)
+    buy   := dumpRaw and distDump >= minD
+    wait_ := dumpRaw and distDump < minD
+    sl    := close * (1 - slP / 100)
+    tp    := na(tgtDump) ? close * 1.02 : tgtDump
+    tpTxt := "위 가장 가까운 이평선 0.1% 앞 · 최대 2일"
+    if tf == "3"
+        ev := distDump >= 2.5 ? "+1.04% (목표 2.5%↑ · 33번 · 61%)" : distDump >= 1.5 ? "+0.05% (목표 1.5~2.5%)" : "-0.12~-0.32% (목표 너무 가까움)"
+    else if tf == "5"
+        ev := distDump >= 3 ? "+1.67% (목표 3%↑ · 16번 · 63%)" : distDump >= 1 ? "-0.5% (목표 1~3%)" : "+0.05% (목표 1% 안)"
+    else
+        ev := "+0.01% (수수료 0.1% 뺌 · 6개월)"
+    warn := (supBroken ? "투매가 지지를 깨고 마감 · " : "") + (isBTC ? "" : "거래량 기준은 BTC용 · 이 종목에 맞게 바꾸세요")
+
+// ───────────────────────── 15분 저점 반등 (BTC 신호) ─────────────────────────
+f15() =>
+    var float lowRef = na
+    var int   armBar = na
+    var bool  lower  = false
+    bd   = math.abs(close - open)
+    bAv  = ta.sma(bd, 20)[1]
+    rs   = ta.rsi(close, 14)
+    bigC = close < open and bd >= 4 * bAv and rs <= 35
+    bool b = false
+    if bigC
+        lowRef := low
+        armBar := bar_index
+        lower  := false
+    else if not na(armBar) and bar_index - armBar <= 12
+        if low < lowRef
+            lowRef := low
+            lower  := true
+        else if lower and close > open
+            b      := true
+            armBar := na
+    else
+        armBar := na
+    b
+btc15  = request.security(btcSym, "15", f15())
+btc30d = request.security(btcSym, "D", (close[1] / close[31] - 1) * 100, lookahead = barmerge.lookahead_on)
+btc400dn = request.security(btcSym, "60", (ta.sma(close, 400) < ta.sma(close, 400)[10])[1], lookahead = barmerge.lookahead_on)
+[h50, h100, h200, h400] = request.security(regSym, "60", [s50[1], vw100[1], s200[1], s400[1]], lookahead = barmerge.lookahead_on)
+
+if mkt == "코인" and tf == "15"
+    rk    = isBTC ? 0 : 1
+    tgt15 = f_above(h50, h100, h200, h400, close, 0.3, rk)
+    calm  = btc30d < 0 and btc400dn
+    name  := "15분 저점 반등 (BTC 장대 음봉 → 더 낮은 저점 → 양봉)"
+    conds := "BTC 신호 " + ok(btc15) + " · BTC 30일 " + pct(nz(btc30d)) + " (하락 필요) " + ok(btc30d < 0) + " · BTC 1시간 400선 하락 중 " + ok(btc400dn)
+    buy   := btc15 and calm
+    sl    := close * 0.98
+    tp    := na(tgt15) ? close * 1.03 : tgt15 * 0.999
+    tpTxt := "1시간 이평선 " + (isBTC ? "가장 가까운 선" : "두 번째 선") + " · 최대 2일"
+    ev    := isBTC ? "+0.20% (98번 · 65% · 2년)" : "+0.69% (BTC 신호로 ETH · 98번 · 2년)"
+    warn  := (btc15 and not calm) ? "큰 흐름이 아직 올라가는 중 · 투매 반등 매수 금지 (이때 -0.26%)" : ""
+
+// ───────────────────────── 30분 추세 돌파 (코인) ─────────────────────────
+rsi4h = request.security(regSym, "240", ta.rsi(close, 14)[1], lookahead = barmerge.lookahead_on)
+if mkt == "코인" and tf == "30"
+    c1 = close > s200 and s200 > s200[20]
+    c2 = close > hh48
+    c3 = rng >= big30 * rAvg48
+    c4 = rsi >= 75
+    c5 = rsi4h >= 55 and rsi4h <= 75
+    name  := "30분 추세 돌파"
+    conds := "200선 위·상승 " + ok(c1) + " · 48봉 고점 돌파 " + ok(c2) + " · 봉 크기 " + str.tostring(rng / rAvg48, "#.#") + "배 (" + str.tostring(big30, "#.#") + "↑) " + ok(c3) + "\nRSI " + str.tostring(rsi, "#") + " (75↑) " + ok(c4) + " · 4시간 RSI " + str.tostring(rsi4h, "#") + " (55~75) " + ok(c5)
+    buy   := c1 and c2 and c3 and c4 and c5
+    sl    := close * 0.985
+    tp    := close * 1.03
+    tpTxt := "+3% · 최대 10일"
+    ev    := isBTC ? "+0.63% (6년 · 승률 50% · 봉 3배↑)" : "+0.33% (ETH 6년 · 봉 3배↑) / 4배↑ +0.61%"
+    warn  := slope4h > 1 ? "4시간이 이미 상승 추세 · 돌파 약함" : ""
+
+// ───────────────────────── 1시간 변동성 돌파일 돌파 (코인) ─────────────────────────
+var float dOpen = na
+var float dHigh = na
+var float pdH = na
+var float pdL = na
+var float curL = na
+if timeframe.change("D")
+    pdH   := dHigh
+    pdL   := curL
+    dOpen := open
+    dHigh := high
+    curL  := low
+else
+    dHigh := math.max(nz(dHigh, high), high)
+    curL  := math.min(nz(curL, low), low)
+vbLine = dOpen + 0.5 * (pdH - pdL)
+if mkt == "코인" and tf == "60"
+    c1 = dHigh >= vbLine
+    c2 = close > hh48
+    c3 = rsi >= 75
+    name  := "1시간 변동성 돌파일 돌파"
+    conds := "오늘 변동성 돌파(시가 + 어제 폭×0.5 = " + str.tostring(vbLine, format.mintick) + ") " + ok(c1) + " · 48봉 고점 돌파 " + ok(c2) + " · RSI " + str.tostring(rsi, "#") + " (75↑) " + ok(c3)
+    buy   := c1 and c2 and c3
+    sl    := close * 0.985
+    tp    := close * 1.03
+    tpTxt := "+3% · 최대 10일"
+    ev    := "+0.16~0.30% (BTC·ETH 6년 · 승률 43%)"
+    warn  := slope4h > 1 ? "4시간이 이미 상승 추세 · 돌파 약함" : ""
+
+// ───────────────────────── 4시간 추세 돌파 (코인 · 미국) ─────────────────────────
+if (mkt == "코인" or mkt == "미국") and tf == "240"
+    useVol = mkt == "코인"
+    c1 = close > s50 and s50 > s50[20]
+    c2 = close > hh48
+    c3 = rng >= 1.3 * rAvg48
+    c4 = not useVol or volume >= 1.5 * vAvg48
+    c5 = rsi >= 70
+    slP = mkt == "코인" ? 5.0 : 3.0
+    name  := "4시간 추세 돌파" + (mkt == "미국" ? " (검증 기간 짧음)" : "")
+    conds := "50선 위·상승 " + ok(c1) + " · 48봉 고점 돌파 " + ok(c2) + " · 봉 1.3배 " + ok(c3) + (useVol ? " · 거래량 1.5배 " + ok(c4) : "") + " · RSI " + str.tostring(rsi, "#") + " (70↑) " + ok(c5)
+    buy   := c1 and c2 and c3 and c4 and c5
+    sl    := close * (1 - slP / 100)
+    tp    := close * (1 + 2 * slP / 100)
+    tpTxt := "+" + str.tostring(2 * slP, "#") + "% · 최대 30일"
+    ev    := mkt == "코인" ? (isBTC ? "+1.65% (6년 · 승률 44%)" : "+1.48% (ETH 6년 · 승률 46%)") : "+1.59% (SOXL 3년 · 승률 52%)"
+    rAbove = f_resAbove(close)
+    warn  := (not na(rAbove) and (rAbove / close - 1) * 100 < 5) ? "위 저항까지 " + pct((rAbove / close - 1) * 100) + " · 5% 안이면 약함" : ""
+
+// ───────────────────────── 미국 30분·1시간 추세 돌파 (4시간과 같은 조건 · 검증 짧음) ─────────────────────────
+if mkt == "미국" and (tf == "30" or tf == "60")
+    c1 = close > s50 and s50 > s50[20]
+    c2 = close > hh48
+    c3 = rng >= 1.3 * rAvg48
+    c5 = rsi >= 70
+    name  := (tf == "30" ? "30분" : "1시간") + " 추세 돌파 (검증 기간 짧음)"
+    conds := "50선 위·상승 " + ok(c1) + " · 48봉 고점 돌파 " + ok(c2) + " · 봉 1.3배 " + ok(c3) + " · RSI " + str.tostring(rsi, "#") + " (70↑) " + ok(c5)
+    buy   := c1 and c2 and c3 and c5
+    sl    := close * 0.97
+    tp    := close * 1.06
+    tpTxt := "+6% · 최대 30일"
+    ev    := tf == "30" ? "+0.49% (SOXL 94번 · 앞 +0.41 / 뒤 +0.59)" : "+0.76% (SOXL 118번 · 앞 +0.88 / 뒤 +0.66)"
+    warn  := "검증 기간이 짧아요 (약 1~2년)"
+
+// ───────────────────────── 일봉: 터틀 (코인 · 미국) ─────────────────────────
+atr20 = ta.rma(ta.tr(true), 20)
+hh20 = ta.highest(high, 20)[1]
+ll10 = ta.lowest(low, 10)[1]
+var bool  inT = false
+var float tEntry = na
+var float tStop  = na
+turtleIn = false
+if timeframe.isdaily and (mkt == "코인" or mkt == "미국")
+    if inT
+        if low <= tStop or low < ll10
+            inT := false
+    else
+        volOk = mkt == "미국" or volume >= 1.5 * vAvg20
+        if high > hh20 and volOk
+            inT      := true
+            turtleIn := true
+            tEntry   := math.max(open, hh20)
+            tStop    := tEntry - 2 * atr20[1]
+
+if timeframe.isdaily and (mkt == "코인" or mkt == "미국")
+    vbT = open + 0.5 * (high[1] - low[1])
+    name  := "일봉 터틀 (20일 고점 돌파 · 10일 저점 이탈 청산)"
+    conds := "20일 고점 " + str.tostring(hh20, format.mintick) + " 돌파 " + ok(high > hh20) + (mkt == "코인" ? " · 거래량 1.5배 " + ok(volume >= 1.5 * vAvg20) : "") + "\n" + (inT ? "보유 중 · 진입 " + str.tostring(tEntry, format.mintick) + " · 손절 " + str.tostring(math.max(tStop, ll10), format.mintick) : "대기") + (mkt == "미국" ? "\n변동성 돌파 매수선 (오늘 시가 + 어제 폭×0.5): " + str.tostring(vbT, format.mintick) + " → 닿으면 매수 · 다음 날 시가 매도" : "")
+    buy   := turtleIn
+    sl    := tStop
+    tp    := na
+    tpTxt := "정해진 익절 없음 · 10일 저점 " + str.tostring(ll10, format.mintick) + " 깨면 매도"
+    ev    := mkt == "코인" ? "+5.0~5.9% (BTC·ETH 6년 · 승률 44~46%)" : "터틀 SOXL +5.7% · TECL +3.7% · TQQQ +2.7% / 변동성 돌파 SOXL +0.72% (16년)"
+
+// ───────────────────────── 일봉: 한국 100선 눌림 ─────────────────────────
+kospi20  = request.security(kospiS, "D", (close / close[20] - 1) * 100)
+kosdaq20 = request.security(kosdaqS, "D", (close / close[20] - 1) * 100)
+touch100 = close >= s100 and close <= s100 * 1.02
+above10  = math.sum(close > s100 ? 1 : 0, 10)[1]
+prevTouch = math.sum(touch100 ? 1 : 0, 10)[1]
+tv20 = ta.sma(close * volume, 20)[1]
+supNear100 = false
+for v in supLv
+    supNear100 := supNear100 or math.abs(v / s100 - 1) * 100 <= 3
+var int krBuyBar = na
+if mkt == "한국" and timeframe.isdaily
+    c1 = touch100 and above10 >= 8 and prevTouch == 0
+    c2 = volume >= 0.8 * vAvg20
+    c3 = nz(kospi20) < 8 and nz(kosdaq20) < 8
+    c4 = tv20 >= 3e9
+    name  := "100일선 눌림" + (supNear100 ? " ★ (지지선과 겹침)" : "")
+    conds := "100일선 위 0~2% " + ok(touch100) + " · 직전 10일 중 " + str.tostring(above10, "#") + "일 위 (8↑) " + ok(above10 >= 8) + " · 첫 닿음 " + ok(prevTouch == 0) + "\n거래량 " + (vAvg20 > 0 ? str.tostring(volume / vAvg20, "#.#") + "배" : "없음") + " (0.8↑) " + ok(c2) + " · 코스피 20일 " + pct(nz(kospi20)) + " · 코스닥 " + pct(nz(kosdaq20)) + " (8% 미만) " + ok(c3) + " · 거래대금 30억↑ " + ok(c4)
+    buy   := c1 and c2 and c3 and c4
+    if buy
+        krBuyBar := bar_index
+    sl    := na
+    tp    := na
+    tpTxt := "10일 뒤 종가 매도" + (not na(krBuyBar) and bar_index - krBuyBar <= 10 ? " (" + str.tostring(10 - (bar_index - krBuyBar)) + "일 남음)" : "")
+    ev    := supNear100 ? "+1.43% (지지 겹침 · 4년 · 매년 아무 날보다 나음)" : "+1.1% (4년 평균) · 최근 2년 +2.7% · 2023~24년은 본전~-0.9%"
+    warn  := (touch100 and volume < 0.5 * vAvg20) ? "거래가 말라서 닿음 · 약함" : (not c3 ? "시장 과열 · 매수 쉬기" : "")
+
+if mkt == "한국" and not timeframe.isdaily
+    name := "한국 종목은 일봉 근거만 있어요 (100일선 눌림)"
+if mkt == "미국" and not (timeframe.isdaily or tf == "240" or tf == "30" or tf == "60")
+    name := "미국 종목은 30분·1시간·4시간·일봉 근거만 있어요"
+if mkt == "코인" and tf != "1" and tf != "3" and tf != "5" and tf != "15" and tf != "30" and tf != "60" and tf != "240" and not timeframe.isdaily
+    name := "이 봉에는 검증된 근거가 없어요"
+
+// ───────────────────────── 차트 표시 ─────────────────────────
+plotshape(buy and (showOld or barstate.islast), "매수 신호", shape.triangleup, location.belowbar, color.new(#2e7d32, 0), size = size.small)
+plotshape(wait_ and (showOld or barstate.islast), "조건은 맞지만 목표가 가까워 대기", shape.circle, location.belowbar, color.new(#9e9e9e, 0), size = size.tiny)
+if buy and not na(sl)
+    line.new(bar_index, sl, bar_index + 20, sl, color = color.new(#c62828, 0), style = line.style_dashed)
+if buy and not na(tp)
+    line.new(bar_index, tp, bar_index + 20, tp, color = color.new(#2e7d32, 0), style = line.style_dashed)
+
+alertcondition(buy, "검증 근거 매수", "검증 근거 매수 신호: {{ticker}} {{interval}} 종가 {{close}}")
+
+// ───────────────────────── 여러 봉 표 ─────────────────────────
+// 상태: 2 매수 · 1 근접(조건 하나 모자람) · 0 대기 · 3 보유 중
+f_dumpTF(float volTh, float minD) =>
+    r    = ta.rsi(close, 14)
+    a50  = ta.sma(close, 50)
+    avw  = ta.vwma(close, 100)
+    a200 = ta.sma(close, 200)
+    a400 = ta.sma(close, 400)
+    tg   = f_above(a50, avw, a200, a400, close, 0.1, 0)
+    dist = na(tg) ? 2.0 : (tg * 0.999 / close - 1) * 100
+    c1 = close < open
+    c2 = r <= 35
+    c3 = volume >= volTh
+    c4 = dist >= minD
+    n  = (c1 ? 1 : 0) + (c2 ? 1 : 0) + (c3 ? 1 : 0) + (c4 ? 1 : 0)
+    var int lastT = na
+    if n == 4
+        lastT := time
+    [n == 4 ? 2 : n == 3 ? 1 : 0, lastT, barstate.islast ? ("음봉 " + ok(c1) + " · RSI " + str.tostring(r, "#") + " " + ok(c2) + " · 거래량 " + str.tostring(volume, "#,###") + "/" + str.tostring(volTh, "#,###") + " " + ok(c3) + " · 목표까지 " + pct(dist) + " " + ok(c4)) : ""]
+
+f_15TF() =>
+    var float lowRef = na
+    var int   armBar = na
+    var bool  lower  = false
+    var int   lastT  = na
+    bd  = math.abs(close - open)
+    bAv = ta.sma(bd, 20)[1]
+    rs  = ta.rsi(close, 14)
+    d30 = request.security(regSym, "D", (close[1] / close[31] - 1) * 100, lookahead = barmerge.lookahead_on)
+    dn4 = request.security(regSym, "60", (ta.sma(close, 400) < ta.sma(close, 400)[10])[1], lookahead = barmerge.lookahead_on)
+    calm = d30 < 0 and dn4
+    bigC = close < open and bd >= 4 * bAv and rs <= 35
+    bool sig = false
+    if bigC
+        lowRef := low
+        armBar := bar_index
+        lower  := false
+    else if not na(armBar) and bar_index - armBar <= 12
+        if low < lowRef
+            lowRef := low
+            lower  := true
+        else if lower and close > open
+            sig    := true
+            armBar := na
+    else
+        armBar := na
+    armed = not na(armBar) and lower
+    if sig and calm
+        lastT := time
+    st = sig and calm ? 2 : (armed and calm) ? 1 : 0
+    why = sig and not calm ? "신호가 떴지만 큰 흐름이 올라가는 중이라 보류" : armed ? "장대 음봉 뒤 더 낮은 저점 · 양봉 기다리는 중" + (calm ? "" : " (큰 흐름 상승 중이라 떠도 보류)") : "BTC 장대 음봉 기다리는 중"
+    [st, lastT, barstate.islast ? (why + " · BTC 30일 " + pct(nz(d30)) + " · 1시간 400선 " + (dn4 ? "하락" : "상승")) : ""]
+
+f_30TF(float k) =>
+    a200 = ta.sma(close, 200)
+    r    = ta.rsi(close, 14)
+    rg   = high - low
+    ra   = ta.sma(rg, 48)[1]
+    hh   = ta.highest(high, 48)[1]
+    r4   = request.security(regSym, "240", ta.rsi(close, 14)[1], lookahead = barmerge.lookahead_on)
+    c1 = close > a200 and a200 > a200[20]
+    c2 = close > hh
+    c3 = rg >= k * ra
+    c4 = r >= 75
+    c5 = r4 >= 55 and r4 <= 75
+    n  = (c1 ? 1 : 0) + (c2 ? 1 : 0) + (c3 ? 1 : 0) + (c4 ? 1 : 0) + (c5 ? 1 : 0)
+    var int lastT = na
+    if n == 5
+        lastT := time
+    [n == 5 ? 2 : n == 4 ? 1 : 0, lastT, barstate.islast ? ("200선 위·상승 " + ok(c1) + " · 48봉 고점 돌파 " + ok(c2) + " · 봉 " + str.tostring(rg / ra, "#.#") + "배 " + ok(c3) + " · RSI " + str.tostring(r, "#") + " " + ok(c4) + " · 4시간 RSI " + str.tostring(r4, "#") + " " + ok(c5)) : ""]
+
+f_60TF() =>
+    var float dO = na
+    var float dH = na
+    var float pH = na
+    var float pL = na
+    var float cL = na
+    if timeframe.change("D")
+        pH := dH
+        pL := cL
+        dO := open
+        dH := high
+        cL := low
+    else
+        dH := math.max(nz(dH, high), high)
+        cL := math.min(nz(cL, low), low)
+    r  = ta.rsi(close, 14)
+    hh = ta.highest(high, 48)[1]
+    c1 = dH >= dO + 0.5 * (pH - pL)
+    c2 = close > hh
+    c3 = r >= 75
+    n  = (c1 ? 1 : 0) + (c2 ? 1 : 0) + (c3 ? 1 : 0)
+    var int lastT = na
+    if n == 3
+        lastT := time
+    [n == 3 ? 2 : n == 2 ? 1 : 0, lastT, barstate.islast ? ("오늘 변동성 돌파 " + ok(c1) + " · 48봉 고점 돌파 " + ok(c2) + " · RSI " + str.tostring(r, "#") + " " + ok(c3)) : ""]
+
+f_240TF(bool useVol) =>
+    a50 = ta.sma(close, 50)
+    r   = ta.rsi(close, 14)
+    rg  = high - low
+    ra  = ta.sma(rg, 48)[1]
+    va  = ta.sma(volume, 48)[1]
+    hh  = ta.highest(high, 48)[1]
+    c1 = close > a50 and a50 > a50[20]
+    c2 = close > hh
+    c3 = rg >= 1.3 * ra
+    c4 = not useVol or volume >= 1.5 * va
+    c5 = r >= 70
+    n  = (c1 ? 1 : 0) + (c2 ? 1 : 0) + (c3 ? 1 : 0) + (c4 ? 1 : 0) + (c5 ? 1 : 0)
+    var int lastT = na
+    if n == 5
+        lastT := time
+    [n == 5 ? 2 : n == 4 ? 1 : 0, lastT, barstate.islast ? ("50선 위·상승 " + ok(c1) + " · 48봉 고점 돌파 " + ok(c2) + " · 봉 1.3배 " + ok(c3) + (useVol ? " · 거래량 1.5배 " + ok(c4) : "") + " · RSI " + str.tostring(r, "#") + " " + ok(c5)) : ""]
+
+f_DTF(bool useVol) =>
+    at  = ta.rma(ta.tr(true), 20)
+    hh  = ta.highest(high, 20)[1]
+    ll  = ta.lowest(low, 10)[1]
+    va  = ta.sma(volume, 20)[1]
+    var bool  inP = false
+    var float stp = na
+    var int   lastT = na
+    bool ent = false
+    if inP
+        if low <= stp or low < ll
+            inP := false
+    else if high > hh and (not useVol or volume >= 1.5 * va)
+        inP   := true
+        ent   := true
+        stp   := math.max(open, hh) - 2 * at[1]
+        lastT := time
+    st = ent ? 2 : inP ? 3 : high >= hh * 0.98 ? 1 : 0
+    [st, lastT, barstate.islast ? (inP ? "보유 중 · 손절 " + str.tostring(math.max(stp, ll), format.mintick) + " (10일 저점 깨면 매도)" : "20일 고점 " + str.tostring(hh, format.mintick) + " 돌파 기다리는 중 · 지금 고점까지 " + pct((hh / close - 1) * 100)) : ""]
+
+f_KRTF(simple string ks, simple string kq) =>
+    a100 = ta.sma(close, 100)
+    va   = ta.sma(volume, 20)[1]
+    tv   = ta.sma(close * volume, 20)[1]
+    k20  = request.security(ks, "D", (close / close[20] - 1) * 100)
+    q20  = request.security(kq, "D", (close / close[20] - 1) * 100)
+    tch  = close >= a100 and close <= a100 * 1.02
+    ab   = math.sum(close > a100 ? 1 : 0, 10)[1]
+    pv   = math.sum(tch ? 1 : 0, 10)[1]
+    c1 = tch and ab >= 8 and pv == 0
+    c2 = volume >= 0.8 * va
+    c3 = nz(k20) < 8 and nz(q20) < 8
+    c4 = tv >= 3e9
+    n  = (c1 ? 1 : 0) + (c2 ? 1 : 0) + (c3 ? 1 : 0) + (c4 ? 1 : 0)
+    var int lastT = na
+    if n == 4
+        lastT := time
+    near = (close / a100 - 1) * 100
+    [n == 4 ? 2 : (c1 and n == 3) ? 1 : 0, lastT, barstate.islast ? ("100일선 위 " + pct(near) + " · 첫 닿음 " + ok(c1) + " · 거래량 " + (va > 0 ? str.tostring(volume / va, "#.#") + "배" : "없음") + " " + ok(c2) + " · 시장 과열 아님 " + ok(c3) + " · 거래대금 30억 " + ok(c4)) : ""]
+
+// 지금 차트보다 작은 봉은 불러오지 않음 (큰 봉 차트에서 작은 봉을 부르면 메모리 초과 · 값도 어긋남)
+chSec = timeframe.in_seconds()
+lowTF(simple string t) => timeframe.in_seconds(t) < chSec
+tfq(simple string t) => lowTF(t) ? timeframe.period : t
+tf3  = showMin ? tfq("3") : timeframe.period
+tf5  = showMin ? tfq("5") : timeframe.period
+tf30 = tfq("30")
+tf60 = tfq("60")
+tf240 = tfq("240")
+[st3, lt3, tp3]    = request.security(regSym, tf3, f_dumpTF(vol3, 1.5))
+[st5, lt5, tp5]    = request.security(regSym, tf5, f_dumpTF(vol5, 3.0))
+[st15, lt15, tp15] = request.security(btcSym, "15", f_15TF())
+[st30, lt30, tp30] = request.security(regSym, tf30, f_30TF(big30))
+[st60, lt60, tp60] = request.security(regSym, tf60, f_60TF())
+[st4h, lt4h, tp4h] = request.security(regSym, tf240, f_240TF(mkt == "코인"))
+[stD, ltD, tpD]    = request.security(regSym, "D", f_DTF(mkt == "코인"))
+[st30u, lt30u, tp30u] = request.security(regSym, tf30, f_240TF(false))
+[st60u, lt60u, tp60u] = request.security(regSym, tf60, f_240TF(false))
+[stK, ltK, tpK]    = request.security(regSym, "D", f_KRTF(kospiS, kosdaqS))
+
+stTxt(int s) => s == 2 ? "매수" : s == 1 ? "근접" : s == 3 ? "보유 중" : "대기"
+stCol(int s) => s == 2 ? color.new(#2e7d32, 10) : s == 1 ? color.new(#7cb342, 35) : s == 3 ? color.new(#1565c0, 30) : color.new(#424242, 30)
+ago(int t) =>
+    if na(t)
+        "-"
+    else
+        mins = (timenow - t) / 60000
+        mins < 60 ? str.tostring(mins, "#") + "분 전" : mins < 1440 ? str.tostring(mins / 60, "#") + "시간 전" : str.tostring(mins / 1440, "#") + "일 전"
+
+// ───────────────────────── 50·100 동시 돌파 (모든 봉 · 모든 시장) ─────────────────────────
+// 아래에서 50선·100선(거래량가중)을 다 넘어서 마감 · 직전 10봉 중 5봉 이상 위쪽 선(50·100 중 높은 선) 아래
+// 급등봉 제외: 200선이 위에 있는데 그 봉 고가가 200선까지 닿음 · 또는 몸통이 평소 움직임(ATR)의 3배 이상
+// 손절 = 진입가 - ATR 2배 · 익절 = 손절 폭의 2배 (손익비 1:2)
+// ★ = 직전 20봉 안 RSI 30 터치 + 직전 10봉 안 거래량 3배↑
+xGrade(string m, string t, bool btc) =>
+    // 3 강함 · 2 보통 · 1 약함 · 0 안 됨/검증 없음 (한국 4시간은 ★일 때 보통 · 그냥은 약함)
+    m == "미국" ? (t == "D" or t == "240" ? 3 : t == "60" ? 2 : t == "30" ? 1 : 0) : m == "코인" ? (t == "240" and btc ? 3 : 0) : (t == "D" ? 3 : t == "240" ? 1 : 0)
+xEv(string m, string t, bool btc) =>
+    string r = "-"
+    if m == "미국"
+        r := t == "D" ? "+11.07% (SOXL 20년 · 24회 · 63%)" : t == "240" ? "+4.01% (SOXL · 32회 · 47%)" : t == "60" ? "+1.24% (SOXL · 36회) · ★ +19.8% (2회뿐)" : t == "30" ? "-0.58% (SOXL 최근 · 26회) · 약함" : t == "15" ? "-2.48% (SOXL 최근 · 22회) · 안 됨" : "안 됨 (분봉)"
+    else if m == "코인"
+        r := t == "240" ? (btc ? "+0.63% (BTC 7년 · 98회 · 매해 플러스) · ★ +2.39% (9회)" : "+0.06% (ETH 7년 · 안 됨)") : t == "D" ? "검증 부족 (8년에 13번)" : "안 됨 (바이낸스 2~5년 · 수백~수천 회 · 본전~마이너스)"
+    else
+        r := t == "D" ? "맨 위 선 간격 15%↑일 때만 · +3.22% (78종목 · 474회 · 45%) · 간격 30%↑ +6.20% · ★ 겹치면 더 좋음" : t == "240" ? "+0.37% (78종목 10년 · 2400회) · ★ +1.39% (144회)" : "안 됨 (분봉 · 어떤 조건도 마이너스)"
+    r
+// 시장·봉별 추가 조건 · ★ 조건
+// 한국 일봉만: 맨 위 선(200·400 중 높은 선)이 50·100선 중 위 선보다 15%↑ 위일 때만 신호
+// ★ (모든 시장·봉): 직전 20봉 안 RSI 30 이하 + 직전 10봉 안 거래량 3배↑ 봉 · 없어도 신호는 뜸
+f_xExtra(string m, string t, float top, float a200, float a400) =>
+    hv  = ta.cum(nz(volume)) > 0
+    vr  = volume / ta.sma(volume, 20)[1]
+    vm  = nz(ta.highest(vr, 10)[1])
+    rmn = nz(ta.lowest(ta.rsi(close, 14), 20)[1], 100)
+    g   = (math.max(a200, a400) / top - 1) * 100
+    ex  = m == "한국" and t == "D" ? g >= 15 : true
+    st  = hv and vm >= 3 and rmn <= 30
+    [ex, st]
+xGTxt(int g) => g == 3 ? "강함" : g == 2 ? "보통" : g == 1 ? "약함" : "안 됨"
+xGCol(int g) => g == 3 ? color.new(#2e7d32, 10) : g == 2 ? color.new(#7cb342, 35) : g == 1 ? color.new(#b26a00, 30) : color.new(#424242, 30)
+f_xTF(string m, string t) =>
+    a50 = ta.sma(close, 50)
+    hv  = ta.cum(nz(volume)) > 0
+    avw = ta.vwma(close, 100)
+    a1s = ta.sma(close, 100)
+    av  = hv ? avw : a1s
+    a200 = ta.sma(close, 200)
+    a400 = ta.sma(close, 400)
+    at  = ta.sma(ta.tr(true), 14)
+    bl  = math.sum(close < math.max(a50, av) ? 1 : 0, 10)[1]
+    top = math.max(a50, av)
+    [ex, star] = f_xExtra(m, t, top, a200, a400)
+    x   = close > top and close[1] <= math.max(a50[1], av[1]) and bl >= 5 and ex
+    sp  = (a200 > close and high >= a200) or math.abs(close - open) >= 3 * at[1]
+    var int lastT = na
+    var int lastB = na
+    okX = x and not sp and (na(lastB) or bar_index - lastB > 5)
+    if okX
+        lastT := time
+        lastB := bar_index
+    near = not okX and bl >= 5 and ex and close <= top and close >= top * 0.99
+    [okX ? 2 : near ? 1 : 0, lastT, star, sp and x]
+
+// 지금 차트 봉
+xA50 = s50
+xAv  = hasVolC ? vw100 : s100
+xAt  = ta.sma(ta.tr(true), 14)
+xBl  = math.sum(close < math.max(xA50, xAv) ? 1 : 0, 10)[1]
+xTop = math.max(xA50, xAv)
+xTf  = timeframe.isdaily ? "D" : tf
+[xEx, xStar] = f_xExtra(mkt, xTf, xTop, s200, s400)
+xRaw = close > xTop and close[1] <= math.max(xA50[1], xAv[1]) and xBl >= 5 and xEx
+xSp  = (s200 > close and high >= s200) or math.abs(close - open) >= 3 * xAt[1]
+var int xLastB = na
+xOk  = xRaw and not xSp and (na(xLastB) or bar_index - xLastB > 5)
+if xOk
+    xLastB := bar_index
+xBot = xStar
+xSl  = close - 2 * xAt
+xTp  = close + 2 * (close - xSl)
+xG   = xGrade(mkt, xTf, isBTC)
+x200near = s200 > close and (s200 / close - 1) * 100 < 3
+plotshape(xOk and (showOld or barstate.islast), "50·100 동시 돌파", shape.diamond, location.belowbar, color.new(#2e7d32, 0), size = size.small, text = "◆", textcolor = color.new(#000000, 100))
+plotshape(xOk and xBot and (showOld or barstate.islast), "동시 돌파 ★ (RSI 30 + 거래량)", shape.labelup, location.belowbar, color.new(#ab47bc, 100), text = "★", textcolor = color.new(#ffd54f, 0), size = size.tiny)
+if xOk
+    line.new(bar_index, xSl, bar_index + 20, xSl, color = color.new(#c62828, 0), style = line.style_dotted)
+    line.new(bar_index, xTp, bar_index + 20, xTp, color = color.new(#ab47bc, 0), style = line.style_dotted)
+alertcondition(xOk, "50·100 동시 돌파", "50·100 동시 돌파: {{ticker}} {{interval}} 종가 {{close}}")
+
+// 봉별 표
+[x3, xl3, xb3, xs3]   = request.security(regSym, tf3, f_xTF(mkt, "3"))
+[x5, xl5, xb5, xs5]   = request.security(regSym, tf5, f_xTF(mkt, "5"))
+[x15, xl15, xb15, xs15] = request.security(regSym, tfq("15"), f_xTF(mkt, "15"))
+[x30x, xl30, xb30, xs30] = request.security(regSym, tf30, f_xTF(mkt, "30"))
+[x60x, xl60, xb60, xs60] = request.security(regSym, tf60, f_xTF(mkt, "60"))
+[x240, xl240, xb240, xs240] = request.security(regSym, tf240, f_xTF(mkt, "240"))
+[xD, xlD, xbD, xsD]   = request.security(regSym, "D", f_xTF(mkt, "D"))
+
+// 분봉 차트에서도 한국·미국 종목은 일봉 근거 내용을 위 표에 보여 주기
+krOv = mkt == "한국" and not timeframe.isdaily
+usOv = mkt == "미국" and not (timeframe.isdaily or tf == "240" or tf == "30" or tf == "60")
+if krOv
+    name  := "100일선 눌림 (일봉 기준 · 지금은 " + tf + " 차트)"
+    conds := tpK
+    tpTxt := "일봉 종가 매수 · 10일 뒤 종가 매도"
+    ev    := "+1.1% (4년 평균) · 최근 2년 +2.7% · 지지 겹치면 +1.43%"
+    warn  := "판단은 일봉 마감 기준"
+if mkt == "한국" and not hasVolC
+    name  := "거래량이 없는 차트(지수)라 100일선 눌림을 쓸 수 없어요"
+    conds := "-"
+    buy   := false
+    tpTxt := "-"
+    ev    := "-"
+    warn  := "개별 종목 차트에서 보세요"
+if usOv
+    name  := "일봉 터틀 (일봉 기준 · 지금은 " + tf + " 차트)"
+    conds := tpD
+    tpTxt := "10일 저점 깨면 매도"
+    ev    := "SOXL +5.7% · TECL +3.7% · TQQQ +2.7% (터틀 · 16년)"
+    warn  := "판단은 일봉 마감 기준"
+
+// ───────────────────────── 표 (오른쪽 아래) ─────────────────────────
+// 맨 위: 지금 살까 말까 · 아래: 봉마다 한 줄 (그 봉 근거 | 50·100 돌파) · 자세한 건 마우스 올리면
+var table mt = table.new(position.bottom_right, 5, 14, bgcolor = color.new(#111111, 10), border_color = color.new(#617B55, 0), border_width = 1, frame_color = color.new(#617B55, 0), frame_width = 1)
+var gI = array.new_int(2, 0)
+var gT = array.new_string(1, "")
+c_(int c, int r, string t, color bg, string tip = "", bool left = false) =>
+    table.cell(mt, c, r, t, text_color = color.white, text_size = size.small, text_halign = left ? text.align_left : text.align_center, bgcolor = bg, tooltip = tip)
+lvOf(int st) => st == 2 ? 3 : st == 3 ? 2 : st == 1 ? 1 : 0
+// has = 이 봉에 기본 근거가 있는지 · t = 동시 돌파 등급용 봉 이름
+tf_row(string tfNm, bool has, string nm, int st, int lt, string tip, string t, int xs, int xl, bool xb) =>
+    r = gI.get(0) + 1
+    gI.set(0, r)
+    dk = color.new(#111111, 10)
+    g = xGrade(mkt, t, isBTC)
+    sec = t == "3" ? 180 : t == "5" ? 300 : t == "15" ? 900 : t == "30" ? 1800 : t == "60" ? 3600 : t == "240" ? 14400 : 86400
+    isLow = sec < chSec
+    lowTip = tfNm + "은 지금 차트보다 작은 봉이라 계산 안 함 · " + tfNm + " 이하 차트에서 보세요"
+    c_(0, r, tfNm + (has ? " · " + nm : ""), dk, has ? tip : "", true)
+    c_(1, r, isLow or not has ? "-" : stTxt(st), isLow or not has ? dk : stCol(st), isLow ? lowTip : has ? tip : "")
+    c_(2, r, isLow or not has ? "-" : ago(lt), dk)
+    xt = xs == 2 ? "매수" + (xb ? " ★" : "") : xs == 1 ? "근접" : "대기"
+    xc = xs == 2 ? color.new(#2e7d32, 10) : xs == 1 ? color.new(#7cb342, 35) : color.new(#424242, 30)
+    xtip = "검증 " + xGTxt(g) + " · " + xEv(mkt, t, isBTC) + " · 손절 ATR 2배 · 익절 손절 폭 2배"
+    c_(3, r, isLow ? "-" : xt + " (" + xGTxt(g) + ")", isLow ? dk : xc, isLow ? lowTip : xtip)
+    c_(4, r, isLow ? "-" : ago(xl), dk)
+    gI.set(1, math.max(gI.get(1), has and not isLow ? lvOf(st) : 0, isLow ? 0 : lvOf(xs)))
+    gT.set(0, gT.get(0) + "\n" + tfNm + (has ? " " + nm + ": " + stTxt(st) : "") + " · 돌파: " + xt + " (" + xGTxt(g) + ")")
+xOkTF(string t) => xGrade(mkt, t, isBTC) >= 2 or (mkt == "한국" and t == "D")
+
+if barstate.islast
+    table.clear(mt, 0, 0, 4, 13)
+    gI.set(0, 1)
+    gI.set(1, 0)
+    gT.set(0, "")
+    hd = color.new(#617B55, 20)
+    c_(0, 1, "봉 · 근거", hd, "", true)
+    c_(1, 1, "신호", hd)
+    c_(2, 1, "마지막", hd)
+    c_(3, 1, "50·100 돌파", hd, "50선·100선을 아래에서 한 번에 뚫는 자리 · 괄호 = 검증 등급")
+    c_(4, 1, "마지막", hd)
+    // 지금 차트 자체 근거 (큰 칸 판단에만 씀)
+    xUse = true
+    curSt = krOv ? stK : usOv ? stD : buy ? 2 : 0
+    string exitTxt = ""
+    if xUse and xOk
+        curSt := 2
+        exitTxt := "손절 " + str.tostring(xSl, format.mintick) + " (" + pct((xSl / close - 1) * 100) + ") · 익절 " + str.tostring(xTp, format.mintick) + " (" + pct((xTp / close - 1) * 100) + ")"
+    else
+        exitTxt := (na(sl) ? "" : "손절 " + str.tostring(sl, format.mintick) + " (" + pct((sl / close - 1) * 100) + ") · ") + (na(tp) ? "" : "익절 " + str.tostring(tp, format.mintick) + " (" + pct((tp / close - 1) * 100) + ")") + (tpTxt == "" ? "" : " · " + tpTxt)
+    if not (krOv or usOv)
+        gI.set(1, math.max(gI.get(1), lvOf(curSt)))
+    if showMTF
+        coin = mkt == "코인"
+        us = mkt == "미국"
+        kr = mkt == "한국" and hasVolC
+        if showMin
+            tf_row("3분", coin, "투매 반등", st3, lt3, tp3, "3", x3, xl3, xb3)
+            tf_row("5분", coin, "투매 반등", st5, lt5, tp5, "5", x5, xl5, xb5)
+        tf_row("15분", coin, "저점 반등 (BTC)", st15, lt15, tp15, "15", x15, xl15, xb15)
+        tf_row("30분", coin or us, "추세 돌파", coin ? st30 : st30u, coin ? lt30 : lt30u, coin ? tp30 : tp30u, "30", x30x, xl30, xb30)
+        tf_row("1시간", coin or us, coin ? "변동성 돌파일" : "추세 돌파", coin ? st60 : st60u, coin ? lt60 : lt60u, coin ? tp60 : tp60u, "60", x60x, xl60, xb60)
+        tf_row("4시간", coin or us, "추세 돌파", st4h, lt4h, tp4h, "240", x240, xl240, xb240)
+        tf_row("일봉", coin or us or kr, kr ? "100일선 눌림" : "터틀", kr ? stK : stD, kr ? ltK : ltD, kr ? tpK : tpD, "D", xD, xlD, xbD)
+        if coin
+            on30 = not na(lt30) and timenow - lt30 <= 86400000
+            on4h = not na(lt4h) and timenow - lt4h <= 4 * 3600000
+            onD  = stD == 3 or (not na(ltD) and timenow - ltD <= 3 * 86400000)
+            cnt  = (on30 ? 1 : 0) + (on4h ? 1 : 0) + (onD ? 1 : 0)
+            r = gI.get(0) + 1
+            c_(0, r, "같이 켜짐 (30분·4시간·일봉)", color.new(#111111, 10), "", true)
+            c_(1, r, str.tostring(cnt) + " / 3", cnt == 3 ? color.new(#2e7d32, 10) : cnt == 2 ? color.new(#7cb342, 35) : color.new(#424242, 30), "30분 돌파 하루 안 " + ok(on30) + " · 4시간 돌파 지금 " + ok(on4h) + " · 일봉 터틀 보유 중 또는 3일 안 " + ok(onD) + " · 셋 다면 BTC +3.06% · ETH +2.40% (6년)")
+            table.merge_cells(mt, 1, r, 4, r)
+    gBest = gI.get(1)
+    big = gBest == 3 ? "매수" + (curSt == 2 and exitTxt != "" ? "  ·  " + exitTxt : "") : gBest == 2 ? "보유 중" : gBest == 1 ? "근접 · 아직 대기" : "대기"
+    bigC = gBest == 3 ? color.new(#2e7d32, 0) : gBest == 2 ? color.new(#1565c0, 20) : gBest == 1 ? color.new(#7cb342, 30) : color.new(#424242, 20)
+    why = "흐름: " + regime + "\n근거: " + name + (conds == "" ? "" : "\n조건: " + conds) + (exitTxt == "" ? "" : "\n" + exitTxt) + (ev == "" ? "" : "\n기대: " + ev) + (warn == "" ? "" : "\n주의: " + warn) + gT.get(0)
+    table.cell(mt, 0, 0, big, text_color = color.white, text_size = size.normal, text_halign = text.align_center, bgcolor = bigC, tooltip = why)
+    table.merge_cells(mt, 0, 0, 4, 0)
