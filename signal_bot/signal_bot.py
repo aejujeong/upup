@@ -333,21 +333,30 @@ def above_target(I, i, minpct, rank):
     return arr[rank] if len(arr) > rank else arr[-1]
 
 
-def sig_dump(b, I, vol_ratio, min_d):
-    """3·5분 투매 반등 (코인). 지표는 선물 거래량 숫자 기준이라, 현물에서는 '20봉 평균의 몇 배'로 대신 씀."""
+def sig_dump(b, I, min_d):
+    """투매: 장대 음봉(몸통 20봉 평균 2배↑) + RSI 30↓ + 거래량이 최근 300봉 최대의 83%↑ (차트 분홍과 같은 방식).
+    목표(위 이평선)까지 멀든 가깝든 다 알림 · 메시지에 거리 표시."""
     out = []
+    body = [abs(x["c"] - x["o"]) for x in b]
+    bav = sma(body, 20)
+    v = I["v"]
     for i in range(401, len(b)):
         x = b[i]
-        va = I["va20"][i - 1]
-        if not (x["c"] < x["o"] and nn(I["rs"][i]) and I["rs"][i] <= 35 and nn(va) and x["v"] >= vol_ratio * va):
+        if not (x["c"] < x["o"] and nn(bav[i - 1]) and body[i] >= 2 * bav[i - 1]):
+            continue
+        if not (nn(I["rs"][i]) and I["rs"][i] <= 30):
+            continue
+        if v[i] < 0.833 * max(v[max(0, i - 299):i + 1]):
             continue
         tg = above_target(I, i, 0.1, 0)
         dist = 2.0 if not nn(tg) else (tg * 0.999 / x["c"] - 1) * 100
-        if dist < min_d:
-            continue
         tp = x["c"] * 1.02 if not nn(tg) else tg * 0.999
+        far = dist >= min_d
         slp = 1.5 if min_d <= 1.5 else 2.0
-        out.append((i, dict(name="투매 반등", sl=x["c"] * (1 - slp / 100), tp=tp)))
+        out.append((i, dict(name="투매" + (" · 반등 여유 있음" if far else " · 위 이평선 가까움"),
+                            kind="투매", sl=x["c"] * (1 - slp / 100), tp=tp,
+                            note=f"목표까지 {dist:.1f}% · RSI {I['rs'][i]:.0f} · 거래량 300봉 최대의 {v[i] / max(v[max(0, i - 299):i + 1]) * 100:.0f}%"
+                            + ("" if far else " · 목표 가까울 때는 검증상 평균 손해(-0.1~-0.27%)"))))
     return out
 
 
@@ -477,12 +486,12 @@ def scan(sym, data, btc_ctx):
         sigs = []
         if len(b) > 410:
             sigs += sig_cross(b, I)
+        if tf == "3":
+            sigs += sig_dump(b, I, 1.5)
+        elif tf == "5":
+            sigs += sig_dump(b, I, 3.0)
         if mkt == "코인":
-            if tf == "3":
-                sigs += sig_dump(b, I, 3.0, 1.5)
-            elif tf == "5":
-                sigs += sig_dump(b, I, 3.0, 3.0)
-            elif tf == "15":
+            if tf == "15":
                 sigs += sig_low15(b, I, btc_ctx)
             elif tf == "30":
                 h4 = data.get("240") or []
@@ -516,7 +525,7 @@ def scan(sym, data, btc_ctx):
 def message(label, tf, bar, info, grade):
     t = datetime.fromtimestamp(bar["t"], KST).strftime("%m/%d %H:%M")
     px = bar["c"]
-    lines = [f"[매수] {label} {TFNAME[tf]} · {info['name']}",
+    lines = [f"[{info.get('kind', '매수')}] {label} {TFNAME[tf]} · {info['name']}",
              f"가격 {fmt(px)} · 봉 {t} (한국 시간)"]
     sl, tp = info.get("sl"), info.get("tp")
     ex = []
@@ -528,6 +537,8 @@ def message(label, tf, bar, info, grade):
         ex.append(info["tpTxt"])
     if ex:
         lines.append(" · ".join(ex))
+    if info.get("note"):
+        lines.append(info["note"])
     if grade is not None:
         lines.append(f"검증: {GTXT[grade]}")
     return "\n".join(lines)
