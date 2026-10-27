@@ -2714,6 +2714,8 @@ function plCell(r){
 // 수급 모두 순매수: 외국인·기관 모두, 지금 보는 기간과 비교 기간(한달 또는 전날) 모두 플러스 (표의 수급 칸이 전부 빨간색)
 // 외국인·기관 모두, 지금 탭과 비교 기간 모두 순매수 (단타 후보 조건, 수급 버튼과 상관없이)
 function posAll(r){ const o = OTHER[S.per]; return AA(r, S.per).net > 0 && BB(r, S.per).net > 0 && AA(r, o).net > 0 && BB(r, o).net > 0; }
+// 지금 탭(전날·10일·한달) 기간에 외국인이 순매수한 종목만
+function perPos(r){ const x = AA(r, S.per); return !!x && x.net > 0; }
 function allPos(r){
   if (S.allf !== 'POS') return true;
   const o = OTHER[S.per];
@@ -3564,7 +3566,7 @@ function render(){
     (!S.sub || (r.sub || '미분류') === S.sub) &&
     (S.pf === 'ALL' || (S.pf === 'P' ? r.eps > 0 : (r.eps !== null && r.eps < 0))) &&
     (S.mkt === 'ALL' || r.mkt === S.mkt) &&
-    srOk(r) && allPos(r) && sigOk(r) && szOk(r) && !(S.hideHot && overheat(r)) &&
+    perPos(r) && srOk(r) && allPos(r) && sigOk(r) && szOk(r) && !(S.hideHot && overheat(r)) &&
     r.cap >= S.minCap &&
     (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q)));
   if (S.dan) {
