@@ -3570,9 +3570,11 @@ function render(){
     r.cap >= S.minCap &&
     (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q)));
   if (S.dan) {
-    // 단타 필터: 시총 구간별로 통한 수급 조건 + 과열 제외 (지지선·흑자 등 나머지는 화면 버튼 그대로)
-    ensureRolling();
-    rows = rows.filter(r => flowOk(r) && !overheat(r));
+    // 단타 필터 (9/28 예전 방식): 지금 화면에 걸러진 종목들끼리 전날·10일·한달 외국인+기관 합산/시총이 모두 10위 안
+    const pool = rows;
+    const top10 = p => new Set(pool.slice().sort((a, b) => (AA(b, p).pct + BB(b, p).pct) - (AA(a, p).pct + BB(a, p).pct)).slice(0, DAN_TOP).map(r => r.code));
+    const s1 = top10('1'), s10 = top10('10'), sM = top10('M');
+    rows = rows.filter(r => s1.has(r.code) && s10.has(r.code) && sM.has(r.code));
   }
   const total = rows.length;
   rows.sort((a, b) => {
@@ -4292,15 +4294,15 @@ const overheat = r => { if (regime() === '강세') return false; const m = RT(r,
 // 단타 필터: 켜면 지지선 구간 안·흑자만·합산 시총 대비 정렬·30개씩으로 맞추고, 전날·10일·한달 합산/시총 모두 10위 안인 종목만
 const DAN_TOP = 10;
 function setSeg(id, v){ $(id).querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); }
-const danPreset = () => S.sr === 'IN' && S.pf === 'P' && S.allf === 'ALL' && S.sort === 'dist' && S.top === 30;
+const danPreset = () => S.sr === 'IN' && S.pf === 'P' && S.allf === 'POS' && S.sort === 'spct' && S.top === 30;
 $('danBtn').onclick = () => {
   // 꺼져 있으면 켜면서 단타 조건으로 맞춤 / 켜진 채로 버튼을 바꿨으면 다시 단타 조건으로 맞춤 / 그대로면 끔
   S.dan = !S.dan || !danPreset();
   if (S.dan) {
     S.sr = 'IN'; setSeg('srf', 'IN');
     S.pf = 'P'; setSeg('pf', 'P');
-    S.allf = 'ALL'; setSeg('allf', 'ALL');
-    S.sort = 'dist'; S.dir = 1; $('sort').value = 'dist';
+    S.allf = 'POS'; setSeg('allf', 'POS');
+    S.sort = 'spct'; S.dir = -1; $('sort').value = 'spct';
     S.top = 30; $('top').value = '30';
     setSigf('ALL'); setSz('ALL');                                  // 단타 필터와 신호는 하나만
   }
