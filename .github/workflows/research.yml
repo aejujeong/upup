@@ -20,7 +20,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: pip install -q pykrx pandas
       - run: python research/${{ inputs.script }}
+        env:
+          KRX_ID: ${{ secrets.KRX_ID }}
+          KRX_PW: ${{ secrets.KRX_PW }}
       - name: 결과 올리기
         run: |
           git config user.name "github-actions"
