@@ -4,7 +4,7 @@
 // 아래쪽에 '이평선 눌림 통계'를 붙였다. 개인용으로만 쓰고 퍼블리시하지 않는다.
 
 //@version=6
-indicator("S&R + 이평선 눌림 통계", "S&R + 눌림 v54", overlay = false, scale = scale.right, calc_bars_count = 10000, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
+indicator("S&R + 이평선 눌림 통계", "S&R + 눌림 v55", overlay = false, scale = scale.right, calc_bars_count = 10000, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500)
 
 //---------------------------------------------------------------------------------------------------------------------}
 // Constants & Types
@@ -624,8 +624,37 @@ sl2 = (m200 / m200[slopeLen] - 1) * 100
 sl3 = (m400 / m400[slopeLen] - 1) * 100
 lnName(int i) => i == 0 ? '50' : i == 1 ? (hasVol ? '거래량가중100' : '100 (거래량 없어 일반선)') : i == 2 ? '200' : '400'
 kindTxt(int k) => k == 0 ? '처음 닿음' : k == 1 ? '되찾음' : k == 2 ? '돌파' : '동시 돌파'
+// ───────── 지금과 비슷했던 과거: 네 선(50·거래량가중100·200·400)과의 거리·방향이 지금과 비슷했던 때 → 몇 봉 뒤 수익 ─────────
+// 비슷: 각 선 거리 차이가 ± (평균 움직임 폭 % × √선길이 ÷ 2) 안 + 선 위/아래 같음 + 네 선 방향(오르는지·내리는지) 같음
+showSim = input.bool(true, '지금 상태 표에 비슷했던 과거 한 줄', group = G8)
+simFwd  = input.int(20, '비슷했던 과거: 몇 봉 뒤 수익을 볼지', minval = 1, group = G6)
+simGap  = input.int(10, '비슷했던 과거: 몇 봉마다 한 번 셀지', minval = 1, group = G6)
+atrPctNow = ta.sma(ta.tr(true), 14) / close * 100
+var sD0 = array.new_float()
+var sD1 = array.new_float()
+var sD2 = array.new_float()
+var sD3 = array.new_float()
+var sDir = array.new_int()
+var sC  = array.new_float()
+var sB  = array.new_int()
+var sR  = array.new_float()
+var int sPtr = 0
+dirKey = (sl0 >= 0 ? 1 : 0) + (sl1 >= 0 ? 2 : 0) + (sl2 >= 0 ? 4 : 0) + (sl3 >= 0 ? 8 : 0)
+if not na(m400) and not na(sl3) and bar_index % simGap == 0
+    sD0.push((close / m50 - 1) * 100)
+    sD1.push((close / vw - 1) * 100)
+    sD2.push((close / m200 - 1) * 100)
+    sD3.push((close / m400 - 1) * 100)
+    sDir.push(dirKey)
+    sC.push(close)
+    sB.push(bar_index)
+    sR.push(na)
+while sPtr < sB.size() and sB.get(sPtr) + simFwd <= bar_index
+    sR.set(sPtr, (close / sC.get(sPtr) - 1) * 100)
+    sPtr += 1
+
 tPos = tblPos == '오른쪽 위' ? position.top_right : tblPos == '오른쪽 가운데' ? position.middle_right : tblPos == '오른쪽 아래' ? position.bottom_right : tblPos == '왼쪽 위' ? position.top_left : position.bottom_left
-var table tb = table.new(tPos, 4, 6, bgcolor = BGC, border_color = color.new(#617B55, 0), border_width = 1, frame_color = color.new(#617B55, 0), frame_width = 1, force_overlay = true)
+var table tb = table.new(tPos, 4, 7, bgcolor = BGC, border_color = color.new(#617B55, 0), border_width = 1, frame_color = color.new(#617B55, 0), frame_width = 1, force_overlay = true)
 cellT(int c, int r, string t, color bg, color fg = color.white, string tip = '') =>
     table.cell(tb, c, r, t, text_color = fg, text_size = tSz, text_halign = c == 0 ? text.align_left : text.align_center, bgcolor = bg, tooltip = tip)
 
@@ -653,6 +682,39 @@ if barstate.islast and showNow
         cellT(1, i + 2, posT, near ? color.new(#9E7B1A, 20) : rowBg, tip = near ? '선 바로 위 (' + str.tostring(nearPct) + '% 안)' : '')
         cellT(2, i + 2, dirT, rowBg, sl >= 0 ? color.new(#81C784, 0) : color.new(#E57373, 0))
         cellT(3, i + 2, recT, ago <= recentN ? color.new(#2e7d32, 40) : rowBg)
+    if showSim and not na(m400)
+        n0 = (close / m50 - 1) * 100
+        n1 = (close / vw - 1) * 100
+        n2 = (close / m200 - 1) * 100
+        n3 = (close / m400 - 1) * 100
+        t0 = atrPctNow * math.sqrt(50) / 2
+        t1 = atrPctNow * math.sqrt(100) / 2
+        t2 = atrPctNow * math.sqrt(200) / 2
+        t3 = atrPctNow * math.sqrt(400) / 2
+        int nM = 0
+        int upM = 0
+        float sumM = 0.0
+        int nA = 0
+        float sumA = 0.0
+        if sPtr > 0
+            for f = 0 to sPtr - 1
+                float rr = sR.get(f)
+                nA += 1
+                sumA += rr
+                float e0 = sD0.get(f)
+                float e1 = sD1.get(f)
+                float e2 = sD2.get(f)
+                float e3 = sD3.get(f)
+                if sDir.get(f) == dirKey and math.abs(e0 - n0) <= t0 and math.abs(e1 - n1) <= t1 and math.abs(e2 - n2) <= t2 and math.abs(e3 - n3) <= t3 and (e0 < 0) == (n0 < 0) and (e1 < 0) == (n1 < 0) and (e2 < 0) == (n2 < 0) and (e3 < 0) == (n3 < 0)
+                    nM += 1
+                    sumM += rr
+                    upM += rr > 0 ? 1 : 0
+        float avgA = nA > 0 ? sumA / nA : na
+        string simTxt = nM == 0 ? '비슷했던 과거 · 없음' : '비슷했던 과거 ' + str.tostring(nM) + '회 · ' + str.tostring(simFwd) + '봉 뒤 평균 ' + (sumM / nM >= 0 ? '+' : '') + str.tostring(sumM / nM, '#.##') + '% · 오른 비율 ' + str.tostring(upM * 100.0 / nM, '#') + '%'
+        string simTip = '네 선과의 거리가 지금과 비슷하고(± 평균 움직임 폭 × √선길이 ÷ 2), 선 위/아래와 방향이 같았던 때 (' + str.tostring(simGap) + '봉마다 한 번씩 셈) · 평소 아무 때나 샀을 때 ' + str.tostring(simFwd) + '봉 뒤 평균 ' + (na(avgA) ? '-' : str.tostring(avgA, '#.##') + '%') + ' (' + str.tostring(nA) + '회) · 이것보다 나아야 의미 있어요' + (nM < 10 ? ' · 횟수가 적어서 참고만' : '')
+        color simBg = nM == 0 ? color.new(#111111, 10) : sumM / nM > nz(avgA) ? color.new(#2e7d32, 40) : color.new(#8B2E2E, 40)
+        cellT(0, 6, simTxt + (na(avgA) ? '' : ' (평소 ' + (avgA >= 0 ? '+' : '') + str.tostring(avgA, '#.##') + '%)'), simBg, tip = simTip)
+        table.merge_cells(tb, 0, 6, 3, 6)
 
 // ───────────────────────── 아래 칸: RSI · 거래량 ─────────────────────────
 G9 = 'RSI · 거래량 (아래 칸)'
