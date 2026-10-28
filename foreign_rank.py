@@ -1003,8 +1003,56 @@ def collect(days_all):
     for t, r in rows.items():
         r["desc"] = descs.get(t) or descs.get(t[:5] + "0", "")
         r["sub"] = sub_sector(r.get("sec", ""), " ".join([r.get("prod", ""), r["desc"], r.get("sec1", "")]), r.get("sec1", ""))
+    try:
+        add_short_balance(rows, days_all)
+    except Exception as e:
+        print(f"공매도 잔고 처리 중 문제: {e}")
+    tlog("공매도 잔고 끝")
     prune_cache(set(days_all))
     return list(rows.values())
+
+
+def add_short_balance(rows, days_all):
+    """종목별 공매도 잔고 비중(상장주식 대비 %)과 20거래일 전 대비 변화(%p).
+    거래소 공매도 잔고는 2~3일 늦게 나와서, 자료가 있는 가장 최근 날을 찾아 쓴다."""
+    def fetch(d):
+        out = {}
+        for m in MARKETS:
+            try:
+                df = stock.get_shorting_balance_by_ticker(d, market=m)
+            except Exception:
+                df = None
+            if df is None or df.empty or "비중" not in df.columns:
+                return None
+            for t, v in df["비중"].items():
+                try:
+                    out[t] = float(v)
+                except (TypeError, ValueError):
+                    pass
+        return out or None
+    idx = None
+    now = None
+    for k in range(1, 8):                        # 최근 날부터 거꾸로 자료 있는 날 찾기
+        if len(days_all) < k:
+            break
+        now = fetch(days_all[-k])
+        if now:
+            idx = len(days_all) - k
+            break
+    if not now:
+        print("공매도 잔고: 최근 자료 없음")
+        return
+    old = None
+    for k in range(20, 26):                      # 20거래일 전 (휴일·빈 날이면 하루씩 더 앞으로)
+        if idx - k < 0:
+            break
+        old = fetch(days_all[idx - k])
+        if old:
+            break
+    for t, r in rows.items():
+        if t in now:
+            r["sb"] = {"now": round(now[t], 3), "chg": round(now[t] - old[t], 3) if old and t in old else None, "d": days_all[idx]}
+    print(f"공매도 잔고: {days_all[idx]} 기준 {sum(1 for r in rows.values() if 'sb' in r)}종목")
 
 
 PATTERN = None
@@ -2034,6 +2082,8 @@ tr.clickable{cursor:pointer}
 .sigb small{font-weight:500;font-size:11.5px;opacity:.9}
 .sigb.good{background:var(--olive);color:#fff}
 .sigb.brk{background:#2F6DB5;color:#fff}
+.sigb.bad{background:#C62828;color:#fff}
+.sigb:not(.good):not(.brk):not(.bad){background:#E9E9E9;color:#333}
 .fdays b{font-weight:700}.fdays .okd{color:var(--olive)}
 .hotchk{display:inline-flex;gap:6px;align-items:center;font-size:14px;cursor:pointer;height:34px}
 .hotchk input{accent-color:var(--red);width:16px;height:16px}
@@ -2633,7 +2683,7 @@ const wonTd = v => `<td class="${v > 0 ? 'pos' : v < 0 ? 'neg' : ''}">${won(v, t
 const COLS = [
   {k:null,   t:'관심', cell: (r) => `<td class="st">${starBtn(r.code)}</td>`},
   {k:null,   t:'순위', cell: (r, x) => `<td>${x.rank}</td>`},
-  {k:'name', t:'종목명', cell: (r) => { const h = S.dan && DAN_HIT[r.code] && DAN_HIT[r.code].length >= 2 ? DAN_HIT[r.code] : null; return `<td class="name">${esc(r.name)}${h ? ` <span class="sigb good" title="단타 필터 상위 10개에 ${h.join('·')} 탭 모두 들어감">${h.length}개 겹침 <small>${h.join('·')}</small></span>` : ''}</td>`; }},
+  {k:'name', t:'종목명', cell: (r) => { const h = S.dan && DAN_HIT[r.code] && DAN_HIT[r.code].length >= 2 ? DAN_HIT[r.code] : null; const j = flowJudge(r); return `<td class="name">${esc(r.name)}${h ? ` <span class="sigb good" title="단타 필터 상위 10개에 ${h.join('·')} 탭 모두 들어감">${h.length}개 겹침 <small>${h.join('·')}</small></span>` : ''}${j ? ` <span class="sigb ${j.cls}" title="${esc(j.tip)}">${j.t}</span>` : ''}</td>`; }},
   {k:'sig',  t:'신호', cell: (r) => `<td>${sigBadge(sigOf(r))}</td>`},
   {k:null,   t:'코드', cell: (r) => `<td class="code">${r.code}</td>`},
   {k:null,   t:'시장', cell: (r) => `<td>${r.mkt}</td>`},
@@ -4308,6 +4358,21 @@ const overheat = r => { if (regime() === '강세') return false; const m = RT(r,
 // 단타 필터: 켜면 지지선 구간 안·흑자만·합산 시총 대비 정렬·30개씩으로 맞추고, 전날·10일·한달 합산/시총 모두 10위 안인 종목만
 const DAN_TOP = 10;
 let DAN_HIT = {};
+// 수급 판단 (2021~ 시총 상위 150종목 검증): 20일 동안 외국인·기관 둘 다 순매수(외국인 12일↑)인데 20일 -5% 이하로 빠진 종목
+//  공매도 잔고 줄어듦 → 매수 후보 (그 뒤 20일 평균 +4.8% · 오른 비율 59%, 295회)
+//  공매도 잔고 0.2%p↑ 늘어남 → 피하기 (평균 -1.2%, 27회 · 표본 적음)
+//  그 사이 → 지켜보기 (평균 +2.7% · 60%, 126회)
+function flowJudge(r){
+  if (S.asof) return null;
+  const a = AA(r, 'M'), b = BB(r, 'M'), f = fDays(r), rt = RT(r, 'M');
+  if (!a || !b || !(a.net > 0) || !(b.net > 0) || f === null || f < 12 || rt === null || rt === undefined || rt > -5) return null;
+  const c = r.sb ? r.sb.chg : null;
+  if (c === null || c === undefined) return {t: '수급 매수·하락 중 · 공매도 자료 없음', cls: '', tip: '외국인·기관이 20일 동안 사는데 주가는 ' + rt + '% · 공매도 잔고 변화를 몰라 판단 보류'};
+  const tip = `외국인·기관 20일 순매수(외국인 ${f}일) · 20일 ${rt}% · 공매도 잔고 20일 ${c > 0 ? '+' : ''}${c}%p (${r.sb.d} 기준)`;
+  if (c <= 0) return {t: '매수 후보 · 공매도↓', cls: 'good', tip: tip + ' → 과거 같은 경우 20일 뒤 평균 +4.8% · 오른 비율 59% (295회)'};
+  if (c >= 0.2) return {t: '피하기 · 공매도↑', cls: 'bad', tip: tip + ' → 과거 같은 경우 20일 뒤 평균 -1.2% (27회 · 표본 적음)'};
+  return {t: '지켜보기 · 공매도 조금↑', cls: '', tip: tip + ' → 과거 같은 경우 20일 뒤 평균 +2.7% · 오른 비율 60% (126회)'};
+}
 function setSeg(id, v){ $(id).querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); }
 const danPreset = () => S.sr === 'IN' && S.pf === 'P' && S.allf === 'POS' && S.sort === 'spct' && S.top === 30;
 $('danBtn').onclick = () => {
