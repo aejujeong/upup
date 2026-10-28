@@ -7,6 +7,9 @@ on:
       script:
         description: "돌릴 파일 (research 폴더 안)"
         default: "dump_test.py"
+      shard:
+        description: "나눠 돌릴 때 몇 번째/몇 개 (예: 0/4)"
+        default: ""
 
 permissions:
   contents: write
@@ -22,16 +25,24 @@ jobs:
           python-version: "3.12"
       - run: pip install -q pykrx pandas
       - run: python research/${{ inputs.script }}
+        timeout-minutes: 165
+        continue-on-error: true
         env:
+          SHARD: ${{ inputs.shard }}
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
       - name: 결과 올리기
+        if: always()
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          cp research/out_*.txt /tmp/ 2>/dev/null || true
-          git fetch -q origin research-out && git checkout -B research-out origin/research-out || git checkout -B research-out
-          cp /tmp/out_*.txt research/ 2>/dev/null || true
-          git add -f research/out_*.txt
-          git commit -m "검증 결과 ${{ inputs.script }}" || true
-          git push -f origin research-out
+          mkdir -p /tmp/out && cp research/out_*.txt /tmp/out/ 2>/dev/null || true
+          # 여러 개가 동시에 끝나도 서로 덮어쓰지 않게: 최신 결과 브랜치 위에 얹고, 밀리면 다시 시도
+          for k in 1 2 3 4 5 6; do
+            git fetch -q origin research-out && git checkout -q -f -B research-out origin/research-out || git checkout -q -f -B research-out
+            cp /tmp/out/out_*.txt research/ 2>/dev/null || true
+            git add -f research/out_*.txt
+            git commit -q -m "검증 결과 ${{ inputs.script }} ${{ inputs.shard }}" || true
+            git push origin research-out && break
+            sleep $((RANDOM % 20 + 5))
+          done

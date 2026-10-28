@@ -15,6 +15,10 @@ for d in pd.date_range("2021-01-01", E, freq="MS"):
         except Exception as e: print(day, m, e)
         time.sleep(0.3)
 big = sorted(big); print("한 번이라도 1조 넘은 종목", len(big), flush=True)
+import os
+SH = os.environ.get("SHARD", "")
+if SH:   # 나눠 돌리기: 신호 목록만 저장하고 합치는 건 따로
+    k_, n_ = map(int, SH.split("/")); big = big[k_::n_]
 INST = ["금융투자", "보험", "투신", "사모", "은행", "기타금융", "연기금"]
 ev = []; t0 = time.time()
 for n, t in enumerate(big):
@@ -48,6 +52,10 @@ for n, t in enumerate(big):
     except Exception as e:
         print(t, "실패", e)
     if n % 25 == 0: print(n, len(big), len(ev), f"{(time.time()-t0)/60:.1f}분", flush=True)
+    if SH and (n % 10 == 0 or n == len(big) - 1):
+        pd.DataFrame(ev).to_csv(f"research/out_pit_ev_{k_}.txt", index=False)
+if SH:
+    raise SystemExit(0)
 
 E_ = pd.DataFrame(ev)
 E_ = E_[E_.sbr.notna() & (E_.sbr <= 0)]
