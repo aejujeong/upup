@@ -2021,7 +2021,7 @@ details.notebox .pnote{margin:6px 0 10px}
 td.livec{white-space:nowrap}
 .perrow{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
 .perrow .tabs{margin-bottom:0}
-#danBtn.on{background:var(--olive);color:#fff}
+#danBtn.on,#fbBtn.on{background:var(--olive);color:#fff}
 .danbt{border:1px solid var(--olive);border-radius:10px;padding:10px 14px;margin:10px 0 0;font-size:13px}
 .danbt table{border-collapse:collapse;margin-top:6px}
 .danbt th,.danbt td{border:1px solid #E7D3D3;padding:5px 12px;text-align:left}
@@ -2256,6 +2256,7 @@ td.st{text-align:center;width:44px}
   <div class="tabs" id="per">
     <button data-v="1">전날 순매수</button><button data-v="10" class="on">10일 순매수</button><button data-v="M">한달 순매수</button>
   </div>
+  <button class="mbtn" id="fbBtn" title="대형주(1조↑) + 한달 외국인·기관 둘 다 순매수 + 기관 20일 중 12일 이상 순매수 + 한달 -5% 이하 + 공매도 잔고 20일 줄어듦 · 검증(2021~2026): 20거래일 뒤 평균 +4.4%, 오른 비율 58% (1014회)">대형 수급 눌림</button>
   <button class="mbtn" id="danBtn" title="지지선 구간 안 + 흑자 + 시총 구간별 수급(대형: 외국인 20일 중 15일+, 중형: 외국인 또는 기관 15일+, 소형: 기관 15일+, 중소형은 한달 순매도 하위 20% 제외) + 보통·약세장 과열 제외, 지지선 가까운 순">단타 필터</button>
   </div>
   <div class="danbt" id="danBt" hidden></div>
@@ -2557,7 +2558,7 @@ const CREF = __CYCREF__;
 const REFBY = Object.fromEntries(((CREF && CREF.secs) || []).map(x => [x.sec.replace(/\s/g, ''), x]));
 const refOf = sec => REFBY[(sec || '').replace(/\s/g, '')];
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'10', mkt:'ALL', sr:'IN', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', allf:'ALL', dan:false, sigf:'ALL', szf:'ALL', hideHot:true, flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:true, myMin:2, myMax:12, view:'sec', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
+const S = {per:'10', mkt:'ALL', sr:'IN', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', allf:'ALL', dan:false, fb:false, sigf:'ALL', szf:'ALL', hideHot:true, flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:true, myMin:2, myMax:12, view:'sec', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
 const RT = (r, p) => S.asof ? (r.h ? r.h.rt[p] : null) : (r.rt ? r.rt[p] : null);   // 기간 등락률
 const AA = (r, p) => S.asof ? r.h.a[p] : r.a[p];   // 외국인 (기준일 반영)
 const BB = (r, p) => S.asof ? r.h.b[p] : r.b[p];   // 기관 (기준일 반영)
@@ -3597,6 +3598,7 @@ function render(){
   $('retTilde').hidden = $('retDate').hidden = !S.asof;
   $('asofDate').value = S.asof || HD[HD.length - 1];
   if (S.asof) { const i = HD.indexOf(S.asof); $('retDate').min = HD[i + 1] || HD[HD.length - 1]; $('retDate').max = HD[HD.length - 1]; $('retDate').value = RETTO.date || HD[HD.length - 1]; }
+  $('fbBtn').classList.toggle('on', !!S.fb); $('fbBtn').textContent = S.fb ? '대형 수급 눌림 켜짐 ✓' : '대형 수급 눌림';
   $('danBtn').classList.toggle('on', !!S.dan); $('danBtn').textContent = S.dan ? '단타 필터 켜짐 ✓' : '단타 필터';
   if (S.asof) fillRetTo();
   document.body.classList.toggle('pat', S.view === 'pat');
@@ -3622,7 +3624,7 @@ function render(){
     srOk(r) && sigOk(r) && szOk(r) && !(S.hideHot && overheat(r)) &&
     r.cap >= S.minCap &&
     (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q));
-  let rows = DATA.filter(r => baseOk(r) && perPos(r) && allPos(r));
+  let rows = S.fb ? DATA.filter(fbOk) : DATA.filter(r => baseOk(r) && perPos(r) && allPos(r));
   // 단타 필터 겹침: 전날·10일·한달 탭 각각의 단타 상위 10개 중 두 탭 이상에 든 종목 표시
   DAN_HIT = {};
   if (S.dan) {
@@ -4362,6 +4364,14 @@ let DAN_HIT = {};
 //  공매도 잔고 줄어듦 → 매수 후보 (그 뒤 20일 평균 +4.8% · 오른 비율 59%, 295회)
 //  공매도 잔고 0.2%p↑ 늘어남 → 피하기 (평균 -1.2%, 27회 · 표본 적음)
 //  그 사이 → 지켜보기 (평균 +2.7% · 60%, 126회)
+// 대형 수급 눌림: 대형주 + 한달 외국인·기관 둘 다 순매수 + 한달 -5% 이하 + 외국인·기관 순매수한 날 수 기준 + 공매도 잔고 20일 줄어듦
+const FB_F = 0, FB_I = 12;   // 검증: 기관 날수가 중요, 외국인 날수는 거의 상관없음 (2021~2026 대형주 1014회 · 20일 뒤 평균 +4.4% · 오른 비율 58%)
+function fbOk(r){
+  if (S.asof || sizeOf(r) !== '대형') return false;
+  const a = AA(r, 'M'), b = BB(r, 'M'), rt = RT(r, 'M'), f = fDays(r), i = iDays(r);
+  return !!a && !!b && a.net > 0 && b.net > 0 && rt !== null && rt !== undefined && rt <= -5 &&
+    (f || 0) >= FB_F && (i || 0) >= FB_I && !!r.sb && r.sb.chg !== null && r.sb.chg !== undefined && r.sb.chg <= 0;
+}
 function flowJudge(r){
   if (S.asof) return null;
   const a = AA(r, 'M'), b = BB(r, 'M'), f = fDays(r), rt = RT(r, 'M');
@@ -4378,6 +4388,7 @@ const danPreset = () => S.sr === 'IN' && S.pf === 'P' && S.allf === 'POS' && S.s
 $('danBtn').onclick = () => {
   // 꺼져 있으면 켜면서 단타 조건으로 맞춤 / 켜진 채로 버튼을 바꿨으면 다시 단타 조건으로 맞춤 / 그대로면 끔
   S.dan = !S.dan || !danPreset();
+  if (S.dan) S.fb = false;
   if (S.dan) {
     S.sr = 'IN'; setSeg('srf', 'IN');
     S.pf = 'P'; setSeg('pf', 'P');
@@ -4386,6 +4397,12 @@ $('danBtn').onclick = () => {
     S.top = 30; $('top').value = '30';
     setSigf('ALL'); setSz('ALL');                                  // 단타 필터와 신호는 하나만
   }
+  S.page = 1; render();
+};
+// 대형 수급 눌림: 다른 거름 조건과 상관없이 해당 종목만 모아 봄 (공매도 잔고 줄어든 순)
+$('fbBtn').onclick = () => {
+  S.fb = !S.fb;
+  if (S.fb) { S.dan = false; S.sort = 'spct'; S.dir = -1; $('sort').value = 'spct'; }
   S.page = 1; render();
 };
 // 신호를 고르면 단타 필터는 꺼지고, 신호가 가려지지 않게 지지선·실적은 전체로. 눌림 ★은 시총 구간이 대형·중형으로 자동 표시
