@@ -67,7 +67,7 @@ def run(b, tfmin, fee):
         if not (C[i] > O[i] and body[i] >= 2 * bavg[i] and rsi[i] >= 70 and V[i] >= 0.833 * mx[i] and V[i] > 0): continue
         if i - last <= 5: last = i; continue  # 붙어서 연달아 뜬 건 첫 번째만
         last = i
-        row = {"t": T[i], "r": {}}
+        row = {"t": T[i], "c": C[i], "r": {}}
         for h in HZ:
             if h % tfmin: continue
             k = i + h // tfmin
@@ -90,7 +90,15 @@ lines = []
 def P(s=""):
     print(s); lines.append(s)
 
+LST = []
 def report(name, ev):
+    LST.append(f"\n■ {name} — 신호 뜬 시각(한국) · 그 봉 종가 · 1시간 안 최고로 더 오른 폭 · 1시간 뒤 · 4시간 뒤 (가격 변화, +면 더 오름)")
+    for e in ev:
+        tt = time.strftime("%Y-%m-%d %H:%M", time.gmtime(e["t"] + 9 * 3600))
+        r1 = e["r"].get(60); r4 = e["r"].get(240)
+        f = lambda x, fee: "  -  " if x is None else f"{-(x + fee):+.2f}%"
+        fee = 0.05 if name.startswith("SOXL") else 0.1
+        LST.append(f"  {tt}  {e['c']:.2f}  위로 {e.get('adv', float('nan')):.2f}%  1h {f(r1, fee)}  4h {f(r4, fee)}")
     P(f"\n■ {name}  신호 {len(ev)}번")
     if not ev: return
     cut = ev[int(len(ev) * 0.7)]["t"] if len(ev) >= 4 else None
@@ -123,3 +131,4 @@ for iv, m, ch in (("1m", 1, ch1), ("5m", 5, ch5), ("15m", 15, ch5)):
     report(f"SOXL {iv}", run(b, m, 0.05))
 
 open("research/out_pump.txt", "w").write("\n".join(lines) + "\n")
+open("research/out_pump_list.txt", "w").write("\n".join(LST) + "\n")
