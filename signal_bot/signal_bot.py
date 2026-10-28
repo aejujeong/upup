@@ -320,7 +320,8 @@ def sig_cross(b, I):
         star = I["hasv"] and vm >= 3 and rmin <= 30
         sl = c[i] - 2 * at[i]
         tp = c[i] + 2 * (c[i] - sl)
-        out.append((i, dict(name="50·100 동시 돌파" + (" (RSI 30 터치 + 거래량 3배)" if star else ""), rsistar=star, sl=sl, tp=tp, xg=True)))
+        slope = (a200[i] - a200[i - 40]) / at[i] if nn(a200[i - 40]) and at[i] else 0.0   # 큰 흐름: 200선 40봉 움직임 ÷ ATR
+        out.append((i, dict(name="50·100 동시 돌파" + (" (RSI 30 터치 + 거래량 3배)" if star else ""), rsistar=star, sl=sl, tp=tp, xg=True, slope=slope)))
     return out
 
 
@@ -485,7 +486,15 @@ def scan(sym, data, btc_ctx):
         I = ind(b)
         sigs = []
         if len(b) > 410:
-            sigs += sig_cross(b, I)
+            xs = sig_cross(b, I)
+            if mkt == "코인" and tf in ("30", "60", "240"):
+                # 큰 흐름 필터 (검증: 200선이 가파르게 내려갈 때 뜬 돌파는 손해 · ETH 4시간 -2.04% 이긴 비율 22%)
+                for _, info in xs:
+                    if info["slope"] < -1:
+                        info["bigdown"] = True
+                        info["name"] += " · 큰 흐름 하락 중"
+                        info["note"] = f"200선이 가파르게 내려가는 중 (40봉 {info['slope']:.1f} ATR) · 과거 이런 돌파는 평균 손해라 ★ 뺌"
+            sigs += xs
         if tf == "3":
             sigs += sig_dump(b, I, 1.5)
         elif tf == "5":
@@ -548,6 +557,8 @@ STAR_DUMP = {("BTC", "3"), ("BTC", "5"), ("ETH", "5")}
 def is_star(label, tf, info, grade):
     """진짜 중요한 신호: 검증이 확실한 것만"""
     if info.get("xg"):
+        if info.get("bigdown"):
+            return False
         return (grade is not None and grade >= 2) or bool(info.get("rsistar"))
     if info.get("kind") == "투매":
         return bool(info.get("far")) and (label, tf) in STAR_DUMP

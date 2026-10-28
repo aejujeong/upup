@@ -552,7 +552,8 @@ f_xTF(string m, string t) =>
         lastT := time
         lastB := bar_index
     near = not okX and a50 < av and bl >= 5 and ex and close <= top and close >= top * 0.99
-    [okX ? 2 : near ? 1 : 0, lastT, star, sp and x]
+    bigDn = m == "코인" and (t == "30" or t == "60" or t == "240") and (a200 - a200[40]) / at < -1   // 큰 흐름: 200선이 40봉 동안 ATR보다 많이 내려감
+    [okX ? 2 : near ? 1 : 0, lastT, star, bigDn]
 
 // 지금 차트 봉
 xA50 = s50
@@ -621,7 +622,7 @@ c_(int c, int r, string t, color bg, string tip = "", bool left = false) =>
     table.cell(mt, c, r, t, text_color = color.white, text_size = size.small, text_halign = left ? text.align_left : text.align_center, bgcolor = bg, tooltip = tip)
 lvOf(int st) => st == 2 or st == 4 ? 3 : st == 3 ? 2 : st == 1 ? 1 : 0
 // has = 이 봉에 기본 근거가 있는지 · t = 동시 돌파 등급용 봉 이름
-tf_row(string tfNm, bool has, string nm, int st, int lt, string tip, string t, int xs, int xl, bool xb) =>
+tf_row(string tfNm, bool has, string nm, int st, int lt, string tip, string t, int xs, int xl, bool xb, bool bd = false) =>
     r = gI.get(0) + 1
     gI.set(0, r)
     dk = color.new(#111111, 10)
@@ -632,9 +633,9 @@ tf_row(string tfNm, bool has, string nm, int st, int lt, string tip, string t, i
     c_(0, r, tfNm + (has ? " · " + nm : ""), dk, has ? tip : "", true)
     c_(1, r, isLow or not has ? "-" : stTxt(st), isLow or not has ? dk : stCol(st), isLow ? lowTip : has ? tip : "")
     c_(2, r, isLow or not has ? "-" : ago(lt), dk)
-    xt = xs == 2 ? "매수" + (xb ? " ★" : "") : xs == 1 ? "근접" : "대기"
+    xt = (xs == 2 ? "매수" + (xb ? " ★" : "") : xs == 1 ? "근접" : "대기") + (bd and xs >= 1 ? " · 큰 흐름↓" : "")
     xc = xs == 2 ? color.new(#2e7d32, 10) : xs == 1 ? color.new(#7cb342, 35) : color.new(#424242, 30)
-    xtip = "검증 " + xGTxt(g) + " · " + xEv(mkt, t, isBTC) + " · 손절 ATR 2배 · 익절 손절 폭 2배"
+    xtip = "검증 " + xGTxt(g) + " · " + xEv(mkt, t, isBTC) + " · 손절 ATR 2배 · 익절 손절 폭 2배" + (bd ? " · 지금 200선이 가파르게 내려가는 중 (과거 이럴 때 뜬 돌파는 평균 손해 · ETH 4시간 -2.04%)" : "")
     c_(3, r, isLow ? "-" : xt + " (" + xGTxt(g) + ")", isLow ? dk : xc, isLow ? lowTip : xtip)
     c_(4, r, isLow ? "-" : ago(xl), dk)
     gI.set(1, math.max(gI.get(1), has and not isLow ? lvOf(st) : 0, isLow ? 0 : lvOf(xs)))
@@ -671,9 +672,9 @@ if barstate.islast
             tf_row("3분", true, "투매", st3, lt3, tp3, "3", x3, xl3, xb3)
             tf_row("5분", true, "투매", st5, lt5, tp5, "5", x5, xl5, xb5)
         tf_row("15분", coin, "저점 반등 (BTC)", st15, lt15, tp15, "15", x15, xl15, xb15)
-        tf_row("30분", coin or us, "추세 돌파", coin ? st30 : st30u, coin ? lt30 : lt30u, coin ? tp30 : tp30u, "30", x30x, xl30, xb30)
-        tf_row("1시간", coin or us, coin ? "변동성 돌파일" : "추세 돌파", coin ? st60 : st60u, coin ? lt60 : lt60u, coin ? tp60 : tp60u, "60", x60x, xl60, xb60)
-        tf_row("4시간", coin or us, "추세 돌파", st4h, lt4h, tp4h, "240", x240, xl240, xb240)
+        tf_row("30분", coin or us, "추세 돌파", coin ? st30 : st30u, coin ? lt30 : lt30u, coin ? tp30 : tp30u, "30", x30x, xl30, xb30, xs30)
+        tf_row("1시간", coin or us, coin ? "변동성 돌파일" : "추세 돌파", coin ? st60 : st60u, coin ? lt60 : lt60u, coin ? tp60 : tp60u, "60", x60x, xl60, xb60, xs60)
+        tf_row("4시간", coin or us, "추세 돌파", st4h, lt4h, tp4h, "240", x240, xl240, xb240, xs240)
         tf_row("일봉", coin or us or kr, kr ? "100일선 눌림" : "터틀", kr ? stK : stD, kr ? ltK : ltD, kr ? tpK : tpD, "D", xD, xlD, xbD)
         if coin
             on30 = not na(lt30) and timenow - lt30 <= 86400000
