@@ -2715,8 +2715,11 @@ function plCell(r){
 // 외국인·기관 모두, 지금 탭과 비교 기간 모두 순매수 (단타 후보 조건, 수급 버튼과 상관없이)
 function posAll(r){ const o = OTHER[S.per]; return AA(r, S.per).net > 0 && BB(r, S.per).net > 0 && AA(r, o).net > 0 && BB(r, o).net > 0; }
 // 지금 탭(전날·10일·한달) 기간에 외국인이 순매수한 종목만
-function perPos(r){ const x = AA(r, S.per); return !!x && x.net > 0; }
+function perPos(r){ if (S.dan) return true; const x = AA(r, S.per); return !!x && x.net > 0; }
+// 단타 필터: 탭과 상관없이 전날·10일·한달 모두 외국인·기관 순매수 (그래야 어느 탭에서 보든 같은 종목)
+function posAll3(r){ return ['1', '10', 'M'].every(p => { const a = AA(r, p), b = BB(r, p); return !!a && !!b && a.net > 0 && b.net > 0; }); }
 function allPos(r){
+  if (S.dan) return posAll3(r);
   if (S.allf !== 'POS') return true;
   const o = OTHER[S.per];
   return AA(r, S.per).net > 0 && BB(r, S.per).net > 0 && AA(r, o).net > 0 && BB(r, o).net > 0;
