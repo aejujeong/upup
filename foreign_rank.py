@@ -926,7 +926,13 @@ def collect(days_all):
     for r in rows.values():
         r.setdefault("sig", 0)
     tlog("매매 신호 계산 끝")
-    save_hist(rows, hn, adj, days_net, srh, sigh)
+    try:
+        sbh = short_hist(days_net[-(NET_HISTORY + 26):])
+    except Exception as e:
+        print(f"과거 공매도 잔고 처리 중 문제: {e}")
+        sbh = {}
+    tlog("과거 공매도 잔고 끝")
+    save_hist(rows, hn, adj, days_net, srh, sigh, sbh)
     tlog("과거 시점 파일 저장 끝")
     global PATTERN, DANBT
     try:
@@ -1851,13 +1857,48 @@ def calc_signals(rows, ohl, hn, days_net, srh, hist_set):
     return out
 
 
-def save_hist(rows, hn, adj, days_net, srh=None, sigh=None):
+def short_hist(days, budget=30 * 60):
+    """날짜별 공매도 잔고 비중(상장주식 대비 %) {날짜: {종목: %}} — 기준일 보기용. 한 번 받은 날은 저장해 두고 재사용.
+    처음엔 오래 걸려서 budget(초)만큼만 받고 나머지는 다음 실행 때 이어 받음. 최근 4일은 아직 안 나왔을 수 있어 저장 안 함."""
+    out, t0 = {}, time.time()
+    for k, d in enumerate(days):
+        if time.time() - t0 > budget and not all((CACHE / f"sbt_{m}_{d}.pkl").exists() for m in MARKETS):
+            continue
+        day = {}
+        for m in MARKETS:
+            try:
+                df = cached("sbt", m, d, lambda: stock.get_shorting_balance_by_ticker(d, market=m), latest=k >= len(days) - 4)
+            except Exception:
+                df = None
+            if df is None or df.empty or "비중" not in df.columns:
+                day = None
+                break
+            for t, v in df["비중"].items():
+                try:
+                    day[t] = float(v)
+                except (TypeError, ValueError):
+                    pass
+        if day:
+            out[d] = day
+    print(f"과거 공매도 잔고: {len(out)}/{len(days)}일")
+    return out
+
+
+def save_hist(rows, hn, adj, days_net, srh=None, sigh=None, sbh=None):
     """날짜별로 '그날까지의 누적 순매수'와 수정주가를 저장한다. 두 날짜의 누적값 차이 = 그 사이 순매수."""
     cum = {t: [0, 0] for t in rows}
     win = {t: [[], []] for t in rows}                              # 최근 20일 외국인·기관 순매수 여부 (1/0)
     first = len(days_net) - NET_HISTORY
     for j, day in enumerate(days_net):
         snap = {}
+        # 공매도 잔고는 2~3일 늦게 나오므로 그날 알 수 있던 자료(2~4일 전)와 그보다 20거래일 앞을 비교
+        sbc = {}
+        if sbh and j >= first:
+            for lag in (2, 3, 4):
+                if j - lag - 20 >= 0 and days_net[j - lag] in sbh and days_net[j - lag - 20] in sbh:
+                    a, b = sbh[days_net[j - lag]], sbh[days_net[j - lag - 20]]
+                    sbc = {t: round(a[t] - b[t], 3) for t in a if t in b}
+                    break
         for t in rows:
             x = hn.get(t)
             df = di = 0
@@ -1875,7 +1916,7 @@ def save_hist(rows, hn, adj, days_net, srh=None, sigh=None):
             px = adj.get(t, {}).get(day)
             snap[t] = [cum[t][0], cum[t][1], None if px is None else round(px, 1)]
             st = (srh or {}).get(t, {}).get(day) or [None, None, None]
-            snap[t] += list(st) + [sum(w[0]), sum(w[1]), (sigh or {}).get(t, {}).get(day, 0)]   # [지지선 상태(0~3), 지지선까지 %, 저항까지 %, 외국인 순매수일(20일), 기관 순매수일(20일), 매매 신호(0~5)]
+            snap[t] += list(st) + [sum(w[0]), sum(w[1]), (sigh or {}).get(t, {}).get(day, 0), sbc.get(t)]   # [지지선 상태(0~3), 지지선까지 %, 저항까지 %, 외국인 순매수일(20일), 기관 순매수일(20일), 매매 신호(0~5), 공매도 잔고 20일 변화 %p(그날 알 수 있던 자료)]
         if j < first:
             continue
         key = f"{day[:4]}-{day[4:6]}-{day[6:]}"
@@ -2886,7 +2927,7 @@ async function setAsof(d){
              'M': px && aM[2] ? (px / aM[2] - 1) * 100 : null},
         px, cap: capD,
         sr: c && c.length > 3 ? {st: [null, 'app', 'in', 'at'][c[3]] || null, dist: c[4], room: c[5]} : null,   // 그날 기준 지지선
-        fd: c && c.length > 6 ? c[6] : null, id: c && c.length > 7 ? c[7] : null, sig: c && c.length > 8 ? c[8] : 0,                                  // 그날 기준 20일 중 외국인·기관 순매수한 날
+        fd: c && c.length > 6 ? c[6] : null, id: c && c.length > 7 ? c[7] : null, sig: c && c.length > 8 ? c[8] : 0, sbc: c && c.length > 9 ? c[9] : null,                                  // 그날 기준 20일 중 외국인·기관 순매수한 날
       };
       const q0 = s60 && s60[r.code] && s60[r.code][2], y0 = s250 && s250[r.code] && s250[r.code][2];
       r.h.q = px && q0 ? (px / q0 - 1) * 100 : null;
@@ -4367,10 +4408,11 @@ let DAN_HIT = {};
 // 대형 수급 눌림: 대형주 + 한달 외국인·기관 둘 다 순매수 + 한달 -5% 이하 + 외국인·기관 순매수한 날 수 기준 + 공매도 잔고 20일 줄어듦
 const FB_F = 0, FB_I = 12;   // 검증: 기관 날수가 중요, 외국인 날수는 거의 상관없음 (2021~2026 대형주 1014회 · 20일 뒤 평균 +4.4% · 오른 비율 58%)
 function fbOk(r){
-  if (S.asof || sizeOf(r) !== '대형') return false;
+  if (sizeOf(r) !== '대형') return false;
   const a = AA(r, 'M'), b = BB(r, 'M'), rt = RT(r, 'M'), f = fDays(r), i = iDays(r);
+  const c = S.asof ? (r.h ? r.h.sbc : null) : (r.sb ? r.sb.chg : null);   // 기준일이면 그날 알 수 있던 공매도 잔고 변화
   return !!a && !!b && a.net > 0 && b.net > 0 && rt !== null && rt !== undefined && rt <= -5 &&
-    (f || 0) >= FB_F && (i || 0) >= FB_I && !!r.sb && r.sb.chg !== null && r.sb.chg !== undefined && r.sb.chg <= 0;
+    (f || 0) >= FB_F && (i || 0) >= FB_I && c !== null && c !== undefined && c <= 0;
 }
 function flowJudge(r){
   if (S.asof) return null;
