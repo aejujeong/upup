@@ -320,7 +320,7 @@ def sig_cross(b, I):
         star = I["hasv"] and vm >= 3 and rmin <= 30
         sl = c[i] - 2 * at[i]
         tp = c[i] + 2 * (c[i] - sl)
-        out.append((i, dict(name="50·100 동시 돌파" + (" ★" if star else ""), sl=sl, tp=tp, xg=True)))
+        out.append((i, dict(name="50·100 동시 돌파" + (" (RSI 30 터치 + 거래량 3배)" if star else ""), rsistar=star, sl=sl, tp=tp, xg=True)))
     return out
 
 
@@ -353,7 +353,7 @@ def sig_dump(b, I, min_d):
         tp = x["c"] * 1.02 if not nn(tg) else tg * 0.999
         far = dist >= min_d
         slp = 1.5 if min_d <= 1.5 else 2.0
-        out.append((i, dict(name="투매" + (" · 반등 여유 있음" if far else " · 위 이평선 가까움"),
+        out.append((i, dict(name="투매" + (" · 반등 여유 있음" if far else " · 위 이평선 가까움"), far=far,
                             kind="투매", sl=x["c"] * (1 - slp / 100), tp=tp,
                             note=f"목표까지 {dist:.1f}% · RSI {I['rs'][i]:.0f} · 거래량 300봉 최대의 {v[i] / max(v[max(0, i - 299):i + 1]) * 100:.0f}%"
                             + ("" if far else " · 목표 가까울 때는 검증상 평균 손해(-0.1~-0.27%)"))))
@@ -522,10 +522,42 @@ def scan(sym, data, btc_ctx):
     return label, found
 
 
+# 기존 근거별 검증 결과 (지표와 같은 숫자)
+BASE_EV = {
+    ("SOXL", "30", "추세 돌파"): "보통 · 평균 +0.49% (94회 · 1~2년)",
+    ("SOXL", "60", "추세 돌파"): "보통 · 평균 +0.76% (118회 · 1~2년)",
+    ("SOXL", "240", "추세 돌파"): "강함 · 평균 +1.59% (3년 · 승률 52%)",
+    ("SOXL", "D", "터틀 (20일 고점 돌파)"): "강함 · 평균 +5.7% (16년)",
+    ("BTC", "15", "저점 반등"): "약함 · 평균 +0.20% (98회 · 2년)",
+    ("ETH", "15", "저점 반등"): "보통 · 평균 +0.69% (98회 · 2년)",
+    ("BTC", "30", "추세 돌파"): "보통 · 평균 +0.63% (6년 · 승률 50%)",
+    ("ETH", "30", "추세 돌파"): "약함 · 평균 +0.33% (6년)",
+    ("BTC", "60", "변동성 돌파일 돌파"): "약함 · 평균 +0.16~0.30% (6년)",
+    ("ETH", "60", "변동성 돌파일 돌파"): "약함 · 평균 +0.16~0.30% (6년)",
+    ("BTC", "240", "추세 돌파"): "강함 · 평균 +1.65% (6년 · 승률 44%)",
+    ("ETH", "240", "추세 돌파"): "강함 · 평균 +1.48% (6년 · 승률 46%)",
+    ("BTC", "D", "터틀 (20일 고점 돌파)"): "강함 · 평균 +5.0~5.9% (6년)",
+    ("ETH", "D", "터틀 (20일 고점 돌파)"): "강함 · 평균 +5.0~5.9% (6년)",
+}
+DUMP_EV = {("BTC", "3"): "+0.26% (40회)", ("BTC", "5"): "+2.38% (14회)", ("ETH", "3"): "-0.11% (110회)", ("ETH", "5"): "+0.41% (65회)"}
+STAR_BASE = {("SOXL", "30", "추세 돌파"), ("SOXL", "60", "추세 돌파"), ("SOXL", "240", "추세 돌파"), ("SOXL", "D", "터틀 (20일 고점 돌파)"),
+             ("BTC", "240", "추세 돌파"), ("ETH", "240", "추세 돌파"), ("BTC", "D", "터틀 (20일 고점 돌파)"), ("ETH", "D", "터틀 (20일 고점 돌파)")}
+STAR_DUMP = {("BTC", "3"), ("BTC", "5"), ("ETH", "5")}
+
+
+def is_star(label, tf, info, grade):
+    """진짜 중요한 신호: 검증이 확실한 것만"""
+    if info.get("xg"):
+        return (grade is not None and grade >= 2) or bool(info.get("rsistar"))
+    if info.get("kind") == "투매":
+        return bool(info.get("far")) and (label, tf) in STAR_DUMP
+    return (label, tf, info["name"]) in STAR_BASE
+
+
 def message(label, tf, bar, info, grade):
     t = datetime.fromtimestamp(bar["t"], KST).strftime("%m/%d %H:%M")
     px = bar["c"]
-    lines = [f"[{info.get('kind', '매수')}] {label} {TFNAME[tf]} · {info['name']}",
+    lines = [f"{'★ ' if is_star(label, tf, info, grade) else ''}[{info.get('kind', '매수')}] {label} {TFNAME[tf]} · {info['name']}",
              f"가격 {fmt(px)} · 봉 {t} (한국 시간)"]
     sl, tp = info.get("sl"), info.get("tp")
     ex = []
@@ -541,6 +573,11 @@ def message(label, tf, bar, info, grade):
         lines.append(info["note"])
     if grade is not None:
         lines.append(f"검증: {GTXT[grade]}")
+    elif info.get("kind") == "투매":
+        ev = DUMP_EV.get((label, tf))
+        lines.append(f"검증: 목표 멀 때 평균 {ev}" if ev and info.get("far") else "검증: 목표 가까울 때 평균 -0.1~-0.27% (손해)" if not info.get("far") else "검증: 데이터 없음 (SOXL)")
+    elif (label, tf, info["name"]) in BASE_EV:
+        lines.append(f"검증: {BASE_EV[(label, tf, info['name'])]}")
     return "\n".join(lines)
 
 
