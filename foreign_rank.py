@@ -2715,11 +2715,11 @@ function plCell(r){
 // 외국인·기관 모두, 지금 탭과 비교 기간 모두 순매수 (단타 후보 조건, 수급 버튼과 상관없이)
 function posAll(r){ const o = OTHER[S.per]; return AA(r, S.per).net > 0 && BB(r, S.per).net > 0 && AA(r, o).net > 0 && BB(r, o).net > 0; }
 // 지금 탭(전날·10일·한달) 기간에 외국인이 순매수한 종목만
-function perPos(r){ if (S.dan) return true; const x = AA(r, S.per); return !!x && x.net > 0; }
-// 단타 필터: 탭과 상관없이 전날·10일·한달 모두 외국인·기관 순매수 (그래야 어느 탭에서 보든 같은 종목)
-function posAll3(r){ return ['1', '10', 'M'].every(p => { const a = AA(r, p), b = BB(r, p); return !!a && !!b && a.net > 0 && b.net > 0; }); }
+function perPos(r){ const x = AA(r, S.per); return !!x && x.net > 0; }
+// 단타 필터: 지금 탭 기간에 외국인·기관 둘 다 순매수
+function posTab(r){ const a = AA(r, S.per), b = BB(r, S.per); return !!a && !!b && a.net > 0 && b.net > 0; }
 function allPos(r){
-  if (S.dan) return posAll3(r);
+  if (S.dan) return posTab(r);
   if (S.allf !== 'POS') return true;
   const o = OTHER[S.per];
   return AA(r, S.per).net > 0 && BB(r, S.per).net > 0 && AA(r, o).net > 0 && BB(r, o).net > 0;
@@ -3573,11 +3573,10 @@ function render(){
     r.cap >= S.minCap &&
     (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q)));
   if (S.dan) {
-    // 단타 필터 (9/28 예전 방식): 지금 화면에 걸러진 종목들끼리 전날·10일·한달 외국인+기관 합산/시총이 모두 10위 안
-    const pool = rows;
-    const top10 = p => new Set(pool.slice().sort((a, b) => (AA(b, p).pct + BB(b, p).pct) - (AA(a, p).pct + BB(a, p).pct)).slice(0, DAN_TOP).map(r => r.code));
-    const s1 = top10('1'), s10 = top10('10'), sM = top10('M');
-    rows = rows.filter(r => s1.has(r.code) && s10.has(r.code) && sM.has(r.code));
+    // 단타 필터: 지금 탭(전날·10일·한달) 기간 외국인+기관 합산/시총 상위 10개 (탭마다 따로)
+    const p = S.per;
+    const top = new Set(rows.slice().sort((a, b) => (AA(b, p).pct + BB(b, p).pct) - (AA(a, p).pct + BB(a, p).pct)).slice(0, DAN_TOP).map(r => r.code));
+    rows = rows.filter(r => top.has(r.code));
   }
   const total = rows.length;
   rows.sort((a, b) => {
