@@ -353,7 +353,7 @@ def sig_dump(b, I, min_d):
         dist = 2.0 if not nn(tg) else (tg * 0.999 / x["c"] - 1) * 100
         tp = x["c"] * 1.02 if not nn(tg) else tg * 0.999
         far = dist >= min_d
-        slp = 1.5 if min_d <= 1.5 else 2.0
+        slp = 1.0  # 투매는 꼬리에서 잡으니 손절 1% (사용자 지정, 검증은 1.5·2%로 했음)
         out.append((i, dict(name="투매" + (" · 반등 여유 있음" if far else " · 위 이평선 가까움"), far=far,
                             kind="투매", sl=x["c"] * (1 - slp / 100), tp=tp,
                             note=f"목표까지 {dist:.1f}% · RSI {I['rs'][i]:.0f} · 거래량 300봉 최대의 {v[i] / max(v[max(0, i - 299):i + 1]) * 100:.0f}%"
