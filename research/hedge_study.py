@@ -1,15 +1,15 @@
 """외국인·기관이 사는데 떨어지는 종목 — 공매도 잔고·기관 세부 주체로 걸러지는지 검증
 대상: 2026-10-23 시총 상위 200종목 · 2019-01 ~ 2026-10
 신호: 20일 동안 외국인 합계 순매수 > 0 · 기관 합계 순매수 > 0 · 외국인 순매수한 날 12일 이상 (5거래일마다 하나씩)
-결과: 그 뒤 20거래일 수익률
+결과: 그 뒤 20거래일 수익률 (공매도 비교 위해 2021년부터 · 시총 상위 150종목)
 """
 import time, traceback
 import pandas as pd
 from pykrx import stock
 
-S, E, D0 = "20190101", "20261023", "20261023"
+S, E, D0 = "20210101", "20261023", "20261023"
 cap = stock.get_market_cap(D0).sort_values("시가총액", ascending=False)
-tickers = list(cap.index[:200])
+tickers = list(cap.index[:150])
 INST = ["금융투자", "보험", "투신", "사모", "은행", "기타금융", "연기금"]
 ev = []
 t0 = time.time()
@@ -17,10 +17,20 @@ for n, t in enumerate(tickers):
     try:
         px = stock.get_market_ohlcv(S, E, t)["종가"]; time.sleep(0.6)
         inv = stock.get_market_trading_value_by_date(S, E, t, detail=True); time.sleep(0.6)
-        try:
-            sb = stock.get_shorting_balance_by_date(S, E, t)[["공매도잔고", "상장주식수"]]; time.sleep(0.6)
-        except Exception:
-            sb = pd.DataFrame(columns=["공매도잔고", "상장주식수"])
+        parts = []
+        for y in range(int(S[:4]), int(E[:4]) + 1):   # 공매도 잔고는 긴 기간을 한 번에 못 받아서 1년씩
+            try:
+                x = stock.get_shorting_balance_by_date(f"{y}0101", min(f"{y}1231", E), t)
+                if x is not None and not x.empty:
+                    parts.append(x[["공매도잔고", "상장주식수"]])
+            except Exception as e:
+                if n < 2: print("공매도 잔고 오류", y, e)
+            time.sleep(0.5)
+        sb = pd.concat(parts) if parts else pd.DataFrame(columns=["공매도잔고", "상장주식수"])
+        sb.index = pd.to_datetime(sb.index)
+        sb = sb[~sb.index.duplicated()].astype(float)
+        if n < 3: print(t, "공매도 잔고 줄 수", len(sb), flush=True)
+        px.index = pd.to_datetime(px.index); inv.index = pd.to_datetime(inv.index)
         df = pd.DataFrame({"c": px}).join(inv, how="inner").join(sb, how="left")
         df["inst"] = df[INST].sum(axis=1)
         df["real"] = df["연기금"] + df["투신"] + df["보험"]
@@ -77,5 +87,6 @@ L.append(f"  좋은 쪽: {S_(good)}")
 L.append(f"  나쁜 쪽 (잔고 크게 늘었거나 방향성 매수 없음): {S_(bad)}")
 L.append(f"  연도별 좋은 쪽: " + " | ".join(f"{y} {S_(g)}" for y, g in good.groupby(good.d.dt.year)))
 L.append(f"  연도별 전체: " + " | ".join(f"{y} {S_(g)}" for y, g in E_.groupby(E_.d.dt.year)))
+L.insert(1, f"공매도 잔고 붙은 사례: {E_.sbr.notna().sum()}개")
 open("research/out_hedge.txt", "w", encoding="utf-8").write("\n".join(L))
 print("\n".join(L))
