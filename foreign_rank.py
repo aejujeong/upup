@@ -2633,7 +2633,7 @@ const wonTd = v => `<td class="${v > 0 ? 'pos' : v < 0 ? 'neg' : ''}">${won(v, t
 const COLS = [
   {k:null,   t:'관심', cell: (r) => `<td class="st">${starBtn(r.code)}</td>`},
   {k:null,   t:'순위', cell: (r, x) => `<td>${x.rank}</td>`},
-  {k:'name', t:'종목명', cell: (r) => `<td class="name">${esc(r.name)}</td>`},
+  {k:'name', t:'종목명', cell: (r) => { const h = S.dan && DAN_HIT[r.code] && DAN_HIT[r.code].length >= 2 ? DAN_HIT[r.code] : null; return `<td class="name">${esc(r.name)}${h ? ` <span class="sigb good" title="단타 필터 상위 10개에 ${h.join('·')} 탭 모두 들어감">${h.length}개 겹침 <small>${h.join('·')}</small></span>` : ''}</td>`; }},
   {k:'sig',  t:'신호', cell: (r) => `<td>${sigBadge(sigOf(r))}</td>`},
   {k:null,   t:'코드', cell: (r) => `<td class="code">${r.code}</td>`},
   {k:null,   t:'시장', cell: (r) => `<td>${r.mkt}</td>`},
@@ -3563,15 +3563,27 @@ function render(){
   if (S.view === 'sec') { renderRange(); renderSec(); return; }
   renderRange();
   const q = S.q.trim().toLowerCase();
-  let rows = DATA.filter(r =>
+  const baseOk = r =>
     (S.watch === 'ALL' || WATCH.has(r.code)) &&
     (!S.sec || r.sec === S.sec) &&
     (!S.sub || (r.sub || '미분류') === S.sub) &&
     (S.pf === 'ALL' || (S.pf === 'P' ? r.eps > 0 : (r.eps !== null && r.eps < 0))) &&
     (S.mkt === 'ALL' || r.mkt === S.mkt) &&
-    perPos(r) && srOk(r) && allPos(r) && sigOk(r) && szOk(r) && !(S.hideHot && overheat(r)) &&
+    srOk(r) && sigOk(r) && szOk(r) && !(S.hideHot && overheat(r)) &&
     r.cap >= S.minCap &&
-    (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q)));
+    (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q));
+  let rows = DATA.filter(r => baseOk(r) && perPos(r) && allPos(r));
+  // 단타 필터 겹침: 전날·10일·한달 탭 각각의 단타 상위 10개 중 두 탭 이상에 든 종목 표시
+  DAN_HIT = {};
+  if (S.dan) {
+    const base = DATA.filter(baseOk);
+    const pn = {'1': '전날', '10': '10일', 'M': '한달'};
+    ['1', '10', 'M'].forEach(p => {
+      base.filter(r => { const a = AA(r, p), b = BB(r, p); return !!a && !!b && a.net > 0 && b.net > 0; })
+        .sort((a, b) => (AA(b, p).pct + BB(b, p).pct) - (AA(a, p).pct + BB(a, p).pct)).slice(0, DAN_TOP)
+        .forEach(r => (DAN_HIT[r.code] = DAN_HIT[r.code] || []).push(pn[p]));
+    });
+  }
   if (S.dan) {
     // 단타 필터: 지금 탭(전날·10일·한달) 기간 외국인+기관 합산/시총 상위 10개 (탭마다 따로)
     const p = S.per;
@@ -4295,6 +4307,7 @@ function setSigf(v){ S.sigf = v; document.querySelectorAll('#sigf button').forEa
 const overheat = r => { if (regime() === '강세') return false; const m = RT(r, 'M'), q = RT(r, 'Q'); return (m !== null && m !== undefined && m >= 20) || (q !== null && q !== undefined && q >= 30); };
 // 단타 필터: 켜면 지지선 구간 안·흑자만·합산 시총 대비 정렬·30개씩으로 맞추고, 전날·10일·한달 합산/시총 모두 10위 안인 종목만
 const DAN_TOP = 10;
+let DAN_HIT = {};
 function setSeg(id, v){ $(id).querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); }
 const danPreset = () => S.sr === 'IN' && S.pf === 'P' && S.allf === 'POS' && S.sort === 'spct' && S.top === 30;
 $('danBtn').onclick = () => {
