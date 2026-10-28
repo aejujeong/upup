@@ -29,7 +29,9 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          git checkout -B research-out
+          cp research/out_*.txt /tmp/ 2>/dev/null || true
+          git fetch -q origin research-out && git checkout -B research-out origin/research-out || git checkout -B research-out
+          cp /tmp/out_*.txt research/ 2>/dev/null || true
           git add -f research/out_*.txt
           git commit -m "검증 결과 ${{ inputs.script }}" || true
           git push -f origin research-out
