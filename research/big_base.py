@@ -1,7 +1,13 @@
 """비교 기준: 같은 기간 대형주 전체 (그때 시총 1조↑) 20거래일 뒤 수익 → research/out_big_base.txt
 A 대형주 아무 날 / B 20일 -5%↓ / C B + 외국인·기관 20일 둘 다 순매수 / D C + 기관 12일↑ (공매도 조건은 빼고)"""
-import time
+import time, sys, traceback
 import pandas as pd
+def _hook(t, v, tb):
+    msg = "".join(traceback.format_exception(t, v, tb))
+    open("research/out_big_base.txt", "w", encoding="utf-8").write("실패\n" + msg)
+    print("::notice::" + msg.replace("\n", " | ")[-900:])
+sys.excepthook = _hook
+ERR = []
 from pykrx import stock
 
 S, E = "20210101", stock.get_nearest_business_day_in_a_week()
@@ -33,6 +39,7 @@ for n, t in enumerate(big):
                          f20.iloc[k] > 0 and i20.iloc[k] > 0, idd.iloc[k] >= 12))
     except Exception as e:
         print(t, e)
+        if len(ERR) < 3: ERR.append(f"{t} {e!r}"); print(f"::notice::{t} {e!r}"[:900])
     if n % 50 == 0: print(n, len(rows), flush=True)
 
 X = pd.DataFrame(rows, columns=["t", "d", "fwd", "dn", "both", "i12"])
