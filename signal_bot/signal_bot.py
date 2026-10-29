@@ -475,6 +475,82 @@ def sig_low15(b, I, calm):
     return out
 
 
+# 숏 자리 (검증: research/short_hunt.py · 종가 숏 · 손절 2ATR 위 · 익절 4ATR 아래 · 앞 70%·뒤 30% 둘 다 플러스였던 것만)
+# (코인, 봉) → [(이름, 흐름 필터)]  필터: None 전체 / "down" 200선 40봉 기울기 < -1 ATR / "notup" 기울기 < 0
+SHORT_RULES = {
+    ("BTC", "30"): [("50·100 동시 이탈", "down"), ("20선 과이격 음봉", "notup"), ("과열 후 장악 음봉", "notup")],
+    ("ETH", "30"): [("50·100 동시 이탈", "down")],
+    ("ETH", "15"): [("20선 과이격 음봉", "notup")],
+    ("ETH", "60"): [("50선 반등 실패", "down"), ("20선 과이격 음봉", "notup")],
+    ("BTC", "240"): [("50·100 동시 이탈", None)],
+    ("ETH", "240"): [("50·100 동시 이탈", None)],
+}
+SHORT_EV = {
+    ("BTC", "30", "50·100 동시 이탈"): "평균 +0.08% · 승률 43% (190회, 큰 흐름 하락일 때만)",
+    ("BTC", "30", "20선 과이격 음봉"): "평균 +0.14% · 승률 40% (114회)",
+    ("BTC", "30", "과열 후 장악 음봉"): "평균 +0.22% · 승률 45% (150회)",
+    ("ETH", "30", "50·100 동시 이탈"): "평균 +0.10% · 승률 38% (202회, 큰 흐름 하락일 때만)",
+    ("ETH", "15", "20선 과이격 음봉"): "평균 +0.42% · 승률 51% (93회)",
+    ("ETH", "60", "50선 반등 실패"): "평균 +0.67% · 승률 45% (175회, 큰 흐름 하락일 때만)",
+    ("ETH", "60", "20선 과이격 음봉"): "평균 +0.25% · 승률 41% (76회)",
+    ("BTC", "240", "50·100 동시 이탈"): "평균 +0.36% · 승률 41% (170회)",
+    ("ETH", "240", "50·100 동시 이탈"): "평균 +0.32% · 승률 40% (159회) · 큰 흐름 상승 아닐 때 +2.89% (53회)",
+}
+
+
+def sig_short(b, I, label, tf):
+    """[매도] 숏 자리 — SHORT_RULES 에 있는 코인·봉만"""
+    rules = SHORT_RULES.get((label, tf))
+    if not rules or len(b) < 410:
+        return []
+    c, a50, a100, a200, at, rs = I["c"], I["a50"], I["a100"], I["a200"], I["at"], I["rs"]
+    a20 = sma(c, 20)
+    out = []
+    for i in range(401, len(b)):
+        if not (nn(at[i]) and at[i] > 0 and nn(a200[i]) and nn(a200[i - 40])):
+            continue
+        x, p = b[i], b[i - 1]
+        slope = (a200[i] - a200[i - 40]) / at[i]
+        for name, flt in rules:
+            if flt == "down" and not slope < -1:
+                continue
+            if flt == "notup" and not slope < 0:
+                continue
+            hit = False
+            if name == "50·100 동시 이탈":
+                lo, plo = min(a50[i], a100[i]), min(a50[i - 1], a100[i - 1])
+                hit = a50[i] > a100[i] and x["c"] < lo and p["c"] >= plo
+            elif name == "20선 과이격 음봉":
+                hit = nn(a20[i]) and x["c"] - a20[i] >= 3 * at[i] and x["c"] < x["o"]
+            elif name == "과열 후 장악 음봉":
+                hit = p["c"] > p["o"] and x["c"] < x["o"] and x["o"] >= p["c"] and x["c"] <= p["o"] and nn(rs[i - 1]) and rs[i - 1] >= 70
+            elif name == "50선 반등 실패":
+                hit = x["h"] >= a50[i] and x["c"] < a50[i] and x["c"] < x["o"] and nn(rs[i]) and 45 <= rs[i] <= 60 and p["c"] < a50[i - 1]
+            if hit:
+                out.append((i, dict(name=name, kind="매도", sl=x["c"] + 2 * at[i], tp=x["c"] - 4 * at[i],
+                                    note=f"숏 자리 · 200선 40봉 기울기 {slope:.1f} ATR")))
+    return out
+
+
+def sig_hot(b, I):
+    """[과열] 장대 양봉 + RSI 70↑ + 거래량 300봉 최대의 83%↑ — 숏 근거 아님, 추격 매수 주의용"""
+    out = []
+    body = [abs(x["c"] - x["o"]) for x in b]
+    bav = sma(body, 20)
+    v = I["v"]
+    for i in range(401, len(b)):
+        x = b[i]
+        if not (x["c"] > x["o"] and nn(bav[i - 1]) and body[i] >= 2 * bav[i - 1]):
+            continue
+        if not (nn(I["rs"][i]) and I["rs"][i] >= 70):
+            continue
+        if v[i] < 0.833 * max(v[max(0, i - 299):i + 1]):
+            continue
+        out.append((i, dict(name="과열", kind="과열", sl=math.nan, tp=math.nan,
+                            note=f"RSI {I['rs'][i]:.0f} · 거래량 300봉 최대의 {v[i] / max(v[max(0, i - 299):i + 1]) * 100:.0f}% · 추격 매수 주의")))
+    return out
+
+
 def scan(sym, data, btc_ctx):
     mkt = "미국" if sym == "SOXL" else "코인"
     btc = sym == "BTCUSDT"
@@ -495,6 +571,10 @@ def scan(sym, data, btc_ctx):
                         info["name"] += " · 큰 흐름 하락 중"
                         info["note"] = f"200선이 가파르게 내려가는 중 (40봉 {info['slope']:.1f} ATR) · 과거 이런 돌파는 평균 손해라 ★ 뺌"
             sigs += xs
+        if mkt == "코인":
+            sigs += sig_short(b, I, label, tf)
+            if tf in ("3", "5"):
+                sigs += sig_hot(b, I)
         if tf == "3":
             sigs += sig_dump(b, I, 1.5)
         elif tf == "5":
@@ -587,6 +667,11 @@ def message(label, tf, bar, info, grade):
     elif info.get("kind") == "투매":
         ev = DUMP_EV.get((label, tf))
         lines.append(f"검증: 목표 멀 때 평균 {ev}" if ev and info.get("far") else "검증: 목표 가까울 때 평균 -0.1~-0.27% (손해)" if not info.get("far") else "검증: 데이터 없음 (SOXL)")
+    elif info.get("kind") == "매도":
+        ev = SHORT_EV.get((label, tf, info["name"]))
+        lines.append(f"검증(숏): {ev} · 수익은 레버리지 안 곱한 값" if ev else "검증(숏): 없음")
+    elif info.get("kind") == "과열":
+        lines.append("검증: 이 봉 뒤 숏은 3분~4시간 모두 평균 손해 (오히려 더 오른 경우가 많음) · 숏 근거로 쓰지 말 것")
     elif (label, tf, info["name"]) in BASE_EV:
         lines.append(f"검증: {BASE_EV[(label, tf, info['name'])]}")
     return "\n".join(lines)
