@@ -20,6 +20,10 @@ for d in pd.date_range("2021-01-01", E, freq="MS"):
         except Exception as e: print(day, m, e)
         time.sleep(0.2)
 big = sorted(big); print("종목", len(big), flush=True)
+import os
+SH = os.environ.get("SHARD", "")
+if SH:
+    k_, n_ = map(int, SH.split("/")); big = big[k_::n_]
 INST = ["금융투자", "보험", "투신", "사모", "은행", "기타금융", "연기금"]
 rows = []
 for n, t in enumerate(big):
@@ -41,6 +45,10 @@ for n, t in enumerate(big):
         print(t, e)
         if len(ERR) < 3: ERR.append(f"{t} {e!r}"); print(f"::notice::{t} {e!r}"[:900])
     if n % 50 == 0: print(n, len(rows), flush=True)
+    if SH and (n % 10 == 0 or n == len(big) - 1):
+        pd.DataFrame(rows, columns=["t", "d", "fwd", "dn", "both", "i12"]).to_csv(f"research/out_base_ev_{k_}.txt", index=False)
+if SH:
+    raise SystemExit(0)
 
 X = pd.DataFrame(rows, columns=["t", "d", "fwd", "dn", "both", "i12"])
 def S_(x):
