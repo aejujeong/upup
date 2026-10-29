@@ -1,8 +1,12 @@
 """대형주(그때 시총 1조↑) 손절·익절 넣은 검증. 진입 = 조건 맞은 다음 날 시가 (수급은 장 끝나고 나오니까)
 규칙: ATR(2배 손절·손절폭 2배 익절) / -5%·+10% / -7%·+15% / 그냥 20일 보유. 최대 20거래일, 그때까지 안 닿으면 종가 청산. 수수료 0.25%
 같은 날 손절·익절 둘 다 닿으면 손절로 침(보수적). SHARD=k/n 이면 신호 목록만 out_sltp_ev_k.txt 로 저장"""
-import time, os
+import time, os, sys, traceback, atexit
 import pandas as pd
+def _hook(t, v, tb):
+    print("::notice::" + "".join(traceback.format_exception(t, v, tb)).replace("\n", " | ")[-900:], flush=True)
+sys.excepthook = _hook
+atexit.register(lambda: print("::notice::끝남 rows=" + str(len(globals().get("rows", []))), flush=True))
 from pykrx import stock
 
 S, E = "20210101", stock.get_nearest_business_day_in_a_week()
