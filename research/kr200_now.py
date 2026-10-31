@@ -1,4 +1,4 @@
-"""지금(최근 5거래일) 4시간봉에서 '장대 양봉 + 거래량 2배로 200선 돌파'가 나온 종목 → research/out_kr200_now.txt
+"""최근 한 달 4시간봉 200선 강한 돌파·돌파·닿고 반등 종목 (원래: 최근 5거래일 '장대 양봉 + 거래량 2배로 200선 돌파'가 나온 종목 → research/out_kr200_now.txt
 대상: 코스피·코스닥 보통주 시총 500억↑ 전체 (홈페이지와 같은 시장 전체)"""
 import json, time, urllib.request
 from datetime import datetime, timezone, timedelta
@@ -42,32 +42,43 @@ for m, suf in (("KOSPI", ".KS"), ("KOSDAQ", ".KQ")):
     U += [(t, suf, m, cap.loc[t, "시가총액"]) for t in cap.index if t.endswith("0") and cap.loc[t, "시가총액"] >= 5e10]
 print("종목", len(U), flush=True)
 hits = []; ok = 0
+WIN = 40   # 최근 40봉 = 약 한 달(20거래일)
 for n, (t, suf, mk, cp) in enumerate(U):
     b, keys = yh(t + suf); time.sleep(0.25)
     if b is None or len(b) < 260: continue
     ok += 1
     O, H, L, C, V = b.T
     a200 = sma(C, 200); a400 = sma(C, 400); bav = sma(np.abs(C - O), 20); vav = sma(V, 20)
-    N = len(C)
-    for i in range(max(241, N - 10), N):   # 최근 10봉 = 5거래일
+    N = len(C); name = None; got = {}
+    for i in range(max(241, N - WIN), N):
         if np.isnan(a200[i - 1]): continue
-        if not (C[i - 1] < a200[i - 1] and C[i] > a200[i]): continue
-        big = C[i] > O[i] and abs(C[i] - O[i]) >= 2 * bav[i - 1]
-        vol = V[i] >= 2 * vav[i - 1]
-        if not (big and vol): continue
-        below = np.sum(C[i - 40:i] < a200[i - 40:i]) >= 35
+        kind = None
+        if C[i - 1] < a200[i - 1] and C[i] > a200[i]:
+            big = C[i] > O[i] and abs(C[i] - O[i]) >= 2 * bav[i - 1]
+            vol = V[i] >= 2 * vav[i - 1]
+            kind = "강한 돌파" if (big and vol) else "돌파"
+        elif C[i - 1] > a200[i - 1] and L[i] <= a200[i] * 1.005 and C[i] > a200[i]:
+            kind = "닿고 반등"
+        if not kind: continue
+        got[kind] = i   # 종류마다 가장 최근 것만
+    for kind, i in got.items():
+        name = name or stock.get_market_ticker_name(t)
         d, half = keys[i]
-        hits.append(dict(t=t, name=stock.get_market_ticker_name(t), mk=mk, cap=cp / 1e8, when=f"{d.strftime('%m/%d')} {'오전' if half == 0 else '오후'}",
+        hits.append(dict(kind=kind, t=t, name=name, mk=mk, cap=cp / 1e8, when=f"{d.strftime('%m/%d')} {'오전' if half == 0 else '오후'}",
                          px=C[i], now=C[-1], vs200=(C[-1] / a200[-1] - 1) * 100, up=(C[-1] / C[i] - 1) * 100,
-                         body=abs(C[i] - O[i]) / bav[i - 1], vr=V[i] / vav[i - 1], below=below,
+                         vr=V[i] / vav[i - 1], below=np.sum(C[i - 40:i] < a200[i - 40:i]) >= 35,
                          a400=(not np.isnan(a400[i])) and C[i] > a400[i], ago=N - 1 - i))
     if n % 200 == 0: print(n, ok, len(hits), flush=True)
 
-hits.sort(key=lambda h: (h["ago"], -h["vr"]))
-Lns = [f"# {D} 기준 · 최근 5거래일 4시간봉에서 장대 양봉(몸통 20봉 평균 2배↑) + 거래량 2배↑로 200선을 아래→위로 뚫은 종목",
-       f"  검사 {ok}종목 (코스피·코스닥 보통주 시총 500억↑) · {len(hits)}건 · ★ = 직전 20일 가까이 200선 아래 있다가 처음 뚫음",
-       "  형식: 언제 · 종목 · 시총 · 돌파 봉 종가 → 지금 (돌파 뒤 등락) · 지금 200선 대비 · 몸통 배수 · 거래량 배수 · 400선도 넘었는지", ""]
-for h in hits:
-    Lns.append(f"{'★' if h['below'] else ' '} {h['when']} · {h['name']}({h['t']}, {h['mk']}) · 시총 {h['cap']:,.0f}억 · {h['px']:,.0f} → {h['now']:,.0f} ({h['up']:+.1f}%) · "
-               f"200선 대비 {h['vs200']:+.1f}% · 몸통 {h['body']:.1f}배 · 거래량 {h['vr']:.1f}배 · {'400선도 위' if h['a400'] else '400선 아래'}")
+Lns = [f"# {D} 기준 · 최근 한 달(4시간봉 40개 ≈ 20거래일) 4시간봉 200선 신호 · 검사 {ok}종목 (코스피·코스닥 보통주 시총 500억↑)",
+       "  강한 돌파 = 장대 양봉(몸통 20봉 평균 2배↑) + 거래량 2배↑로 200선 아래→위 · 돌파 = 그 외 200선 아래→위 · 닿고 반등 = 200선 위에 있다 내려와 닿고 위에서 마감",
+       "  종목마다 종류별 가장 최근 것만 · 최근 순 · ★ = 직전 20일 가까이 200선 아래 있다 처음 뚫음 · [지금 200선 아래] = 이미 다시 내려옴",
+       "  형식: 언제 · 종목 · 시총 · 신호 봉 종가 → 지금 (신호 뒤 등락) · 지금 200선 대비 · 거래량 배수 · 400선", ""]
+for kind in ("강한 돌파", "닿고 반등", "돌파"):
+    hs = sorted([h for h in hits if h["kind"] == kind], key=lambda h: (h["vs200"] < 0, h["ago"]))
+    Lns.append(f"■ {kind} — {len(hs)}종목 (지금 200선 위 {sum(1 for h in hs if h['vs200'] >= 0)}개)")
+    for h in hs:
+        Lns.append(f"{'★' if h['below'] and kind != '닿고 반등' else ' '} {h['when']} · {h['name']}({h['t']}, {h['mk']}) · 시총 {h['cap']:,.0f}억 · {h['px']:,.0f} → {h['now']:,.0f} ({h['up']:+.1f}%) · "
+                   f"200선 대비 {h['vs200']:+.1f}%{' [지금 200선 아래]' if h['vs200'] < 0 else ''} · 거래량 {h['vr']:.1f}배 · {'400선도 위' if h['a400'] else '400선 아래'}")
+    Lns.append("")
 open("research/out_kr200_now.txt", "w", encoding="utf-8").write("\n".join(Lns)); print("\n".join(Lns))
