@@ -1024,6 +1024,10 @@ def collect(days_all):
     return list(rows.values())
 
 
+KP60 = {}       # 날짜별 코스피 60일선 대비 %
+K200_MKT = {}   # 지금 코스피 60일선 대비 (홈페이지 과열 경고용)
+
+
 def add_k200(rows, budget=20 * 60, win=40):
     """4시간봉 200선 신호 (야후 1시간봉 1년 → 하루를 오전 9~13시·오후 13시~마감 4시간봉 2개로 묶음).
     최근 win봉(40봉 ≈ 20거래일) 안에서 종류별 가장 최근 것: 강한 돌파(장대 양봉 몸통 20봉 평균 2배↑ + 거래량 2배↑로 200선 아래→위) ·
@@ -1039,8 +1043,20 @@ def add_k200(rows, budget=20 * 60, win=40):
             ix = stock.get_index_ohlcv(startd, endd, code)["종가"]
             r20 = (ix / ix.shift(20) - 1) * 100
             MK20[nm] = {pd.Timestamp(k).date(): float(v) for k, v in r20.dropna().items()}
+            if nm == "코스피":   # 코스피 60일선 대비 % (과열 판정)
+                v60 = (ix / ix.rolling(60).mean() - 1) * 100
+                KP60.clear(); KP60.update({pd.Timestamp(k).date(): float(v) for k, v in v60.dropna().items()})
+                if KP60:
+                    lk = max(KP60); K200_MKT.update({"kp60": round(KP60[lk], 1), "d": lk.isoformat()})
     except Exception as e:
         print(f"지수 받기 실패 (좋은 조건 판정 생략): {e}")
+
+    def kp60(d):
+        for back in range(0, 7):
+            x = KP60.get(d - dt.timedelta(days=back))
+            if x is not None:
+                return round(x, 1)
+        return None
 
     def mk20(mkt, d):
         m = MK20.get(mkt)
@@ -1121,7 +1137,8 @@ def add_k200(rows, budget=20 * 60, win=40):
                              m20,                                                                 # 시장 20일 등락 %
                              round(float((C[i] / L[max(0, i - 250):i + 1].min() - 1) * 100), 1),   # 6달(250봉) 저점 대비 %
                              round(float((C[i + 5] / C[i] - 1) * 100), 1) if i + 5 < N else None,   # 5봉 뒤 종가 등락 %
-                             keys[i + 5][0].isoformat() if i + 5 < N else None])                     # 5봉 뒤 날짜 (기준일 보기에서 그날 알 수 있었는지)
+                             keys[i + 5][0].isoformat() if i + 5 < N else None,                      # 5봉 뒤 날짜 (기준일 보기에서 그날 알 수 있었는지)
+                             kp60(d)])                                                               # 신호 날 코스피 60일선 대비 %
         out = []
         for k, i in got.items():
             d, half = keys[i]
@@ -1132,7 +1149,7 @@ def add_k200(rows, budget=20 * 60, win=40):
                         "f": bool(not np.isnan(a400[i]) and C[i] > a400[i]),
                         "hi": round(float((C[i] / H[max(0, i - 250):i + 1].max() - 1) * 100), 1), "m20": mk20(r.get("mkt"), d),
                         "lw": round(float((C[i] / L[max(0, i - 250):i + 1].min() - 1) * 100), 1),
-                        "c5": round(float((C[i + 5] / C[i] - 1) * 100), 1) if i + 5 < N else None})
+                        "c5": round(float((C[i + 5] / C[i] - 1) * 100), 1) if i + 5 < N else None, "kp": kp60(d)})
         return t, (out, hist)
 
     t0 = time.time(); done = hit = 0
@@ -2087,6 +2104,7 @@ def main():
     meta = {
         "days": [f"{d[:4]}-{d[4:6]}-{d[6:]}" for d in days_all[-MONTH:]],
         "hist": [f"{d[:4]}-{d[4:6]}-{d[6:]}" for d in days_all[-NET_HISTORY:]],
+        "k200mkt": K200_MKT,
         "made": dt.datetime.now(KST).strftime("%Y-%m-%d %H:%M"),
         "count": len(data),
         "sr": SR,
@@ -2451,7 +2469,7 @@ td.st{text-align:center;width:44px}
       <div class="seg" id="sigf"><button data-v="ALL" class="on">전체</button><button data-v="GOOD" title="이평선(50·거래량가중100·200·400일선)에 위에서 내려와 처음 닿고 지지 구간 + 좋은 조건">눌림 ★</button><button data-v="BRK" title="이평선이 몰린 박스권에서 거래량 2배로 첫 돌파">밀집 돌파</button></div></div>
     <div class="field rk"><label>4시간 200선 (최근 한 달)</label>
       <div class="seg" id="k2f"><button data-v="ALL" class="on">끔</button><button data-v="S" title="장대 양봉(몸통 20봉 평균 2배↑) + 거래량 2배↑로 4시간봉 200선을 아래에서 위로 뚫음 · 검증(2년): 아무 때나 산 것보다 평균 0.5~1%p 높음, 손절 -10%면 60~90일 보유 시 절반 넘게 손절">강한 돌파</button><button data-v="B" title="그 외 4시간봉 200선을 아래에서 위로 뚫음">돌파</button><button data-v="T" title="200선 위에 있다 내려와 닿고 위에서 마감">닿고 반등</button></div>
-      <label class="hotchk" title="신호 날 시장(그 종목의 코스피·코스닥 지수)이 한 달 동안 +2% 넘게 오르지 않았고 + 종목이 6달 고점 대비 -22% 안쪽 + 6달 저점 대비 +36% 이내 + 외국인 한달 순매수 · 검증(2025~ 34,343번): 손절 -10%·20일 보유 평균 +4.3%, 이긴 비율 56%, 손절 17% (조건 없을 때 +2.0%·44%·33%)"><input type="checkbox" id="k2good"> 좋은 조건만</label>
+      <label class="hotchk" title="신호 날 시장(그 종목의 코스피·코스닥 지수)이 한 달 동안 +2% 넘게 오르지 않았고 + 종목이 6달 고점 대비 -22% 안쪽 + 6달 저점 대비 +36% 이내 + 외국인 한달 순매수 + 코스피가 60일선보다 +15% 넘게 과열되지 않았을 것 · 검증(2025~ 34,343번): 손절 -10%·20일 보유 평균 +4.3%, 이긴 비율 56%, 손절 17% (조건 없을 때 +2.0%·44%·33%)"><input type="checkbox" id="k2good"> 좋은 조건만</label>
       <label class="hotchk" title="신호 뒤 4시간봉 5개(약 2.5거래일)가 지난 시점 종가가 신호 봉 종가보다 높은 것만 · 아직 5봉이 안 지난 신호는 빠짐 · 검증(강한 돌파 2025~): 5봉째 플러스면 20일 뒤 평균 +9.0%·오른 비율 62%, 마이너스면 -3.0%·33% (좋은 조건과 같이: +15.4%·67% vs +0.8%·44%)"><input type="checkbox" id="k2c5"> 5봉 뒤 플러스만</label></div>
     <div class="field rk"><label>시총 구간</label>
       <div class="seg" id="szf"><button data-v="ALL" class="on">전체</button><button data-v="대형">대형 1조 이상</button><button data-v="중형">중형 3천억~1조</button><button data-v="소형">소형 3천억 미만</button></div></div>
@@ -3773,7 +3791,10 @@ function renderRegime(){
     ? `시장이 최근 한 달 사이 ${mtxt} 급등한 과열장이에요. 이런 때는 이평선에 눌려도 시장 조정에 같이 밀리는 경우가 많아서 눌림 ★ 신호가 나오지 않아요.`
     : `시장이 최근 한 달 사이 8% 넘게 급등한 과열장이 아닐 때 눌림 ★ 신호가 잘 맞았어요. 지금은 한 달 사이 ${mtxt}라 이 조건에 해당해요.${reg === '강세' ? '' : ' 과열 종목(최근 20일 +20% 이상, 3달 +30% 이상)은 단타 필터와 후보 종목에서 빠져요.'}`;
   box.className = 'regime' + (m >= 8 ? ' hot' : '');
-  box.innerHTML = `<b>${name}</b>${msg}`;
+  const km = META.k200mkt || {};
+  const kpWarn = km.kp60 !== undefined && km.kp60 >= 15
+    ? ` <b style="margin-left:8px">코스피 과열 경고</b> 코스피가 60일선보다 +${km.kp60}% 위예요. 15%를 넘었을 때 나온 4시간 200선 신호는 그 뒤 평균 -0.8%, 이긴 비율 27%로 크게 나빴어요 (2026년 5~6월 폭락 직전). 지금은 200선 "좋은 조건" 표시를 하지 않아요.` : '';
+  box.innerHTML = `<b>${name}</b>${msg}${kpWarn}`;
   box.hidden = false;
 }
 function render(){
@@ -4615,7 +4636,7 @@ function k2AsOf(r){
     const md = e[0].slice(5).replace('-', '/').replace(/^0/, '').replace('/0', '/');
     best[e[2]] = {k: e[2], w: md + (e[1] ? ' 오후' : ' 오전'), a: ia - ie, u: px ? Math.round((px / e[3] - 1) * 1000) / 10 : 0,
                   v: null, x: e[4], lo: !!e[5], f: !!e[6], hi: e.length > 7 ? e[7] : null, m20: e.length > 8 ? e[8] : null, lw: e.length > 9 ? e[9] : null,
-                  c5: e.length > 11 && e[11] && HD.indexOf(e[11]) >= 0 && HD.indexOf(e[11]) <= ia ? e[10] : null,   /* 기준일에 이미 5봉이 지났을 때만 */ after: r.h && r.h.ret !== null && r.h.ret !== undefined ? Math.round(r.h.ret * 10) / 10 : null};
+                  c5: e.length > 11 && e[11] && HD.indexOf(e[11]) >= 0 && HD.indexOf(e[11]) <= ia ? e[10] : null, kp: e.length > 12 ? e[12] : null,   /* 기준일에 이미 5봉이 지났을 때만 */ after: r.h && r.h.ret !== null && r.h.ret !== undefined ? Math.round(r.h.ret * 10) / 10 : null};
   });
   return Object.values(best);
 }
@@ -4624,6 +4645,7 @@ function k2AsOf(r){
 function k2Good(r, x){
   if (x.m20 === null || x.m20 === undefined || x.hi === null || x.hi === undefined || x.lw === null || x.lw === undefined) return false;
   const a = AA(r, 'M');   // 기준일이면 그날 기준 한달
+  if (x.kp !== null && x.kp !== undefined && x.kp >= 15) return false;   // 코스피 과열(60일선 +15%↑)이면 좋은 조건 아님 — 검증: 그때 신호 평균 -0.8%·이긴 비율 27%·손절 54% (2026년 5~6월 폭락 전)
   return x.m20 < 2 && x.hi >= -22 && x.lw <= 36 && !!a && a.net > 0;
 }
 const k2List = r => (S.asof ? k2AsOf(r) : (r.k2 || [])).map(x => ({...x, good: k2Good(r, x)}));
@@ -4632,7 +4654,7 @@ const k2Of = (r, k) => k2List(r).find(x => x.k === (k || S.k2f) && (!S.k2good ||
 function k2Badge(r){
   const all = k2List(r); if (!all.length) return '';
   const list = S.k2f !== 'ALL' ? all.filter(x => x.k === S.k2f) : all.filter(x => x.k === 'S');   // 필터 끔: 강한 돌파만 표시
-  return list.map(x => ` <span class="sigb ${x.v === null || x.v >= 0 ? 'good' : ''}" title="4시간봉 ${x.w} · ${S.asof ? '기준일까지' : '그 뒤'} ${x.u > 0 ? '+' : ''}${x.u}%${x.v !== null ? ' · 지금 200선 대비 ' + (x.v > 0 ? '+' : '') + x.v + '%' : ''}${x.after !== null && x.after !== undefined ? ' · 기준일 뒤 지금까지 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}${x.x ? ' · 거래량 ' + x.x + '배' : ''}${x.lo ? ' · 20일 가까이 눌렸다 처음 뚫음' : ''}${x.f ? ' · 400선도 위' : ''}${x.good ?  ' · ✓ 좋은 조건 (시장 20일 ' + x.m20 + '% · 6달 고점 대비 ' + x.hi + '% · 저점 대비 +' + x.lw + '% · 외국인 한달 순매수) — 검증 평균 +4.3%·이긴 비율 56%·손절 17%' : (x.m20 !== null && x.m20 !== undefined ? ' · 좋은 조건 아님 (시장 20일 ' + x.m20 + '% [+2% 미만이어야] · 고점 대비 ' + x.hi + '% [-22% 안쪽] · 저점 대비 ' + (x.lw === null || x.lw === undefined ? '-' : '+' + x.lw) + '% [+36% 이내] · 외국인 한달 순매수여야)' : '')}">${K2N[x.k]}${x.lo && x.k !== 'T' ? '★' : ''}${x.good ? ' ✓좋은 조건' : ''}${x.c5 !== null && x.c5 !== undefined ? (x.c5 > 0 ? ' · 5봉 뒤 +' + x.c5 + '%' : ' · 5봉 뒤 ' + x.c5 + '%') : ''} <small>${x.w}${x.v !== null && x.v < 0 ? ' · 다시 아래' : ''}${x.after !== null && x.after !== undefined ? ' · 그 뒤 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}</small></span>`).join('');
+  return list.map(x => ` <span class="sigb ${x.v === null || x.v >= 0 ? 'good' : ''}" title="4시간봉 ${x.w} · ${S.asof ? '기준일까지' : '그 뒤'} ${x.u > 0 ? '+' : ''}${x.u}%${x.v !== null ? ' · 지금 200선 대비 ' + (x.v > 0 ? '+' : '') + x.v + '%' : ''}${x.after !== null && x.after !== undefined ? ' · 기준일 뒤 지금까지 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}${x.x ? ' · 거래량 ' + x.x + '배' : ''}${x.lo ? ' · 20일 가까이 눌렸다 처음 뚫음' : ''}${x.f ? ' · 400선도 위' : ''}${x.good ?  ' · ✓ 좋은 조건 (시장 20일 ' + x.m20 + '% · 6달 고점 대비 ' + x.hi + '% · 저점 대비 +' + x.lw + '% · 외국인 한달 순매수) — 검증 평균 +4.3%·이긴 비율 56%·손절 17%' : (x.kp !== null && x.kp !== undefined && x.kp >= 15 ? ' · 좋은 조건 아님: 그날 코스피 과열 (60일선 대비 +' + x.kp + '% — 15% 넘으면 그 뒤 성적이 크게 나빴음)' : '') + (x.m20 !== null && x.m20 !== undefined ? ' · 좋은 조건 기준 (시장 20일 ' + x.m20 + '% [+2% 미만이어야] · 고점 대비 ' + x.hi + '% [-22% 안쪽] · 저점 대비 ' + (x.lw === null || x.lw === undefined ? '-' : '+' + x.lw) + '% [+36% 이내] · 외국인 한달 순매수여야)' : '')}">${K2N[x.k]}${x.lo && x.k !== 'T' ? '★' : ''}${x.good ? ' ✓좋은 조건' : ''}${x.c5 !== null && x.c5 !== undefined ? (x.c5 > 0 ? ' · 5봉 뒤 +' + x.c5 + '%' : ' · 5봉 뒤 ' + x.c5 + '%') : ''} <small>${x.w}${x.v !== null && x.v < 0 ? ' · 다시 아래' : ''}${x.after !== null && x.after !== undefined ? ' · 그 뒤 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}</small></span>`).join('');
 }
 function flowJudge(r){
   const a = AA(r, 'M'), b = BB(r, 'M'), f = fDays(r), rt0 = RT(r, 'M');
