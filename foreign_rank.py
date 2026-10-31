@@ -1118,7 +1118,8 @@ def add_k200(rows, budget=20 * 60, win=40):
                              1 if np.sum(C[max(0, i - 40):i] < a200[max(0, i - 40):i]) >= 35 else 0,
                              1 if (not np.isnan(a400[i]) and C[i] > a400[i]) else 0,
                              round(float((C[i] / H[max(0, i - 250):i + 1].max() - 1) * 100), 1),   # 6달(250봉) 고점 대비 %
-                             m20])                                                                # 시장 20일 등락 %
+                             m20,                                                                 # 시장 20일 등락 %
+                             round(float((C[i] / L[max(0, i - 250):i + 1].min() - 1) * 100), 1)])   # 6달(250봉) 저점 대비 %
         out = []
         for k, i in got.items():
             d, half = keys[i]
@@ -1127,7 +1128,8 @@ def add_k200(rows, budget=20 * 60, win=40):
                         "x": round(float(V[i] / vav[i - 1]), 1) if vav[i - 1] else None,
                         "lo": bool(np.sum(C[max(0, i - 40):i] < a200[max(0, i - 40):i]) >= 35),
                         "f": bool(not np.isnan(a400[i]) and C[i] > a400[i]),
-                        "hi": round(float((C[i] / H[max(0, i - 250):i + 1].max() - 1) * 100), 1), "m20": mk20(r.get("mkt"), d)})
+                        "hi": round(float((C[i] / H[max(0, i - 250):i + 1].max() - 1) * 100), 1), "m20": mk20(r.get("mkt"), d),
+                        "lw": round(float((C[i] / L[max(0, i - 250):i + 1].min() - 1) * 100), 1)})
         return t, (out, hist)
 
     t0 = time.time(); done = hit = 0
@@ -2446,7 +2448,7 @@ td.st{text-align:center;width:44px}
       <div class="seg" id="sigf"><button data-v="ALL" class="on">전체</button><button data-v="GOOD" title="이평선(50·거래량가중100·200·400일선)에 위에서 내려와 처음 닿고 지지 구간 + 좋은 조건">눌림 ★</button><button data-v="BRK" title="이평선이 몰린 박스권에서 거래량 2배로 첫 돌파">밀집 돌파</button></div></div>
     <div class="field rk"><label>4시간 200선 (최근 한 달)</label>
       <div class="seg" id="k2f"><button data-v="ALL" class="on">끔</button><button data-v="S" title="장대 양봉(몸통 20봉 평균 2배↑) + 거래량 2배↑로 4시간봉 200선을 아래에서 위로 뚫음 · 검증(2년): 아무 때나 산 것보다 평균 0.5~1%p 높음, 손절 -10%면 60~90일 보유 시 절반 넘게 손절">강한 돌파</button><button data-v="B" title="그 외 4시간봉 200선을 아래에서 위로 뚫음">돌파</button><button data-v="T" title="200선 위에 있다 내려와 닿고 위에서 마감">닿고 반등</button></div>
-      <label class="hotchk" title="신호 날 시장(코스피·코스닥) 20일 +2% 미만 + 6달 고점 대비 -22% 안쪽 + 외국인 한달 순매수 · 검증(2025~ 34,343번): 손절 -10%·20일 보유 평균 +4.3%, 이긴 비율 55%, 손절 20% (조건 없을 때 +2.0%·44%·33%)"><input type="checkbox" id="k2good"> 좋은 조건만</label></div>
+      <label class="hotchk" title="신호 날 시장(그 종목의 코스피·코스닥 지수)이 한 달 동안 +2% 넘게 오르지 않았고 + 종목이 6달 고점 대비 -22% 안쪽 + 6달 저점 대비 +36% 이내 + 외국인 한달 순매수 · 검증(2025~ 34,343번): 손절 -10%·20일 보유 평균 +4.3%, 이긴 비율 56%, 손절 17% (조건 없을 때 +2.0%·44%·33%)"><input type="checkbox" id="k2good"> 좋은 조건만</label></div>
     <div class="field rk"><label>시총 구간</label>
       <div class="seg" id="szf"><button data-v="ALL" class="on">전체</button><button data-v="대형">대형 1조 이상</button><button data-v="중형">중형 3천억~1조</button><button data-v="소형">소형 3천억 미만</button></div></div>
     <div class="field rk"><label>&nbsp;</label>
@@ -4608,23 +4610,23 @@ function k2AsOf(r){
     const px = r.h && r.h.px;
     const md = e[0].slice(5).replace('-', '/').replace(/^0/, '').replace('/0', '/');
     best[e[2]] = {k: e[2], w: md + (e[1] ? ' 오후' : ' 오전'), a: ia - ie, u: px ? Math.round((px / e[3] - 1) * 1000) / 10 : 0,
-                  v: null, x: e[4], lo: !!e[5], f: !!e[6], hi: e.length > 7 ? e[7] : null, m20: e.length > 8 ? e[8] : null, after: r.h && r.h.ret !== null && r.h.ret !== undefined ? Math.round(r.h.ret * 10) / 10 : null};
+                  v: null, x: e[4], lo: !!e[5], f: !!e[6], hi: e.length > 7 ? e[7] : null, m20: e.length > 8 ? e[8] : null, lw: e.length > 9 ? e[9] : null, after: r.h && r.h.ret !== null && r.h.ret !== undefined ? Math.round(r.h.ret * 10) / 10 : null};
   });
   return Object.values(best);
 }
-// 좋은 조건 (2025~ 전체 종목 34,343번 검증): 신호 날 시장 20일 +2% 미만 + 6달 고점 대비 -22% 안쪽 + 외국인 한달 순매수
-// → 손절 -10% · 20일 보유 평균 +4.3% · 이긴 비율 55% · 손절 20% (그냥 신호 전체는 +2.0% · 44% · 33%)
+// 좋은 조건 (2025~ 전체 종목 34,343번 검증): 신호 날 시장 20일 +2% 미만 + 6달 고점 대비 -22% 안쪽 + 6달 저점 대비 +36% 이내 + 외국인 한달 순매수
+// → 손절 -10% · 20일 보유 평균 +4.3% · 이긴 비율 56% · 손절 17% (그냥 신호 전체는 +2.0% · 44% · 33%)
 function k2Good(r, x){
-  if (x.m20 === null || x.m20 === undefined || x.hi === null || x.hi === undefined) return false;
+  if (x.m20 === null || x.m20 === undefined || x.hi === null || x.hi === undefined || x.lw === null || x.lw === undefined) return false;
   const a = AA(r, 'M');   // 기준일이면 그날 기준 한달
-  return x.m20 < 2 && x.hi >= -22 && !!a && a.net > 0;
+  return x.m20 < 2 && x.hi >= -22 && x.lw <= 36 && !!a && a.net > 0;
 }
 const k2List = r => (S.asof ? k2AsOf(r) : (r.k2 || [])).map(x => ({...x, good: k2Good(r, x)}));
 const k2Of = (r, k) => k2List(r).find(x => x.k === (k || S.k2f) && (!S.k2good || x.good)) || null;
 function k2Badge(r){
   const all = k2List(r); if (!all.length) return '';
   const list = S.k2f !== 'ALL' ? all.filter(x => x.k === S.k2f) : all.filter(x => x.k === 'S');   // 필터 끔: 강한 돌파만 표시
-  return list.map(x => ` <span class="sigb ${x.v === null || x.v >= 0 ? 'good' : ''}" title="4시간봉 ${x.w} · ${S.asof ? '기준일까지' : '그 뒤'} ${x.u > 0 ? '+' : ''}${x.u}%${x.v !== null ? ' · 지금 200선 대비 ' + (x.v > 0 ? '+' : '') + x.v + '%' : ''}${x.after !== null && x.after !== undefined ? ' · 기준일 뒤 지금까지 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}${x.x ? ' · 거래량 ' + x.x + '배' : ''}${x.lo ? ' · 20일 가까이 눌렸다 처음 뚫음' : ''}${x.f ? ' · 400선도 위' : ''}${x.good ? ' · ✓ 좋은 조건 (시장 20일 ' + x.m20 + '% · 6달 고점 대비 ' + x.hi + '% · 외국인 한달 순매수) — 검증 평균 +4.3%·이긴 비율 55%·손절 20%' : (x.m20 !== null && x.m20 !== undefined ? ' · 좋은 조건 아님 (시장 20일 ' + x.m20 + '% · 고점 대비 ' + x.hi + '%)' : '')}">${K2N[x.k]}${x.lo && x.k !== 'T' ? '★' : ''}${x.good ? ' ✓좋은 조건' : ''} <small>${x.w}${x.v !== null && x.v < 0 ? ' · 다시 아래' : ''}${x.after !== null && x.after !== undefined ? ' · 그 뒤 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}</small></span>`).join('');
+  return list.map(x => ` <span class="sigb ${x.v === null || x.v >= 0 ? 'good' : ''}" title="4시간봉 ${x.w} · ${S.asof ? '기준일까지' : '그 뒤'} ${x.u > 0 ? '+' : ''}${x.u}%${x.v !== null ? ' · 지금 200선 대비 ' + (x.v > 0 ? '+' : '') + x.v + '%' : ''}${x.after !== null && x.after !== undefined ? ' · 기준일 뒤 지금까지 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}${x.x ? ' · 거래량 ' + x.x + '배' : ''}${x.lo ? ' · 20일 가까이 눌렸다 처음 뚫음' : ''}${x.f ? ' · 400선도 위' : ''}${x.good ?  ' · ✓ 좋은 조건 (시장 20일 ' + x.m20 + '% · 6달 고점 대비 ' + x.hi + '% · 저점 대비 +' + x.lw + '% · 외국인 한달 순매수) — 검증 평균 +4.3%·이긴 비율 56%·손절 17%' : (x.m20 !== null && x.m20 !== undefined ? ' · 좋은 조건 아님 (시장 20일 ' + x.m20 + '% [+2% 미만이어야] · 고점 대비 ' + x.hi + '% [-22% 안쪽] · 저점 대비 ' + (x.lw === null || x.lw === undefined ? '-' : '+' + x.lw) + '% [+36% 이내] · 외국인 한달 순매수여야)' : '')}">${K2N[x.k]}${x.lo && x.k !== 'T' ? '★' : ''}${x.good ? ' ✓좋은 조건' : ''} <small>${x.w}${x.v !== null && x.v < 0 ? ' · 다시 아래' : ''}${x.after !== null && x.after !== undefined ? ' · 그 뒤 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}</small></span>`).join('');
 }
 function flowJudge(r){
   const a = AA(r, 'M'), b = BB(r, 'M'), f = fDays(r), rt0 = RT(r, 'M');
