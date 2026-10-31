@@ -56,6 +56,7 @@ MARKETS = ["KOSPI", "KOSDAQ"]
 OUT = Path(os.environ.get("OUT_FILE") or Path(__file__).with_name("foreign_rank.html"))
 CACHE = Path(os.environ.get("CACHE_DIR") or Path(__file__).with_name("cache"))
 CHART_DIR = OUT.parent / "c"   # 종목별 차트 데이터 (c/종목코드.json)
+C4_DIR = OUT.parent / "c4"     # 종목별 4시간봉 차트 데이터 (c4/종목코드.json, 최근 300봉)
 INLINE_CHARTS = bool(os.environ.get("INLINE_CHARTS"))   # 미리보기용: 차트 데이터를 페이지 안에 넣음
 KST = dt.timezone(dt.timedelta(hours=9))
 DESC_PER_RUN = 700             # 한 번 실행할 때 새로 받아올 회사 소개 수 (처음 며칠에 걸쳐 전 종목이 채워짐)
@@ -1061,6 +1062,21 @@ def add_k200(rows, budget=20 * 60, win=40):
         a200, a400 = sma(C, 200), sma(C, 400)
         bav, vav = sma(np.abs(C - O), 20), sma(V, 20)
         N = len(C); got = {}; hist = []; lastk = {}
+        if not INLINE_CHARTS:   # 상세 페이지 4시간봉 차트용: 최근 300봉 + 50·거래량가중100·200·400 이평선 값
+            try:
+                pv, vv = sma(C * V, 100), sma(V, 100)
+                a100 = np.where(vv > 0, pv / np.where(vv > 0, vv, 1), sma(C, 100))
+                a50 = sma(C, 50)
+                k0 = max(0, N - 300); bars4 = []
+                rnd = lambda x: None if np.isnan(x) else round(float(x), 2 if C[-1] < 100 else 0)
+                for i in range(k0, N):
+                    d, half = keys[i]
+                    tt = int(dt.datetime(d.year, d.month, d.day, 9 if half == 0 else 13, tzinfo=dt.timezone.utc).timestamp())   # 한국 시간 그대로 보이게
+                    bars4.append([tt, rnd(O[i]), rnd(H[i]), rnd(L[i]), rnd(C[i]), rnd(a50[i]), rnd(a100[i]), rnd(a200[i]), rnd(a400[i])])
+                C4_DIR.mkdir(parents=True, exist_ok=True)
+                (C4_DIR / f"{t}.json").write_text(json.dumps(bars4, separators=(",", ":")), encoding="utf-8")
+            except Exception:
+                pass
         for i in range(241, N):
             if np.isnan(a200[i - 1]):
                 continue
@@ -2154,6 +2170,7 @@ details.notebox .pnote{margin:6px 0 10px}
 td.livec{white-space:nowrap}
 .perrow{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
 .perrow .tabs{margin-bottom:0}
+.perbtns{display:flex;gap:8px;align-items:center;margin-left:auto}
 #danBtn.on,#fbBtn.on{background:var(--olive);color:#fff}
 .danbt{border:1px solid var(--olive);border-radius:10px;padding:10px 14px;margin:10px 0 0;font-size:13px}
 .danbt table{border-collapse:collapse;margin-top:6px}
@@ -2389,8 +2406,8 @@ td.st{text-align:center;width:44px}
   <div class="tabs" id="per">
     <button data-v="1">전날 순매수</button><button data-v="10" class="on">10일 순매수</button><button data-v="M">한달 순매수</button>
   </div>
-  <button class="mbtn" id="fbBtn" title="대형주(1조↑) + 한달 외국인·기관 둘 다 순매수 + 기관 20일 중 12일 이상 순매수 + 한달 -5% 이하 + 공매도 잔고 20일 줄어듦 · 검증(2021~2026): 20거래일 뒤 평균 +4.4%, 오른 비율 58% (1014회)">대형 수급 눌림</button>
-  <button class="mbtn" id="danBtn" title="지지선 구간 안 + 흑자 + 시총 구간별 수급(대형: 외국인 20일 중 15일+, 중형: 외국인 또는 기관 15일+, 소형: 기관 15일+, 중소형은 한달 순매도 하위 20% 제외) + 보통·약세장 과열 제외, 지지선 가까운 순">단타 필터</button>
+  <div class="perbtns"><button class="mbtn" id="fbBtn" title="대형주(1조↑) + 한달 외국인·기관 둘 다 순매수 + 기관 20일 중 12일 이상 순매수 + 한달 -5% 이하 + 공매도 잔고 20일 줄어듦 · 검증(2021~2026): 20거래일 뒤 평균 +4.4%, 오른 비율 58% (1014회)">대형 수급 눌림</button>
+  <button class="mbtn" id="danBtn" title="지지선 구간 안 + 흑자 + 시총 구간별 수급(대형: 외국인 20일 중 15일+, 중형: 외국인 또는 기관 15일+, 소형: 기관 15일+, 중소형은 한달 순매도 하위 20% 제외) + 보통·약세장 과열 제외, 지지선 가까운 순">단타 필터</button></div>
   </div>
   <div class="danbt" id="danBt" hidden></div>
   <p class="range" id="range"></p>
@@ -2577,7 +2594,7 @@ td.st{text-align:center;width:44px}
   <div class="dasof"><label for="dDate">기준일</label><select id="dDate"></select>
     <span class="note" id="dAsof">차트의 캔들을 누르면 그날 기준으로 바뀝니다.</span></div>
   <p class="desc" id="dDesc"></p>
-  <div class="tvhead"><h3>가격 차트 (일봉, 지지·저항 구간 표시)</h3><div class="tvtools"><button class="mbtn" id="measBtn" aria-pressed="false">구간 측정</button><a class="tvlink" id="tvLink" target="_blank" rel="noopener">트레이딩뷰에서 크게 보기</a></div></div>
+  <div class="tvhead"><h3 id="tvTitle">가격 차트 (일봉, 지지·저항 구간 표시)</h3><div class="tvtools"><div class="seg" id="tvTf"><button data-v="D" class="on">일봉</button><button data-v="4" title="최근 약 5달 · 하루를 오전(9~13시)·오후(13시~마감) 2개 봉으로 · 선: 50 초록 · 거래량가중100 검정 · 200 빨강 · 400 하늘">4시간봉</button></div><button class="mbtn" id="measBtn" aria-pressed="false">구간 측정</button><a class="tvlink" id="tvLink" target="_blank" rel="noopener">트레이딩뷰에서 크게 보기</a></div></div>
   <p class="note" id="measHelp" hidden>차트에서 시작점과 끝점을 차례로 누르면 그 사이 등락률이 표시됩니다. 다시 누르면 새로 잽니다.</p>
   <div class="tv" id="tv"></div>
   <p class="legend"><span><i></i>지지선</span><span><i class="zone"></i>지지 구간</span><span><i class="res"></i>저항선</span><span><i class="zres"></i>저항 구간</span>
@@ -3759,9 +3776,8 @@ function render(){
     srOk(r) && sigOk(r) && szOk(r) && !(S.hideHot && overheat(r)) &&
     r.cap >= S.minCap &&
     (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q));
-  // 4시간 200선 필터: 수급·지지선 조건과 상관없이 그 신호가 난 종목만 (시장·시총·검색·관심만 적용)
-  const k2Rows = () => DATA.filter(r => k2Of(r) && (S.mkt === 'ALL' || r.mkt === S.mkt) && r.cap >= S.minCap &&
-    (S.watch === 'ALL' || WATCH.has(r.code)) && (!q || r.name.toLowerCase().includes(q) || r.code.includes(q)));
+  // 4시간 200선 필터: 그 신호가 난 종목 중에서 시장·시총 구간·업종·실적·지지선·신호·수급 버튼 등 나머지 조건도 같이 적용
+  const k2Rows = () => DATA.filter(r => k2Of(r) && baseOk(r) && allPos(r));
   let rows = S.fb ? DATA.filter(fbOk) : S.k2f !== 'ALL' ? k2Rows() : DATA.filter(r => baseOk(r) && perPos(r) && allPos(r));
   // 단타 필터 겹침: 전날·10일·한달 탭 각각의 단타 상위 10개 중 두 탭 이상에 든 종목 표시
   DAN_HIT = {};
@@ -3928,7 +3944,50 @@ function setupMeasure(box, series, bars){
   loop();
 }
 $('measBtn').onclick = () => setMeasMode(!M.on);
+let TVTF = 'D';
+document.querySelectorAll('#tvTf button').forEach(b => b.onclick = () => {
+  TVTF = b.dataset.v; document.querySelectorAll('#tvTf button').forEach(x => x.classList.toggle('on', x.dataset.v === TVTF));
+  if (DET.r) drawChart(DET.r);
+});
+async function drawChart4(r){
+  const box = $('tv');
+  clearChart(); chartCode = r.code; setMeasMode(false);
+  $('tvTitle').textContent = '가격 차트 (4시간봉 · 최근 약 5달)';
+  box.innerHTML = '<p class="msg">4시간봉 불러오는 중...</p>';
+  let bars;
+  try { const res = await fetch(`c4/${r.code}.json`); if (!res.ok) throw new Error(res.status); bars = await res.json(); }
+  catch (e) { box.innerHTML = '<p class="msg">이 종목은 4시간봉 데이터가 없어요 (시총 500억 미만이거나 아직 갱신 전).</p>'; return; }
+  if (chartCode !== r.code || !$('dlg').open || TVTF !== '4') return;
+  if (!window.LightweightCharts) { box.innerHTML = '<p class="msg">차트 도구를 불러오지 못했습니다.</p>'; return; }
+  box.innerHTML = '';
+  chartObj = LightweightCharts.createChart(box, {
+    autoSize: true,
+    layout: {background: {color: '#FFFFFF'}, textColor: '#1A1A1A', fontFamily: 'Pretendard, -apple-system, sans-serif'},
+    grid: {vertLines: {color: '#F3F3F3'}, horzLines: {color: '#F3F3F3'}},
+    rightPriceScale: {borderColor: '#E3E3E3'},
+    timeScale: {borderColor: '#E3E3E3', timeVisible: true, secondsVisible: false},
+    localization: {locale: 'ko-KR', priceFormatter: p => fmt(p)},
+  });
+  const s = chartObj.addCandlestickSeries({upColor: '#C62828', borderUpColor: '#C62828', wickUpColor: '#C62828', downColor: '#4A4A4A', borderDownColor: '#4A4A4A', wickDownColor: '#4A4A4A'});
+  s.setData(bars.map(b => ({time: b[0], open: b[1], high: b[2], low: b[3], close: b[4]})));
+  [[5, '#2E9E4F'], [6, '#111111'], [7, '#E53935'], [8, '#4FC3F7']].forEach(([k, color]) => {
+    const ls = chartObj.addLineSeries({color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false});
+    ls.setData(bars.filter(b => b[k] !== null).map(b => ({time: b[0], value: b[k]})));
+  });
+  // 200선 신호 표시
+  const mk = (r.k2h || []).map(e => {
+    const t = Date.UTC(+e[0].slice(0, 4), +e[0].slice(5, 7) - 1, +e[0].slice(8, 10), e[1] ? 13 : 9) / 1000;
+    return t >= bars[0][0] ? {time: t, position: 'belowBar', shape: 'arrowUp', color: e[2] === 'S' ? '#C62828' : e[2] === 'T' ? '#089981' : '#888888', text: e[2] === 'S' ? '강한 돌파' : e[2] === 'T' ? '반등' : '돌파'} : null;
+  }).filter(Boolean).sort((a, b) => a.time - b.time);
+  s.setMarkers(mk);
+  const sups = r.sr ? r.sr.levels : [], ress = r.sr ? (r.sr.res || []) : [];
+  sups.forEach(lv => s.createPriceLine({price: lv.base, color: '#089981', lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: '지지'}));
+  ress.forEach(lv => s.createPriceLine({price: lv.base, color: '#C62828', lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: '저항'}));
+  chartObj.timeScale().setVisibleLogicalRange({from: Math.max(0, bars.length - 160), to: bars.length + 3});
+}
 async function drawChart(r){
+  if (TVTF === '4') return drawChart4(r);
+  $('tvTitle').textContent = '가격 차트 (일봉, 지지·저항 구간 표시)';
   const box = $('tv');
   clearChart(); chartCode = r.code; setMeasMode(false);
   $('tvLink').href = 'https://www.tradingview.com/chart/?symbol=KRX%3A' + r.code;
@@ -4550,7 +4609,7 @@ const danPreset = () => S.sr === 'IN' && S.pf === 'P' && S.allf === 'POS' && S.s
 $('danBtn').onclick = () => {
   // 꺼져 있으면 켜면서 단타 조건으로 맞춤 / 켜진 채로 버튼을 바꿨으면 다시 단타 조건으로 맞춤 / 그대로면 끔
   S.dan = !S.dan || !danPreset();
-  if (S.dan) S.fb = false;
+  if (S.dan) { S.fb = false; S.k2f = 'ALL'; document.querySelectorAll('#k2f button').forEach(x => x.classList.toggle('on', x.dataset.v === 'ALL')); }
   if (S.dan) {
     S.sr = 'IN'; setSeg('srf', 'IN');
     S.pf = 'P'; setSeg('pf', 'P');
@@ -4569,7 +4628,7 @@ $('fbBtn').onclick = () => {
 };
 document.querySelectorAll('#k2f button').forEach(b => b.onclick = () => {
   S.k2f = b.dataset.v; document.querySelectorAll('#k2f button').forEach(x => x.classList.toggle('on', x.dataset.v === S.k2f));
-  if (S.k2f !== 'ALL') { S.dan = false; S.fb = false; }
+  if (S.k2f !== 'ALL') { S.dan = false; S.fb = false; S.sr = 'ALL'; setSeg('srf', 'ALL'); S.allf = 'ALL'; setSeg('allf', 'ALL'); }   // 켤 때 지지선·수급은 전체로 (원하면 다시 고르면 같이 적용)
   S.page = 1; render();
 });
 // 신호를 고르면 단타 필터는 꺼지고, 신호가 가려지지 않게 지지선·실적은 전체로. 눌림 ★은 시총 구간이 대형·중형으로 자동 표시
