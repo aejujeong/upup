@@ -53,8 +53,8 @@ for m, n_, suf in (("KOSPI", 150, ".KS"), ("KOSDAQ", 60, ".KQ")):
     U += [(t, suf) for t in cap.index if t.endswith("0")][:n_]
 print("종목", len(U), flush=True)
 
-HOLDS = (10, 20, 40)   # 4시간봉 2개 = 하루 → 5일 · 10일 · 20일
-TPS = (None, 0.10, 0.20)
+HOLDS = (10, 40, 120, 180)   # 4시간봉 2개 = 하루 → 5일 · 20일 · 60일 · 90일
+TPS = (None, 0.10, 0.20, 0.30)
 R = {}   # (신호, 흐름, hold, tp) → [(시점비율, 수익)]
 def add(key, frac, r): R.setdefault(key, []).append((frac, r))
 ok = 0
@@ -89,7 +89,7 @@ def st(x):
     if not x: return "-"
     a = np.array(x); return f"{len(a)}회 {a.mean():+.2f}% 승{(a > 0).mean() * 100:.0f}% 손절{(a <= -10).mean() * 100:.0f}%"
 Lns = [f"# 한국 주식 4시간봉 200선 · 손절 -10% · 수수료 0.25% · 야후 2년 · {ok}종목 (코스피 상위 150 + 코스닥 상위 60, 지금 시총 기준)",
-       "형식: 전체 | 앞 70% 기간 | 뒤 30% 기간   (보유 10봉≈5거래일 · 20봉≈10일 · 40봉≈20일)", ""]
+       "형식: 전체 | 앞 70% 기간 | 뒤 30% 기간   (보유 10봉≈5거래일 · 40봉≈20일 · 120봉≈60일 · 180봉≈90일)", ""]
 for s in ("닿고 반등", "뚫고 올라감", "평소(아무 봉)"):
     for fl in ("전체", "200선 오르는 중", "200선 내리는 중"):
         if (s, fl, 10, None) not in R: continue
@@ -97,5 +97,5 @@ for s in ("닿고 반등", "뚫고 올라감", "평소(아무 봉)"):
         for h in HOLDS:
             for tp in TPS:
                 x = R[(s, fl, h, tp)]
-                Lns.append(f"  {h:2}봉 보유 · 익절 {'없음' if not tp else f'+{int(tp*100)}%':4}: {st([r for _, r in x])} | 앞 {st([r for f, r in x if f < 0.7])} | 뒤 {st([r for f, r in x if f >= 0.7])}")
+                Lns.append(f"  {h//2:2}일 보유 · 익절 {'없음' if not tp else f'+{int(tp*100)}%':4}: {st([r for _, r in x])} | 앞 {st([r for f, r in x if f < 0.7])} | 뒤 {st([r for f, r in x if f >= 0.7])}")
 open("research/out_kr200.txt", "w", encoding="utf-8").write("\n".join(Lns)); print("\n".join(Lns))
