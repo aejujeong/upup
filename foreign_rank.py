@@ -3778,7 +3778,8 @@ function render(){
     (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q));
   // 4시간 200선 필터: 그 신호가 난 종목 중에서 시장·시총 구간·업종·실적·지지선·신호·수급 버튼 등 나머지 조건도 같이 적용
   const k2Rows = () => DATA.filter(r => k2Of(r) && baseOk(r) && allPos(r));
-  let rows = S.fb ? DATA.filter(fbOk) : S.k2f !== 'ALL' ? k2Rows() : DATA.filter(r => baseOk(r) && perPos(r) && allPos(r));
+  // 관심종목 보기: 순매수 여부와 상관없이 관심종목 전부 (나머지 거름 조건만 적용)
+  let rows = S.fb ? DATA.filter(fbOk) : S.k2f !== 'ALL' ? k2Rows() : S.watch === 'W' ? DATA.filter(r => baseOk(r) && allPos(r)) : DATA.filter(r => baseOk(r) && perPos(r) && allPos(r));
   // 단타 필터 겹침: 전날·10일·한달 탭 각각의 단타 상위 10개 중 두 탭 이상에 든 종목 표시
   DAN_HIT = {};
   if (S.dan) {
