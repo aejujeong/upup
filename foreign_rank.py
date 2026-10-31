@@ -1014,8 +1014,85 @@ def collect(days_all):
     except Exception as e:
         print(f"공매도 잔고 처리 중 문제: {e}")
     tlog("공매도 잔고 끝")
+    try:
+        add_k200(rows)
+    except Exception as e:
+        print(f"4시간봉 200선 처리 중 문제: {e}")
+    tlog("4시간봉 200선 끝")
     prune_cache(set(days_all))
     return list(rows.values())
+
+
+def add_k200(rows, budget=20 * 60, win=40):
+    """4시간봉 200선 신호 (야후 1시간봉 1년 → 하루를 오전 9~13시·오후 13시~마감 4시간봉 2개로 묶음).
+    최근 win봉(40봉 ≈ 20거래일) 안에서 종류별 가장 최근 것: 강한 돌파(장대 양봉 몸통 20봉 평균 2배↑ + 거래량 2배↑로 200선 아래→위) ·
+    돌파(그 외 아래→위) · 닿고 반등(200선 위에 있다 저가가 200선 0.5% 안까지 내려왔다가 종가는 위).
+    검증(2년·무작위 424종목·손절 -10%): 강한 돌파는 5·20·60·90일 보유 모두 아무 때나 산 것보다 평균 0.5~1%p 높았음."""
+    from concurrent.futures import ThreadPoolExecutor
+    kst = dt.timezone(dt.timedelta(hours=9))
+
+    def one(t):
+        r = rows[t]
+        sym = t + (".KS" if r.get("mkt") == "코스피" else ".KQ")
+        try:
+            with urllib.request.urlopen(urllib.request.Request(
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=60m&range=1y",
+                    headers={"User-Agent": "Mozilla/5.0"}), timeout=20) as f:
+                j = json.loads(f.read())
+            res = j["chart"]["result"][0]; q = res["indicators"]["quote"][0]; ts = res["timestamp"]
+        except Exception:
+            return t, None
+        g = {}
+        for i, tt in enumerate(ts):
+            o, h, l, c, v = q["open"][i], q["high"][i], q["low"][i], q["close"][i], q["volume"][i]
+            if None in (o, h, l, c) or c <= 0:
+                continue
+            d = dt.datetime.fromtimestamp(tt, kst)
+            g.setdefault((d.date(), 0 if d.hour < 13 else 1), []).append([o, h, l, c, v or 0])
+        keys = sorted(g)
+        if len(keys) < 260:
+            return t, None
+        b = np.array([[x[0][0], max(y[1] for y in x), min(y[2] for y in x), x[-1][3], sum(y[4] for y in x)] for x in (g[k] for k in keys)])
+        O, H, L, C, V = b.T
+        L = np.maximum(L, np.minimum(O, C) * 0.85)   # 야후에 가끔 튀는 저가 정리
+
+        def sma(a, p):
+            cs = np.cumsum(np.insert(a, 0, 0.0)); o = np.full(len(a), np.nan); o[p - 1:] = (cs[p:] - cs[:-p]) / p; return o
+        a200, a400 = sma(C, 200), sma(C, 400)
+        bav, vav = sma(np.abs(C - O), 20), sma(V, 20)
+        N = len(C); got = {}
+        for i in range(max(241, N - win), N):
+            if np.isnan(a200[i - 1]):
+                continue
+            if C[i - 1] < a200[i - 1] and C[i] > a200[i]:
+                strong = C[i] > O[i] and abs(C[i] - O[i]) >= 2 * bav[i - 1] and V[i] >= 2 * vav[i - 1]
+                got["S" if strong else "B"] = i
+            elif C[i - 1] > a200[i - 1] and L[i] <= a200[i] * 1.005 and C[i] > a200[i]:
+                got["T"] = i
+        out = []
+        for k, i in got.items():
+            d, half = keys[i]
+            out.append({"k": k, "w": f"{d.month}/{d.day} {'오전' if half == 0 else '오후'}", "a": int(N - 1 - i),
+                        "u": round(float((C[-1] / C[i] - 1) * 100), 1), "v": round(float((C[-1] / a200[-1] - 1) * 100), 1),
+                        "x": round(float(V[i] / vav[i - 1]), 1) if vav[i - 1] else None,
+                        "lo": bool(np.sum(C[max(0, i - 40):i] < a200[max(0, i - 40):i]) >= 35),
+                        "f": bool(not np.isnan(a400[i]) and C[i] > a400[i])})
+        return t, out
+
+    t0 = time.time(); done = hit = 0
+    todo = [t for t, r in rows.items() if r.get("cap", 0) >= 500]
+    with ThreadPoolExecutor(6) as ex:
+        futs = [ex.submit(one, t) for t in todo]
+        for fu in futs:
+            left = budget - (time.time() - t0)
+            try:
+                t, out = fu.result(timeout=max(1, left))
+            except Exception:
+                continue
+            done += 1
+            if out:
+                rows[t]["k2"] = out; hit += 1
+    print(f"4시간봉 200선: {done}/{len(todo)}종목 확인 · 신호 있는 종목 {hit}")
 
 
 def add_short_balance(rows, days_all):
@@ -2311,6 +2388,8 @@ td.st{text-align:center;width:44px}
       <p class="snapmsg" id="snapMsg"></p></div>
     <div class="field rk"><label>신호</label>
       <div class="seg" id="sigf"><button data-v="ALL" class="on">전체</button><button data-v="GOOD" title="이평선(50·거래량가중100·200·400일선)에 위에서 내려와 처음 닿고 지지 구간 + 좋은 조건">눌림 ★</button><button data-v="BRK" title="이평선이 몰린 박스권에서 거래량 2배로 첫 돌파">밀집 돌파</button></div></div>
+    <div class="field rk"><label>4시간 200선 (최근 한 달)</label>
+      <div class="seg" id="k2f"><button data-v="ALL" class="on">끔</button><button data-v="S" title="장대 양봉(몸통 20봉 평균 2배↑) + 거래량 2배↑로 4시간봉 200선을 아래에서 위로 뚫음 · 검증(2년): 아무 때나 산 것보다 평균 0.5~1%p 높음, 손절 -10%면 60~90일 보유 시 절반 넘게 손절">강한 돌파</button><button data-v="B" title="그 외 4시간봉 200선을 아래에서 위로 뚫음">돌파</button><button data-v="T" title="200선 위에 있다 내려와 닿고 위에서 마감">닿고 반등</button></div></div>
     <div class="field rk"><label>시총 구간</label>
       <div class="seg" id="szf"><button data-v="ALL" class="on">전체</button><button data-v="대형">대형 1조 이상</button><button data-v="중형">중형 3천억~1조</button><button data-v="소형">소형 3천억 미만</button></div></div>
     <div class="field rk"><label>&nbsp;</label>
@@ -2599,7 +2678,7 @@ const CREF = __CYCREF__;
 const REFBY = Object.fromEntries(((CREF && CREF.secs) || []).map(x => [x.sec.replace(/\s/g, ''), x]));
 const refOf = sec => REFBY[(sec || '').replace(/\s/g, '')];
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'10', mkt:'ALL', sr:'IN', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', allf:'ALL', dan:false, fb:false, sigf:'ALL', szf:'ALL', hideHot:true, flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:true, myMin:2, myMax:12, view:'sec', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
+const S = {per:'10', mkt:'ALL', sr:'IN', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', allf:'ALL', dan:false, fb:false, k2f:'ALL', sigf:'ALL', szf:'ALL', hideHot:true, flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:true, myMin:2, myMax:12, view:'sec', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
 const RT = (r, p) => S.asof ? (r.h ? r.h.rt[p] : null) : (r.rt ? r.rt[p] : null);   // 기간 등락률
 const AA = (r, p) => S.asof ? r.h.a[p] : r.a[p];   // 외국인 (기준일 반영)
 const BB = (r, p) => S.asof ? r.h.b[p] : r.b[p];   // 기관 (기준일 반영)
@@ -2725,7 +2804,7 @@ const wonTd = v => `<td class="${v > 0 ? 'pos' : v < 0 ? 'neg' : ''}">${won(v, t
 const COLS = [
   {k:null,   t:'관심', cell: (r) => `<td class="st">${starBtn(r.code)}</td>`},
   {k:null,   t:'순위', cell: (r, x) => `<td>${x.rank}</td>`},
-  {k:'name', t:'종목명', cell: (r) => { const h = S.dan && DAN_HIT[r.code] && DAN_HIT[r.code].length >= 2 ? DAN_HIT[r.code] : null; const j = flowJudge(r); return `<td class="name">${esc(r.name)}${h ? ` <span class="sigb good" title="단타 필터 상위 10개에 ${h.join('·')} 탭 모두 들어감">${h.length}개 겹침 <small>${h.join('·')}</small></span>` : ''}${j ? ` <span class="sigb ${j.cls}" title="${esc(j.tip)}">${j.t}</span>` : ''}</td>`; }},
+  {k:'name', t:'종목명', cell: (r) => { const h = S.dan && DAN_HIT[r.code] && DAN_HIT[r.code].length >= 2 ? DAN_HIT[r.code] : null; const j = flowJudge(r); return `<td class="name">${esc(r.name)}${h ? ` <span class="sigb good" title="단타 필터 상위 10개에 ${h.join('·')} 탭 모두 들어감">${h.length}개 겹침 <small>${h.join('·')}</small></span>` : ''}${j ? ` <span class="sigb ${j.cls}" title="${esc(j.tip)}">${j.t}</span>` : ''}${k2Badge(r)}</td>`; }},
   {k:'sig',  t:'신호', cell: (r) => `<td>${sigBadge(sigOf(r))}</td>`},
   {k:null,   t:'코드', cell: (r) => `<td class="code">${r.code}</td>`},
   {k:null,   t:'시장', cell: (r) => `<td>${r.mkt}</td>`},
@@ -3665,7 +3744,10 @@ function render(){
     srOk(r) && sigOk(r) && szOk(r) && !(S.hideHot && overheat(r)) &&
     r.cap >= S.minCap &&
     (!q || r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q));
-  let rows = S.fb ? DATA.filter(fbOk) : DATA.filter(r => baseOk(r) && perPos(r) && allPos(r));
+  // 4시간 200선 필터: 수급·지지선 조건과 상관없이 그 신호가 난 종목만 (시장·시총·검색·관심만 적용)
+  const k2Rows = () => DATA.filter(r => k2Of(r) && (S.mkt === 'ALL' || r.mkt === S.mkt) && r.cap >= S.minCap &&
+    (S.watch === 'ALL' || WATCH.has(r.code)) && (!q || r.name.toLowerCase().includes(q) || r.code.includes(q)));
+  let rows = S.fb ? DATA.filter(fbOk) : (S.k2f !== 'ALL' && !S.asof) ? k2Rows() : DATA.filter(r => baseOk(r) && perPos(r) && allPos(r));
   // 단타 필터 겹침: 전날·10일·한달 탭 각각의 단타 상위 10개 중 두 탭 이상에 든 종목 표시
   DAN_HIT = {};
   if (S.dan) {
@@ -4414,6 +4496,14 @@ function fbOk(r){
   return !!a && !!b && a.net > 0 && b.net > 0 && rt !== null && rt !== undefined && rt <= -5 &&
     (f || 0) >= FB_F && (i || 0) >= FB_I && c !== null && c !== undefined && c <= 0;
 }
+// 4시간 200선 신호 (최근 한 달) — 기준일 보기에서는 없음 (오늘 기준 자료만)
+const K2N = {S: '200선 강한 돌파', B: '200선 돌파', T: '200선 닿고 반등'};
+const k2Of = (r, k) => { if (S.asof || !r.k2) return null; return r.k2.find(x => x.k === (k || S.k2f)) || null; };
+function k2Badge(r){
+  if (S.asof || !r.k2) return '';
+  const list = S.k2f !== 'ALL' ? r.k2.filter(x => x.k === S.k2f) : r.k2.filter(x => x.k === 'S');   // 필터 끔: 강한 돌파만 표시
+  return list.map(x => ` <span class="sigb ${x.v >= 0 ? 'good' : ''}" title="4시간봉 ${x.w} · 그 뒤 ${x.u > 0 ? '+' : ''}${x.u}% · 지금 200선 대비 ${x.v > 0 ? '+' : ''}${x.v}%${x.x ? ' · 거래량 ' + x.x + '배' : ''}${x.lo ? ' · 20일 가까이 눌렸다 처음 뚫음' : ''}${x.f ? ' · 400선도 위' : ''}">${K2N[x.k]}${x.lo && x.k !== 'T' ? '★' : ''} <small>${x.w}${x.v < 0 ? ' · 다시 아래' : ''}</small></span>`).join('');
+}
 function flowJudge(r){
   if (S.asof) return null;
   const a = AA(r, 'M'), b = BB(r, 'M'), f = fDays(r), rt = RT(r, 'M');
@@ -4447,6 +4537,11 @@ $('fbBtn').onclick = () => {
   if (S.fb) { S.dan = false; S.sort = 'spct'; S.dir = -1; $('sort').value = 'spct'; }
   S.page = 1; render();
 };
+document.querySelectorAll('#k2f button').forEach(b => b.onclick = () => {
+  S.k2f = b.dataset.v; document.querySelectorAll('#k2f button').forEach(x => x.classList.toggle('on', x.dataset.v === S.k2f));
+  if (S.k2f !== 'ALL') { S.dan = false; S.fb = false; }
+  S.page = 1; render();
+});
 // 신호를 고르면 단타 필터는 꺼지고, 신호가 가려지지 않게 지지선·실적은 전체로. 눌림 ★은 시총 구간이 대형·중형으로 자동 표시
 document.querySelectorAll('#sigf button').forEach(b => b.onclick = () => {
   const v = b.dataset.v; setSigf(v);
