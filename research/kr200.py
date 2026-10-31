@@ -1,4 +1,4 @@
-"""한국 주식 4시간봉 200선 — 닿고 반등 / 아래에서 뚫고 올라감 → 손절 -10% 고정으로 얼마나 버는지 → research/out_kr200b.txt
+"""한국 주식 4시간봉 200선 — 닿고 반등 / 아래에서 뚫고 올라감 → 손절 -10% 고정으로 얼마나 버는지 → research/out_kr200c.txt
 데이터: 야후 1시간봉 2년 (.KS/.KQ) → 하루를 오전(9~13시)·오후(13시~마감) 4시간봉 2개로 묶음
 종목: 지금 시총 상위 코스피 150 + 코스닥 60
 진입: 신호 봉 종가 / 손절 -10% (그 봉 저가가 닿으면) / 청산: 보유 N봉 뒤 종가 또는 익절 +10%·+20%
@@ -47,10 +47,12 @@ def trade(H, L, C, i, hold, tp):
     return (C[min(len(C) - 1, i + hold)] / e - 1) * 100 - FEE
 
 D = stock.get_nearest_business_day_in_a_week()
+import random
 U = []
-for m, n_, suf in (("KOSPI", 150, ".KS"), ("KOSDAQ", 60, ".KQ")):
-    cap = stock.get_market_cap(D, market=m).sort_values("시가총액", ascending=False)
-    U += [(t, suf) for t in cap.index if t.endswith("0")][:n_]
+for m, suf in (("KOSPI", ".KS"), ("KOSDAQ", ".KQ")):
+    cap = stock.get_market_cap(D, market=m)
+    U += [(t, suf) for t in cap.index if t.endswith("0") and cap.loc[t, "시가총액"] >= 5e10]   # 보통주 · 시총 500억↑ (거래 거의 없는 종목 빼려고)
+random.seed(11); U = random.sample(U, min(450, len(U)))   # 시총 순서 말고 전체에서 무작위로
 print("종목", len(U), flush=True)
 
 HOLDS = (10, 40, 120, 180)   # 4시간봉 2개 = 하루 → 5일 · 20일 · 60일 · 90일
@@ -103,7 +105,7 @@ for n, (t, suf) in enumerate(U):
 def st(x):
     if not x: return "-"
     a = np.array(x); return f"{len(a)}회 {a.mean():+.2f}% 승{(a > 0).mean() * 100:.0f}% 손절{(a <= -10).mean() * 100:.0f}%"
-Lns = [f"# 한국 주식 4시간봉 200선 · 손절 -10% · 수수료 0.25% · 야후 2년 · {ok}종목 (코스피 상위 150 + 코스닥 상위 60, 지금 시총 기준)",
+Lns = [f"# 한국 주식 4시간봉 200선 · 손절 -10% · 수수료 0.25% · 야후 2년 · {ok}종목 (코스피·코스닥 보통주 중 시총 500억↑에서 무작위)",
        f"튀는 값 정리: {GL[0]}개 / 전체 {GL[1]}봉",
        "형식: 전체 | 앞 70% 기간 | 뒤 30% 기간   (보유 10봉≈5거래일 · 40봉≈20일 · 120봉≈60일 · 180봉≈90일)", ""]
 for s in ("뚫고+장대양봉+거래량2배", "오래 눌렸다 첫 돌파", "셋 다", "뚫고 올라감", "평소(아무 봉)"):
@@ -114,4 +116,4 @@ for s in ("뚫고+장대양봉+거래량2배", "오래 눌렸다 첫 돌파", "�
             for tp in TPS:
                 x = R[(s, fl, h, tp)]
                 Lns.append(f"  {h//2:2}일 보유 · 익절 {'없음' if not tp else f'+{int(tp*100)}%':4}: {st([r for _, r in x])} | 앞 {st([r for f, r in x if f < 0.7])} | 뒤 {st([r for f, r in x if f >= 0.7])}")
-open("research/out_kr200b.txt", "w", encoding="utf-8").write("\n".join(Lns)); print("\n".join(Lns))
+open("research/out_kr200c.txt", "w", encoding="utf-8").write("\n".join(Lns)); print("\n".join(Lns))
