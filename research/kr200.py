@@ -1,4 +1,4 @@
-"""한국 주식 4시간봉 200선 — 닿고 반등 / 아래에서 뚫고 올라감 → 손절 -10% 고정으로 얼마나 버는지 → research/out_kr200.txt
+"""한국 주식 4시간봉 200선 — 닿고 반등 / 아래에서 뚫고 올라감 → 손절 -10% 고정으로 얼마나 버는지 → research/out_kr200b.txt
 데이터: 야후 1시간봉 2년 (.KS/.KQ) → 하루를 오전(9~13시)·오후(13시~마감) 4시간봉 2개로 묶음
 종목: 지금 시총 상위 코스피 150 + 코스닥 60
 진입: 신호 봉 종가 / 손절 -10% (그 봉 저가가 닿으면) / 청산: 보유 N봉 뒤 종가 또는 익절 +10%·+20%
@@ -54,7 +54,7 @@ for m, n_, suf in (("KOSPI", 150, ".KS"), ("KOSDAQ", 60, ".KQ")):
 print("종목", len(U), flush=True)
 
 HOLDS = (10, 40, 120, 180)   # 4시간봉 2개 = 하루 → 5일 · 20일 · 60일 · 90일
-TPS = (None, 0.10, 0.20, 0.30)
+TPS = (None, 0.20)
 R = {}   # (신호, 흐름, hold, tp) → [(시점비율, 수익)]
 def add(key, frac, r): R.setdefault(key, []).append((frac, r))
 ok = 0
@@ -62,9 +62,10 @@ for n, (t, suf) in enumerate(U):
     b = yh(t + suf); time.sleep(0.3)
     if b is None or len(b) < 300: continue
     ok += 1
-    O, H, L, C = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+    O, H, L, C, V = b[:, 0], b[:, 1], b[:, 2], b[:, 3], b[:, 4]
+    bav = sma(np.abs(C - O), 20); vav = sma(V, 20)
     a200 = sma(C, 200); slope = a200 - np.roll(a200, 20)
-    N = len(C); last = {"닿고 반등": -99, "뚫고 올라감": -99}
+    N = len(C); last = {k: -99 for k in ("닿고 반등", "뚫고 올라감", "뚫고+장대양봉+거래량2배", "오래 눌렸다 첫 돌파", "셋 다")}
     for i in range(221, N - 1):
         if np.isnan(a200[i]) or np.isnan(a200[i - 1]): continue
         sig = []
@@ -72,6 +73,13 @@ for n, (t, suf) in enumerate(U):
         if C[i - 1] > a200[i - 1] and L[i] <= a200[i] * 1.005 and C[i] > a200[i]: sig.append("닿고 반등")
         # 뚫고 올라감: 직전 봉 종가가 200선 아래 · 이번 봉 종가가 200선 위
         if C[i - 1] < a200[i - 1] and C[i] > a200[i]: sig.append("뚫고 올라감")
+        if C[i - 1] < a200[i - 1] and C[i] > a200[i]:
+            big = abs(C[i] - O[i]) >= 2 * bav[i - 1] and C[i] > O[i]
+            vol = V[i] >= 2 * vav[i - 1]
+            below = np.sum(C[i - 40:i] < a200[i - 40:i]) >= 35            # 직전 40봉(약 20일) 중 35봉 이상 200선 아래
+            if big and vol: sig.append("뚫고+장대양봉+거래량2배")
+            if below: sig.append("오래 눌렸다 첫 돌파")
+            if big and vol and below: sig.append("셋 다")
         fl = "200선 오르는 중" if slope[i] > 0 else "200선 내리는 중"
         for s in sig:
             if i - last[s] < 10: continue
@@ -92,12 +100,12 @@ def st(x):
     a = np.array(x); return f"{len(a)}회 {a.mean():+.2f}% 승{(a > 0).mean() * 100:.0f}% 손절{(a <= -10).mean() * 100:.0f}%"
 Lns = [f"# 한국 주식 4시간봉 200선 · 손절 -10% · 수수료 0.25% · 야후 2년 · {ok}종목 (코스피 상위 150 + 코스닥 상위 60, 지금 시총 기준)",
        "형식: 전체 | 앞 70% 기간 | 뒤 30% 기간   (보유 10봉≈5거래일 · 40봉≈20일 · 120봉≈60일 · 180봉≈90일)", ""]
-for s in ("닿고 반등", "뚫고 올라감", "평소(아무 봉)"):
-    for fl in ("전체", "200선 오르는 중", "200선 내리는 중"):
-        if (s, fl, 10, None) not in R: continue
+for s in ("뚫고+장대양봉+거래량2배", "오래 눌렸다 첫 돌파", "셋 다", "뚫고 올라감", "평소(아무 봉)"):
+    for fl in ("전체",):
+        if (s, fl, 10, None) not in R: Lns.append(f"■ {s}: 신호 없음"); continue
         Lns.append(f"■ {s} [{fl}]")
         for h in HOLDS:
             for tp in TPS:
                 x = R[(s, fl, h, tp)]
                 Lns.append(f"  {h//2:2}일 보유 · 익절 {'없음' if not tp else f'+{int(tp*100)}%':4}: {st([r for _, r in x])} | 앞 {st([r for f, r in x if f < 0.7])} | 뒤 {st([r for f, r in x if f >= 0.7])}")
-open("research/out_kr200.txt", "w", encoding="utf-8").write("\n".join(Lns)); print("\n".join(Lns))
+open("research/out_kr200b.txt", "w", encoding="utf-8").write("\n".join(Lns)); print("\n".join(Lns))
