@@ -58,11 +58,16 @@ TPS = (None, 0.20)
 R = {}   # (신호, 흐름, hold, tp) → [(시점비율, 수익)]
 def add(key, frac, r): R.setdefault(key, []).append((frac, r))
 ok = 0
+GL = [0, 0]
 for n, (t, suf) in enumerate(U):
     b = yh(t + suf); time.sleep(0.3)
     if b is None or len(b) < 300: continue
     ok += 1
     O, H, L, C, V = b[:, 0], b[:, 1], b[:, 2], b[:, 3], b[:, 4]
+    # 야후 한국 분봉에 가끔 튀는 저가·고가(잘못 찍힌 값)가 있어 시가·종가 대비 15% 넘게 벗어나면 잘라냄
+    lo_ok = np.minimum(O, C) * 0.85; hi_ok = np.maximum(O, C) * 1.15
+    GL[0] += int(np.sum(L < lo_ok) + np.sum(H > hi_ok)); GL[1] += len(C)
+    L = np.maximum(L, lo_ok); H = np.minimum(H, hi_ok)
     bav = sma(np.abs(C - O), 20); vav = sma(V, 20)
     a200 = sma(C, 200); slope = a200 - np.roll(a200, 20)
     N = len(C); last = {k: -99 for k in ("닿고 반등", "뚫고 올라감", "뚫고+장대양봉+거래량2배", "오래 눌렸다 첫 돌파", "셋 다")}
@@ -99,6 +104,7 @@ def st(x):
     if not x: return "-"
     a = np.array(x); return f"{len(a)}회 {a.mean():+.2f}% 승{(a > 0).mean() * 100:.0f}% 손절{(a <= -10).mean() * 100:.0f}%"
 Lns = [f"# 한국 주식 4시간봉 200선 · 손절 -10% · 수수료 0.25% · 야후 2년 · {ok}종목 (코스피 상위 150 + 코스닥 상위 60, 지금 시총 기준)",
+       f"튀는 값 정리: {GL[0]}개 / 전체 {GL[1]}봉",
        "형식: 전체 | 앞 70% 기간 | 뒤 30% 기간   (보유 10봉≈5거래일 · 40봉≈20일 · 120봉≈60일 · 180봉≈90일)", ""]
 for s in ("뚫고+장대양봉+거래량2배", "오래 눌렸다 첫 돌파", "셋 다", "뚫고 올라감", "평소(아무 봉)"):
     for fl in ("전체",):
