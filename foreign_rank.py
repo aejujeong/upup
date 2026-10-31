@@ -1031,6 +1031,26 @@ def add_k200(rows, budget=20 * 60, win=40):
     검증(2년·무작위 424종목·손절 -10%): 강한 돌파는 5·20·60·90일 보유 모두 아무 때나 산 것보다 평균 0.5~1%p 높았음."""
     from concurrent.futures import ThreadPoolExecutor
     kst = dt.timezone(dt.timedelta(hours=9))
+    # 신호 날 시장 흐름 (지수 20거래일 등락) — '좋은 조건' 판정용
+    MK20 = {}
+    try:
+        endd = dt.date.today().strftime("%Y%m%d"); startd = (dt.date.today() - dt.timedelta(days=800)).strftime("%Y%m%d")
+        for code, nm in (("1001", "코스피"), ("2001", "코스닥")):
+            ix = stock.get_index_ohlcv(startd, endd, code)["종가"]
+            r20 = (ix / ix.shift(20) - 1) * 100
+            MK20[nm] = {pd.Timestamp(k).date(): float(v) for k, v in r20.dropna().items()}
+    except Exception as e:
+        print(f"지수 받기 실패 (좋은 조건 판정 생략): {e}")
+
+    def mk20(mkt, d):
+        m = MK20.get(mkt)
+        if not m:
+            return None
+        for back in range(0, 7):   # 그날 (휴일이면 그 전 거래일)
+            x = m.get(d - dt.timedelta(days=back))
+            if x is not None:
+                return round(x, 1)
+        return None
 
     def one(t):
         r = rows[t]
@@ -1093,9 +1113,12 @@ def add_k200(rows, budget=20 * 60, win=40):
             if i - lastk.get(k, -99) >= 10:   # 기준일 보기용 전체 기록 (같은 종류는 10봉 = 5거래일에 한 번)
                 lastk[k] = i
                 d, half = keys[i]
+                m20 = mk20(r.get("mkt"), d)
                 hist.append([d.isoformat(), half, k, round(float(C[i]), 2), round(float(V[i] / vav[i - 1]), 1) if vav[i - 1] else 0,
                              1 if np.sum(C[max(0, i - 40):i] < a200[max(0, i - 40):i]) >= 35 else 0,
-                             1 if (not np.isnan(a400[i]) and C[i] > a400[i]) else 0])
+                             1 if (not np.isnan(a400[i]) and C[i] > a400[i]) else 0,
+                             round(float((C[i] / H[max(0, i - 250):i + 1].max() - 1) * 100), 1),   # 6달(250봉) 고점 대비 %
+                             m20])                                                                # 시장 20일 등락 %
         out = []
         for k, i in got.items():
             d, half = keys[i]
@@ -1103,7 +1126,8 @@ def add_k200(rows, budget=20 * 60, win=40):
                         "u": round(float((C[-1] / C[i] - 1) * 100), 1), "v": round(float((C[-1] / a200[-1] - 1) * 100), 1),
                         "x": round(float(V[i] / vav[i - 1]), 1) if vav[i - 1] else None,
                         "lo": bool(np.sum(C[max(0, i - 40):i] < a200[max(0, i - 40):i]) >= 35),
-                        "f": bool(not np.isnan(a400[i]) and C[i] > a400[i])})
+                        "f": bool(not np.isnan(a400[i]) and C[i] > a400[i]),
+                        "hi": round(float((C[i] / H[max(0, i - 250):i + 1].max() - 1) * 100), 1), "m20": mk20(r.get("mkt"), d)})
         return t, (out, hist)
 
     t0 = time.time(); done = hit = 0
@@ -2421,7 +2445,8 @@ td.st{text-align:center;width:44px}
     <div class="field rk"><label>신호</label>
       <div class="seg" id="sigf"><button data-v="ALL" class="on">전체</button><button data-v="GOOD" title="이평선(50·거래량가중100·200·400일선)에 위에서 내려와 처음 닿고 지지 구간 + 좋은 조건">눌림 ★</button><button data-v="BRK" title="이평선이 몰린 박스권에서 거래량 2배로 첫 돌파">밀집 돌파</button></div></div>
     <div class="field rk"><label>4시간 200선 (최근 한 달)</label>
-      <div class="seg" id="k2f"><button data-v="ALL" class="on">끔</button><button data-v="S" title="장대 양봉(몸통 20봉 평균 2배↑) + 거래량 2배↑로 4시간봉 200선을 아래에서 위로 뚫음 · 검증(2년): 아무 때나 산 것보다 평균 0.5~1%p 높음, 손절 -10%면 60~90일 보유 시 절반 넘게 손절">강한 돌파</button><button data-v="B" title="그 외 4시간봉 200선을 아래에서 위로 뚫음">돌파</button><button data-v="T" title="200선 위에 있다 내려와 닿고 위에서 마감">닿고 반등</button></div></div>
+      <div class="seg" id="k2f"><button data-v="ALL" class="on">끔</button><button data-v="S" title="장대 양봉(몸통 20봉 평균 2배↑) + 거래량 2배↑로 4시간봉 200선을 아래에서 위로 뚫음 · 검증(2년): 아무 때나 산 것보다 평균 0.5~1%p 높음, 손절 -10%면 60~90일 보유 시 절반 넘게 손절">강한 돌파</button><button data-v="B" title="그 외 4시간봉 200선을 아래에서 위로 뚫음">돌파</button><button data-v="T" title="200선 위에 있다 내려와 닿고 위에서 마감">닿고 반등</button></div>
+      <label class="hotchk" title="신호 날 시장(코스피·코스닥) 20일 +2% 미만 + 6달 고점 대비 -22% 안쪽 + 외국인 한달 순매수 · 검증(2025~ 34,343번): 손절 -10%·20일 보유 평균 +4.3%, 이긴 비율 55%, 손절 20% (조건 없을 때 +2.0%·44%·33%)"><input type="checkbox" id="k2good"> 좋은 조건만</label></div>
     <div class="field rk"><label>시총 구간</label>
       <div class="seg" id="szf"><button data-v="ALL" class="on">전체</button><button data-v="대형">대형 1조 이상</button><button data-v="중형">중형 3천억~1조</button><button data-v="소형">소형 3천억 미만</button></div></div>
     <div class="field rk"><label>&nbsp;</label>
@@ -2710,7 +2735,7 @@ const CREF = __CYCREF__;
 const REFBY = Object.fromEntries(((CREF && CREF.secs) || []).map(x => [x.sec.replace(/\s/g, ''), x]));
 const refOf = sec => REFBY[(sec || '').replace(/\s/g, '')];
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'10', mkt:'ALL', sr:'IN', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', allf:'ALL', dan:false, fb:false, k2f:'ALL', sigf:'ALL', szf:'ALL', hideHot:true, flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:true, myMin:2, myMax:12, view:'sec', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
+const S = {per:'10', mkt:'ALL', sr:'IN', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', allf:'ALL', dan:false, fb:false, k2f:'ALL', k2good:false, sigf:'ALL', szf:'ALL', hideHot:true, flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:true, myMin:2, myMax:12, view:'sec', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
 const RT = (r, p) => S.asof ? (r.h ? r.h.rt[p] : null) : (r.rt ? r.rt[p] : null);   // 기간 등락률
 const AA = (r, p) => S.asof ? r.h.a[p] : r.a[p];   // 외국인 (기준일 반영)
 const BB = (r, p) => S.asof ? r.h.b[p] : r.b[p];   // 기관 (기준일 반영)
@@ -2836,7 +2861,7 @@ const wonTd = v => `<td class="${v > 0 ? 'pos' : v < 0 ? 'neg' : ''}">${won(v, t
 const COLS = [
   {k:null,   t:'관심', cell: (r) => `<td class="st">${starBtn(r.code)}</td>`},
   {k:null,   t:'순위', cell: (r, x) => `<td>${x.rank}</td>`},
-  {k:'name', t:'종목명', cell: (r) => { const h = S.dan && DAN_HIT[r.code] && DAN_HIT[r.code].length >= 2 ? DAN_HIT[r.code] : null; const j = flowJudge(r); return `<td class="name">${esc(r.name)}${h ? ` <span class="sigb good" title="단타 필터 상위 10개에 ${h.join('·')} 탭 모두 들어감">${h.length}개 겹침 <small>${h.join('·')}</small></span>` : ''}${j ? ` <span class="sigb ${j.cls}" title="${esc(j.tip)}">${j.t}</span>` : ''}${k2Badge(r)}</td>`; }},
+  {k:'name', t:'종목명', cell: (r) => { const h = DAN_HIT[r.code] && DAN_HIT[r.code].length >= 2 ? DAN_HIT[r.code] : null; const j = flowJudge(r); return `<td class="name">${esc(r.name)}${h ? ` <span class="sigb good" title="지금 고른 조건 안에서 외국인+기관 합산/시총 상위 10개에 ${h.join('·')} 탭 모두 들어감 (단타 필터를 켜면 단타 조건 기준)">${h.length}개 겹침 <small>${h.join('·')}</small></span>` : ''}${j ? ` <span class="sigb ${j.cls}" title="${esc(j.tip)}">${j.t}</span>` : ''}${k2Badge(r)}</td>`; }},
   {k:'sig',  t:'신호', cell: (r) => `<td>${sigBadge(sigOf(r))}</td>`},
   {k:null,   t:'코드', cell: (r) => `<td class="code">${r.code}</td>`},
   {k:null,   t:'시장', cell: (r) => `<td>${r.mkt}</td>`},
@@ -3782,7 +3807,7 @@ function render(){
   let rows = S.fb ? DATA.filter(fbOk) : S.k2f !== 'ALL' ? k2Rows() : S.watch === 'W' ? DATA.filter(r => baseOk(r) && allPos(r)) : DATA.filter(r => baseOk(r) && perPos(r) && allPos(r));
   // 단타 필터 겹침: 전날·10일·한달 탭 각각의 단타 상위 10개 중 두 탭 이상에 든 종목 표시
   DAN_HIT = {};
-  if (S.dan) {
+  {   // 전날·10일·한달 탭 상위 10개 겹침 — 단타 필터를 안 켜도, 기준일 보기에서도 같이 계산
     const base = DATA.filter(baseOk);
     const pn = {'1': '전날', '10': '10일', 'M': '한달'};
     ['1', '10', 'M'].forEach(p => {
@@ -4583,24 +4608,33 @@ function k2AsOf(r){
     const px = r.h && r.h.px;
     const md = e[0].slice(5).replace('-', '/').replace(/^0/, '').replace('/0', '/');
     best[e[2]] = {k: e[2], w: md + (e[1] ? ' 오후' : ' 오전'), a: ia - ie, u: px ? Math.round((px / e[3] - 1) * 1000) / 10 : 0,
-                  v: null, x: e[4], lo: !!e[5], f: !!e[6], after: r.h && r.h.ret !== null && r.h.ret !== undefined ? Math.round(r.h.ret * 10) / 10 : null};
+                  v: null, x: e[4], lo: !!e[5], f: !!e[6], hi: e.length > 7 ? e[7] : null, m20: e.length > 8 ? e[8] : null, after: r.h && r.h.ret !== null && r.h.ret !== undefined ? Math.round(r.h.ret * 10) / 10 : null};
   });
   return Object.values(best);
 }
-const k2List = r => S.asof ? k2AsOf(r) : (r.k2 || []);
-const k2Of = (r, k) => k2List(r).find(x => x.k === (k || S.k2f)) || null;
+// 좋은 조건 (2025~ 전체 종목 34,343번 검증): 신호 날 시장 20일 +2% 미만 + 6달 고점 대비 -22% 안쪽 + 외국인 한달 순매수
+// → 손절 -10% · 20일 보유 평균 +4.3% · 이긴 비율 55% · 손절 20% (그냥 신호 전체는 +2.0% · 44% · 33%)
+function k2Good(r, x){
+  if (x.m20 === null || x.m20 === undefined || x.hi === null || x.hi === undefined) return false;
+  const a = AA(r, 'M');   // 기준일이면 그날 기준 한달
+  return x.m20 < 2 && x.hi >= -22 && !!a && a.net > 0;
+}
+const k2List = r => (S.asof ? k2AsOf(r) : (r.k2 || [])).map(x => ({...x, good: k2Good(r, x)}));
+const k2Of = (r, k) => k2List(r).find(x => x.k === (k || S.k2f) && (!S.k2good || x.good)) || null;
 function k2Badge(r){
   const all = k2List(r); if (!all.length) return '';
   const list = S.k2f !== 'ALL' ? all.filter(x => x.k === S.k2f) : all.filter(x => x.k === 'S');   // 필터 끔: 강한 돌파만 표시
-  return list.map(x => ` <span class="sigb ${x.v === null || x.v >= 0 ? 'good' : ''}" title="4시간봉 ${x.w} · ${S.asof ? '기준일까지' : '그 뒤'} ${x.u > 0 ? '+' : ''}${x.u}%${x.v !== null ? ' · 지금 200선 대비 ' + (x.v > 0 ? '+' : '') + x.v + '%' : ''}${x.after !== null && x.after !== undefined ? ' · 기준일 뒤 지금까지 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}${x.x ? ' · 거래량 ' + x.x + '배' : ''}${x.lo ? ' · 20일 가까이 눌렸다 처음 뚫음' : ''}${x.f ? ' · 400선도 위' : ''}">${K2N[x.k]}${x.lo && x.k !== 'T' ? '★' : ''} <small>${x.w}${x.v !== null && x.v < 0 ? ' · 다시 아래' : ''}${x.after !== null && x.after !== undefined ? ' · 그 뒤 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}</small></span>`).join('');
+  return list.map(x => ` <span class="sigb ${x.v === null || x.v >= 0 ? 'good' : ''}" title="4시간봉 ${x.w} · ${S.asof ? '기준일까지' : '그 뒤'} ${x.u > 0 ? '+' : ''}${x.u}%${x.v !== null ? ' · 지금 200선 대비 ' + (x.v > 0 ? '+' : '') + x.v + '%' : ''}${x.after !== null && x.after !== undefined ? ' · 기준일 뒤 지금까지 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}${x.x ? ' · 거래량 ' + x.x + '배' : ''}${x.lo ? ' · 20일 가까이 눌렸다 처음 뚫음' : ''}${x.f ? ' · 400선도 위' : ''}${x.good ? ' · ✓ 좋은 조건 (시장 20일 ' + x.m20 + '% · 6달 고점 대비 ' + x.hi + '% · 외국인 한달 순매수) — 검증 평균 +4.3%·이긴 비율 55%·손절 20%' : (x.m20 !== null && x.m20 !== undefined ? ' · 좋은 조건 아님 (시장 20일 ' + x.m20 + '% · 고점 대비 ' + x.hi + '%)' : '')}">${K2N[x.k]}${x.lo && x.k !== 'T' ? '★' : ''}${x.good ? ' ✓좋은 조건' : ''} <small>${x.w}${x.v !== null && x.v < 0 ? ' · 다시 아래' : ''}${x.after !== null && x.after !== undefined ? ' · 그 뒤 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}</small></span>`).join('');
 }
 function flowJudge(r){
-  if (S.asof) return null;
-  const a = AA(r, 'M'), b = BB(r, 'M'), f = fDays(r), rt = RT(r, 'M');
-  if (!a || !b || !(a.net > 0) || !(b.net > 0) || f === null || f < 12 || rt === null || rt === undefined || rt > -5) return null;
-  const c = r.sb ? r.sb.chg : null;
+  const a = AA(r, 'M'), b = BB(r, 'M'), f = fDays(r), rt0 = RT(r, 'M');
+  if (!a || !b || !(a.net > 0) || !(b.net > 0) || f === null || f < 12 || rt0 === null || rt0 === undefined || rt0 > -5) return null;
+  const rt = Math.round(rt0 * 10) / 10;
+  // 기준일 보기면 그날 알 수 있던 공매도 잔고 변화 (r.h.sbc)
+  const c = S.asof ? (r.h ? r.h.sbc : null) : (r.sb ? r.sb.chg : null);
+  const sbd = S.asof ? S.asof + ' 기준 2~4일 전 자료' : (r.sb ? r.sb.d + ' 기준' : '');
   if (c === null || c === undefined) return {t: '수급 매수·하락 중 · 공매도 자료 없음', cls: '', tip: '외국인·기관이 20일 동안 사는데 주가는 ' + rt + '% · 공매도 잔고 변화를 몰라 판단 보류'};
-  const tip = `외국인·기관 20일 순매수(외국인 ${f}일) · 20일 ${rt}% · 공매도 잔고 20일 ${c > 0 ? '+' : ''}${c}%p (${r.sb.d} 기준)`;
+  const tip = `외국인·기관 20일 순매수(외국인 ${f}일) · 20일 ${rt}% · 공매도 잔고 20일 ${c > 0 ? '+' : ''}${c}%p (${sbd})`;
   if (c <= 0) return {t: '매수 후보 · 공매도↓', cls: 'good', tip: tip + ' → 과거 같은 경우 20일 뒤 평균 +4.8% · 오른 비율 59% (295회)'};
   if (c >= 0.2) return {t: '피하기 · 공매도↑', cls: 'bad', tip: tip + ' → 과거 같은 경우 20일 뒤 평균 -1.2% (27회 · 표본 적음)'};
   return {t: '지켜보기 · 공매도 조금↑', cls: '', tip: tip + ' → 과거 같은 경우 20일 뒤 평균 +2.7% · 오른 비율 60% (126회)'};
@@ -4627,6 +4661,7 @@ $('fbBtn').onclick = () => {
   if (S.fb) { S.dan = false; S.sort = 'spct'; S.dir = -1; $('sort').value = 'spct'; }
   S.page = 1; render();
 };
+$('k2good').onchange = e => { S.k2good = e.target.checked; S.page = 1; render(); };
 document.querySelectorAll('#k2f button').forEach(b => b.onclick = () => {
   S.k2f = b.dataset.v; document.querySelectorAll('#k2f button').forEach(x => x.classList.toggle('on', x.dataset.v === S.k2f));
   if (S.k2f !== 'ALL') { S.dan = false; S.fb = false; S.sr = 'ALL'; setSeg('srf', 'ALL'); S.allf = 'ALL'; setSeg('allf', 'ALL'); }   // 켤 때 지지선·수급은 전체로 (원하면 다시 고르면 같이 적용)
