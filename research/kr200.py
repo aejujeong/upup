@@ -77,10 +77,12 @@ for n, (t, suf) in enumerate(U):
             if i - last[s] < 10: continue
             last[s] = i
             for h in HOLDS:
+                if i + h >= N: continue   # 보유 기간이 데이터 끝을 넘으면 뺌 (끝까지 못 들고 있었으니)
                 for tp in TPS:
                     r = trade(H, L, C, i, h, tp); add((s, "전체", h, tp), i / N, r); add((s, fl, h, tp), i / N, r)
         if i % 10 == 0:   # 평소 (10봉마다 아무 봉)
             for h in HOLDS:
+                if i + h >= N: continue
                 for tp in TPS:
                     add(("평소(아무 봉)", "전체", h, tp), i / N, trade(H, L, C, i, h, tp))
     if n % 30 == 0: print(n, ok, flush=True)
