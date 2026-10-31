@@ -1036,7 +1036,7 @@ def add_k200(rows, budget=20 * 60, win=40):
         sym = t + (".KS" if r.get("mkt") == "코스피" else ".KQ")
         try:
             with urllib.request.urlopen(urllib.request.Request(
-                    f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=60m&range=1y",
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=60m&range=730d",
                     headers={"User-Agent": "Mozilla/5.0"}), timeout=20) as f:
                 j = json.loads(f.read())
             res = j["chart"]["result"][0]; q = res["indicators"]["quote"][0]; ts = res["timestamp"]
@@ -1060,15 +1060,26 @@ def add_k200(rows, budget=20 * 60, win=40):
             cs = np.cumsum(np.insert(a, 0, 0.0)); o = np.full(len(a), np.nan); o[p - 1:] = (cs[p:] - cs[:-p]) / p; return o
         a200, a400 = sma(C, 200), sma(C, 400)
         bav, vav = sma(np.abs(C - O), 20), sma(V, 20)
-        N = len(C); got = {}
-        for i in range(max(241, N - win), N):
+        N = len(C); got = {}; hist = []; lastk = {}
+        for i in range(241, N):
             if np.isnan(a200[i - 1]):
                 continue
+            k = None
             if C[i - 1] < a200[i - 1] and C[i] > a200[i]:
                 strong = C[i] > O[i] and abs(C[i] - O[i]) >= 2 * bav[i - 1] and V[i] >= 2 * vav[i - 1]
-                got["S" if strong else "B"] = i
+                k = "S" if strong else "B"
             elif C[i - 1] > a200[i - 1] and L[i] <= a200[i] * 1.005 and C[i] > a200[i]:
-                got["T"] = i
+                k = "T"
+            if not k:
+                continue
+            if i >= N - win:
+                got[k] = i
+            if i - lastk.get(k, -99) >= 10:   # 기준일 보기용 전체 기록 (같은 종류는 10봉 = 5거래일에 한 번)
+                lastk[k] = i
+                d, half = keys[i]
+                hist.append([d.isoformat(), half, k, round(float(C[i]), 2), round(float(V[i] / vav[i - 1]), 1) if vav[i - 1] else 0,
+                             1 if np.sum(C[max(0, i - 40):i] < a200[max(0, i - 40):i]) >= 35 else 0,
+                             1 if (not np.isnan(a400[i]) and C[i] > a400[i]) else 0])
         out = []
         for k, i in got.items():
             d, half = keys[i]
@@ -1077,7 +1088,7 @@ def add_k200(rows, budget=20 * 60, win=40):
                         "x": round(float(V[i] / vav[i - 1]), 1) if vav[i - 1] else None,
                         "lo": bool(np.sum(C[max(0, i - 40):i] < a200[max(0, i - 40):i]) >= 35),
                         "f": bool(not np.isnan(a400[i]) and C[i] > a400[i])})
-        return t, out
+        return t, (out, hist)
 
     t0 = time.time(); done = hit = 0
     todo = [t for t, r in rows.items() if r.get("cap", 0) >= 500]
@@ -1091,7 +1102,11 @@ def add_k200(rows, budget=20 * 60, win=40):
                 continue
             done += 1
             if out:
-                rows[t]["k2"] = out; hit += 1
+                cur, hist = out
+                if cur:
+                    rows[t]["k2"] = cur; hit += 1
+                if hist:
+                    rows[t]["k2h"] = hist
     print(f"4시간봉 200선: {done}/{len(todo)}종목 확인 · 신호 있는 종목 {hit}")
 
 
@@ -3747,7 +3762,7 @@ function render(){
   // 4시간 200선 필터: 수급·지지선 조건과 상관없이 그 신호가 난 종목만 (시장·시총·검색·관심만 적용)
   const k2Rows = () => DATA.filter(r => k2Of(r) && (S.mkt === 'ALL' || r.mkt === S.mkt) && r.cap >= S.minCap &&
     (S.watch === 'ALL' || WATCH.has(r.code)) && (!q || r.name.toLowerCase().includes(q) || r.code.includes(q)));
-  let rows = S.fb ? DATA.filter(fbOk) : (S.k2f !== 'ALL' && !S.asof) ? k2Rows() : DATA.filter(r => baseOk(r) && perPos(r) && allPos(r));
+  let rows = S.fb ? DATA.filter(fbOk) : S.k2f !== 'ALL' ? k2Rows() : DATA.filter(r => baseOk(r) && perPos(r) && allPos(r));
   // 단타 필터 겹침: 전날·10일·한달 탭 각각의 단타 상위 10개 중 두 탭 이상에 든 종목 표시
   DAN_HIT = {};
   if (S.dan) {
@@ -4498,11 +4513,26 @@ function fbOk(r){
 }
 // 4시간 200선 신호 (최근 한 달) — 기준일 보기에서는 없음 (오늘 기준 자료만)
 const K2N = {S: '200선 강한 돌파', B: '200선 돌파', T: '200선 닿고 반등'};
-const k2Of = (r, k) => { if (S.asof || !r.k2) return null; return r.k2.find(x => x.k === (k || S.k2f)) || null; };
+// 기준일 보기: 그날까지 20거래일 안에 난 신호 (r.k2h = [날짜, 오전0/오후1, 종류, 그 봉 종가, 거래량 배수, 오래 눌림, 400선 위])
+function k2AsOf(r){
+  if (!r.k2h) return [];
+  const ia = HD.indexOf(S.asof); if (ia < 0) return [];
+  const best = {};
+  r.k2h.forEach(e => {
+    const ie = HD.indexOf(e[0]); if (ie < 0 || ie > ia || ia - ie > 20) return;
+    const px = r.h && r.h.px;
+    const md = e[0].slice(5).replace('-', '/').replace(/^0/, '').replace('/0', '/');
+    best[e[2]] = {k: e[2], w: md + (e[1] ? ' 오후' : ' 오전'), a: ia - ie, u: px ? Math.round((px / e[3] - 1) * 1000) / 10 : 0,
+                  v: null, x: e[4], lo: !!e[5], f: !!e[6], after: r.h && r.h.ret !== null && r.h.ret !== undefined ? Math.round(r.h.ret * 10) / 10 : null};
+  });
+  return Object.values(best);
+}
+const k2List = r => S.asof ? k2AsOf(r) : (r.k2 || []);
+const k2Of = (r, k) => k2List(r).find(x => x.k === (k || S.k2f)) || null;
 function k2Badge(r){
-  if (S.asof || !r.k2) return '';
-  const list = S.k2f !== 'ALL' ? r.k2.filter(x => x.k === S.k2f) : r.k2.filter(x => x.k === 'S');   // 필터 끔: 강한 돌파만 표시
-  return list.map(x => ` <span class="sigb ${x.v >= 0 ? 'good' : ''}" title="4시간봉 ${x.w} · 그 뒤 ${x.u > 0 ? '+' : ''}${x.u}% · 지금 200선 대비 ${x.v > 0 ? '+' : ''}${x.v}%${x.x ? ' · 거래량 ' + x.x + '배' : ''}${x.lo ? ' · 20일 가까이 눌렸다 처음 뚫음' : ''}${x.f ? ' · 400선도 위' : ''}">${K2N[x.k]}${x.lo && x.k !== 'T' ? '★' : ''} <small>${x.w}${x.v < 0 ? ' · 다시 아래' : ''}</small></span>`).join('');
+  const all = k2List(r); if (!all.length) return '';
+  const list = S.k2f !== 'ALL' ? all.filter(x => x.k === S.k2f) : all.filter(x => x.k === 'S');   // 필터 끔: 강한 돌파만 표시
+  return list.map(x => ` <span class="sigb ${x.v === null || x.v >= 0 ? 'good' : ''}" title="4시간봉 ${x.w} · ${S.asof ? '기준일까지' : '그 뒤'} ${x.u > 0 ? '+' : ''}${x.u}%${x.v !== null ? ' · 지금 200선 대비 ' + (x.v > 0 ? '+' : '') + x.v + '%' : ''}${x.after !== null && x.after !== undefined ? ' · 기준일 뒤 지금까지 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}${x.x ? ' · 거래량 ' + x.x + '배' : ''}${x.lo ? ' · 20일 가까이 눌렸다 처음 뚫음' : ''}${x.f ? ' · 400선도 위' : ''}">${K2N[x.k]}${x.lo && x.k !== 'T' ? '★' : ''} <small>${x.w}${x.v !== null && x.v < 0 ? ' · 다시 아래' : ''}${x.after !== null && x.after !== undefined ? ' · 그 뒤 ' + (x.after > 0 ? '+' : '') + x.after + '%' : ''}</small></span>`).join('');
 }
 function flowJudge(r){
   if (S.asof) return null;
