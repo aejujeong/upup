@@ -23,7 +23,7 @@ for sym in ("ETHUSDT",):
     L.append(f"# {sym} 4시간봉 지금 ({t(i)}, 종가 {C[i]:.1f})")
     L.append(f"  지금 거리: 50선 {D[i,0]:+.1f}% · 100선 {D[i,1]:+.1f}% · 200선 {D[i,2]:+.1f}% · 400선 {D[i,3]:+.1f}% · 방향(20봉) {' '.join(('↑' if S[k][i] >= 0 else '↓') for k in range(4))} · ATR {atrp[i]:.2f}%")
     L.append(f"  비슷하다고 보는 허용폭: 50선 ±{tol[0]:.1f}%p · 100선 ±{tol[1]:.1f}%p · 200선 ±{tol[2]:.1f}%p · 400선 ±{tol[3]:.1f}%p")
-    L.append("  → 예: 지금 200선 아래 8.8%면, 200선 아래 0.1%~" + f"{abs(D[i,2])+tol[2]:.1f}% 사이면 다 비슷한 걸로 침", "")
+    L.append(f"  → 200선 기준으로 보면 {max(D[i,2]-tol[2],-999):+.1f}% ~ {D[i,2]+tol[2]:+.1f}% 사이(같은 쪽)면 다 비슷한 걸로 침"); L.append("")
     hits = []
     for s in range(400, N - 20):
         if s % 10: continue
