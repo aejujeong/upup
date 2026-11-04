@@ -702,6 +702,7 @@ czLev  = input.float(5, "레버리지 (배)", minval = 1, group = GC)
 czFx   = input.float(1400, "환율 (USDT 1개 = 몇 원)", minval = 1, group = GC)
 czFee  = input.float(0.05, "수수료 (들어갈 때·나올 때 한 번씩, %)", minval = 0, step = 0.01, group = GC)
 czRisk = input.float(2, "한 번에 잃어도 되는 한도 (시드의 %)", minval = 0.1, step = 0.1, group = GC)
+czEO   = input.price(0, "진입가 직접 지정 (0 = 신호 봉 종가)", group = GC)
 czSlO  = input.price(0, "손절가 직접 지정 (0 = 신호 손절)", group = GC)
 czTpO  = input.price(0, "익절가 직접 지정 (0 = 신호 익절)", group = GC)
 czPos  = input.string("오른쪽 위", "계산기 표 위치", options = ["오른쪽 위", "오른쪽 가운데", "왼쪽 위", "왼쪽 아래"], group = GC)
@@ -847,10 +848,11 @@ if barstate.islast and czOn
         czC(0, 0, "진입 계산기 · 이 차트에 아직 신호가 없어요", color.new(#617B55, 10))
         table.merge_cells(czTb, 0, 0, 1, 0)
     else
-        float e = czE
+        float e = czEO > 0 ? czEO : czE
         float sv = czSlO > 0 ? czSlO : czS
         float tv = czTpO > 0 ? czTpO : czT
         float slP = (1 - sv / e) * 100
+        bool badOrd = sv >= e or (not na(tv) and tv <= e)
         float tpP = na(tv) ? na : (tv / e - 1) * 100
         float notl = czMarg * czLev
         float lossA = notl * (slP + 2 * czFee) / 100
@@ -863,7 +865,7 @@ if barstate.islast and czOn
         cT = color.new(#00E676, 0)
         czLE := line.new(czB, e, bar_index + 5, e, extend = extend.right, color = cE, width = 2)
         czLS := line.new(czB, sv, bar_index + 5, sv, extend = extend.right, color = cS, width = 2)
-        czBE := label.new(bar_index + 3, e, "진입 " + str.tostring(e, format.mintick), style = label.style_label_left, color = cE, textcolor = color.black, size = size.small)
+        czBE := label.new(bar_index + 3, e, "진입 " + str.tostring(e, format.mintick) + (czEO > 0 ? " (직접)" : ""), style = label.style_label_left, color = cE, textcolor = color.black, size = size.small)
         czBS := label.new(bar_index + 3, sv, "손절 -" + str.tostring(slP, "#.##") + "% · -" + czW(lossA), style = label.style_label_left, color = cS, textcolor = color.black, size = size.small)
         if not na(tv)
             czLT := line.new(czB, tv, bar_index + 5, tv, extend = extend.right, color = cT, width = 2)
@@ -871,7 +873,7 @@ if barstate.islast and czOn
         czC(0, 0, "진입 계산기 · 마지막 신호: " + czNm + " · " + (ago_ == 0 ? "지금 봉" : str.tostring(ago_) + "봉 전") + " · 진입 " + str.tostring(e, format.mintick) + " · 증거금 " + czW(czMarg) + " (≈" + czU(czMarg) + ") × " + str.tostring(czLev) + "배", color.new(#617B55, 10))
         table.merge_cells(czTb, 0, 0, 1, 0)
         czC(0, 1, "손절 " + str.tostring(sv, format.mintick) + (czSlO > 0 ? " (직접)" : ""))
-        czC(1, 1, "-" + str.tostring(slP, "#.##") + "% → -" + czW(lossA) + " (시드의 " + str.tostring(lossA / czSeed * 100, "#.#") + "%)", lossA / czSeed * 100 > czRisk ? RD : na, "수수료 포함")
+        czC(1, 1, badOrd ? "순서가 틀려요 · 손절 < 진입 < 익절 로 넣어주세요" : "-" + str.tostring(slP, "#.##") + "% → -" + czW(lossA) + " (시드의 " + str.tostring(lossA / czSeed * 100, "#.#") + "%)", lossA / czSeed * 100 > czRisk ? RD : na, "수수료 포함")
         czC(0, 2, na(tv) ? "익절" : "익절 " + str.tostring(tv, format.mintick) + (czTpO > 0 ? " (직접)" : ""))
         czC(1, 2, na(tv) ? "정해진 익절 없음 · " + tpTxt : "+" + str.tostring(tpP, "#.##") + "% → +" + czW(winA) + " · 손익비 1 : " + str.tostring(winA / lossA, "#.##"))
         bool isDump = str.contains(czKey, "|투매|")
@@ -882,10 +884,10 @@ if barstate.islast and czOn
         else if na(gn)
             czC(1, 3, "이 시장·봉 조합은 봇 검증이 없어요 (" + czKey + ")", RD)
         else
-            bool slDiff = czSlO > 0 or czTpO > 0
-            czC(1, 3, str.tostring(gn, "#") + "회 · 승률 " + str.tostring(gw, "#") + "% · 한 번 평균 " + czSg(ga) + str.tostring(ga, "#.##") + "% · 이길 때 " + czSg(gaw) + str.tostring(gaw, "#.##") + "% · 질 때 " + str.tostring(gal, "#.##") + "% · " + gp + (gn < 30 ? " · 횟수 적음" : ""), na, "봇 문자와 같은 조건 · 신호 손절·익절 그대로 들어갔을 때 · 레버리지 안 곱한 값" + (slDiff ? " · 손절·익절을 직접 바꿔서 이 승률과 조건이 달라요" : ""))
+            bool slDiff = czEO > 0 or czSlO > 0 or czTpO > 0
+            czC(1, 3, str.tostring(gn, "#") + "회 · 승률 " + str.tostring(gw, "#") + "% · 한 번 평균 " + czSg(ga) + str.tostring(ga, "#.##") + "% · 이길 때 " + czSg(gaw) + str.tostring(gaw, "#.##") + "% · 질 때 " + str.tostring(gal, "#.##") + "% · " + gp + (gn < 30 ? " · 횟수 적음" : ""), na, "봇 문자와 같은 조건 · 신호 손절·익절 그대로 들어갔을 때 · 레버리지 안 곱한 값" + (slDiff ? " · 진입·손절·익절을 직접 바꿔서 이 승률과 조건이 달라요" : ""))
             czC(0, 4, "내 돈으로")
-            czC(1, 4, "한 번 평균 " + czSg(ga) + czW(notl * ga / 100) + " · " + (ga > 0 ? "검증상 평균 플러스" : "검증상 평균 손해 · 들어가지 않는 게 나아요") + (slDiff ? " · 손절·익절 직접 지정 중이라 참고만" : ""), ga > 0 ? GN : RD)
+            czC(1, 4, "한 번 평균 " + czSg(ga) + czW(notl * ga / 100) + " · " + (ga > 0 ? "검증상 평균 플러스" : "검증상 평균 손해 · 들어가지 않는 게 나아요") + (slDiff ? " · 직접 지정 중이라 참고만" : ""), ga > 0 ? GN : RD)
         czC(0, 5, "한도")
         czC(1, 5, "시드 " + str.tostring(czRisk) + "% 한도면 증거금 최대 " + czW(maxM) + " (≈" + czU(maxM) + ")", czMarg > maxM ? RD : na)
         czC(0, 6, "청산가 (대략)")
