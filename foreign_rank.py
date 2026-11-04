@@ -2516,7 +2516,7 @@ td.st{text-align:center;width:44px}
     <div class="field"><label>시총 최소 (억)</label><input id="minCap" type="number" min="0" step="500" value="0"></div>
     <div class="field rk nsec"><label>한 페이지에</label>
       <select id="top"><option>30</option><option selected>100</option><option>300</option></select></div>
-    <div class="field"><label>종목 찾기</label><input id="q" type="search" placeholder="종목명, 코드, 업종"></div>
+    <div class="field"><label>종목 찾기</label><input id="q" type="search" placeholder="종목명, 코드, 업종 (순매수 아니어도 다 나와요)"></div>
   </div>
 
   <div id="rankBody">
@@ -3834,7 +3834,9 @@ function render(){
   // 4시간 200선 필터: 그 신호가 난 종목 중에서 시장·시총 구간·업종·실적·지지선·신호·수급 버튼 등 나머지 조건도 같이 적용
   const k2Rows = () => DATA.filter(r => k2Of(r) && baseOk(r) && allPos(r));
   // 관심종목 보기: 순매수 여부와 상관없이 관심종목 전부 (나머지 거름 조건만 적용)
-  let rows = S.fb ? DATA.filter(fbOk) : S.k2f !== 'ALL' ? k2Rows() : S.watch === 'W' ? DATA.filter(r => baseOk(r) && allPos(r)) : DATA.filter(r => baseOk(r) && perPos(r) && allPos(r));
+  // 검색어가 있으면 순매수·시총·필터와 상관없이 이름·코드·업종이 맞는 종목 전부
+  const qOk = r => r.name.toLowerCase().includes(q) || r.code.includes(q) || (r.sec || '').toLowerCase().includes(q);
+  let rows = q ? DATA.filter(qOk) : S.fb ? DATA.filter(fbOk) : S.k2f !== 'ALL' ? k2Rows() : S.watch === 'W' ? DATA.filter(r => baseOk(r) && allPos(r)) : DATA.filter(r => baseOk(r) && perPos(r) && allPos(r));
   // 단타 필터 겹침: 전날·10일·한달 탭 각각의 단타 상위 10개 중 두 탭 이상에 든 종목 표시
   DAN_HIT = {};
   {   // 전날·10일·한달 탭 상위 10개 겹침 — 단타 필터를 안 켜도, 기준일 보기에서도 같이 계산
@@ -4714,7 +4716,12 @@ $('hotf').onchange = e => { S.hideHot = e.target.checked; S.page = 1; render(); 
 $('sort').onchange = e => { S.sort = e.target.value; S.dir = (S.sort === 'dist' || S.sort === 'per') ? 1 : -1; S.page = 1; render(); };
 $('minCap').oninput = e => { S.minCap = Number(e.target.value) || 0; S.page = 1; render(); };
 $('top').onchange = e => { S.top = Number(e.target.value); S.page = 1; render(); };
-$('q').oninput = e => { S.q = e.target.value; S.page = 1; render(); };
+$('q').oninput = e => {
+  S.q = e.target.value; S.page = 1;
+  // 섹터 보기 등에서 검색하면 종목 목록으로 바로 넘어가기
+  if (S.q.trim() && S.view !== 'rank') { S.view = 'rank'; $('view').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === 'rank')); }
+  render();
+};
 $('shareBtn').onclick = onShareBtn;
 $('gearBtn').onclick = e => { e.stopPropagation(); const p = $('gearPanel'); p.hidden = !p.hidden; $('gearBtn').setAttribute('aria-expanded', !p.hidden); };
 document.addEventListener('click', e => { if (!e.target.closest('.gearwrap')) { $('gearPanel').hidden = true; $('gearBtn').setAttribute('aria-expanded', 'false'); } });
