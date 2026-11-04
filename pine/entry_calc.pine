@@ -146,16 +146,34 @@ fw(float v) => str.tostring(math.round(v), '#,##0') + '원'
 fu(float v) => str.tostring(v / fx, '#,##0.0') + ' USDT'
 sg(float v) => v >= 0 ? '+' : ''
 
+// 선 색: 진입 노랑 · 손절 빨강 · 익절 초록 (순서가 틀려도 항상 그려서 어느 선이 뭔지 보이게)
+cE = color.new(#FFD54F, 0)
+cS = color.new(#FF5252, 0)
+cT = color.new(#00E676, 0)
 var line lE = na
 var line lS = na
 var line lT = na
-if barstate.islast and showLn and valid
+var label bE = na
+var label bS = na
+var label bT = na
+mkLine(float p, color c) => line.new(bar_index - 1, p, bar_index, p, extend = extend.both, color = c, width = 2)
+mkLab(float p, string t, color c) => label.new(bar_index + 3, p, t + ' ' + str.tostring(p, format.mintick), style = label.style_label_left, color = c, textcolor = color.black, size = size.small)
+if barstate.islast and showLn
     line.delete(lE)
     line.delete(lS)
     line.delete(lT)
-    lE := line.new(bar_index - 30, ent, bar_index + 10, ent, extend = extend.right, color = color.new(#B0B0B0, 0), width = 1)
-    lS := line.new(bar_index - 30, slp, bar_index + 10, slp, extend = extend.right, color = color.new(#E53935, 0), width = 2)
-    lT := line.new(bar_index - 30, tpp, bar_index + 10, tpp, extend = extend.right, color = color.new(#43A047, 0), width = 2)
+    label.delete(bE)
+    label.delete(bS)
+    label.delete(bT)
+    if ent > 0
+        lE := mkLine(ent, cE)
+        bE := mkLab(ent, '진입', cE)
+    if slp > 0
+        lS := mkLine(slp, cS)
+        bS := mkLab(slp, '손절' + (valid ? ' -' + str.tostring(slPct, '#.##') + '%' : ''), cS)
+    if tpp > 0
+        lT := mkLine(tpp, cT)
+        bT := mkLab(tpp, '익절' + (valid ? ' +' + str.tostring(tpPct, '#.##') + '%' : ''), cT)
 
 if barstate.islast
     table.clear(tb, 0, 0, 1, 9)
