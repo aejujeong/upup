@@ -12,8 +12,9 @@ ent  = input.price(0, '진입가', confirm = true, group = G1)
 slp  = input.price(0, '손절가', confirm = true, group = G1)
 tpp  = input.price(0, '익절가', confirm = true, group = G1)
 G2 = '돈'
-seed    = input.float(1000, '시드 (USDT)', minval = 1, group = G2)
-marg    = input.float(100, '이번에 넣을 증거금 (USDT)', minval = 0, group = G2)
+seed    = input.float(1000000, '시드 (원)', minval = 1, step = 10000, group = G2)
+marg    = input.float(100000, '이번에 넣을 증거금 (원)', minval = 0, step = 10000, group = G2)
+fx      = input.float(1400, '환율 (USDT 1개 = 몇 원, OKX에 넣을 USDT 계산용)', minval = 1, group = G2)
 lev     = input.float(5, '레버리지 (배)', minval = 1, group = G2)
 fee     = input.float(0.05, '수수료 (들어갈 때·나올 때 한 번씩, %)', minval = 0, step = 0.01, group = G2)
 maxRisk = input.float(2, '한 번에 잃어도 되는 한도 (시드의 %)', minval = 0.1, step = 0.1, group = G2)
@@ -110,6 +111,8 @@ cell(int c, int r, string t, color bg = na, string tip = '') =>
 f2(float v) => str.tostring(v, '#,##0.00')
 f1(float v) => str.tostring(v, '#,##0.0')
 fp(float v) => str.tostring(v, format.mintick)
+fw(float v) => str.tostring(math.round(v), '#,##0') + '원'
+fu(float v) => str.tostring(v / fx, '#,##0.0') + ' USDT'
 sg(float v) => v >= 0 ? '+' : ''
 
 var line lE = na
@@ -131,7 +134,7 @@ statTxt(int k, float notional) =>
         float l = stL.get(k) * 100.0 / n
         float t = stT.get(k) * 100.0 / n
         float avg = stP.get(k) / n
-        out := str.tostring(n) + '번 · 익절 ' + str.tostring(w, '#') + '% · 손절 ' + str.tostring(l, '#') + '% · 시간초과 ' + str.tostring(t, '#') + '% · 한 번 평균 ' + sg(avg) + f2(avg) + '% (' + sg(avg) + f1(notional * avg / 100) + ' USDT)'
+        out := str.tostring(n) + '번 · 익절 ' + str.tostring(w, '#') + '% · 손절 ' + str.tostring(l, '#') + '% · 시간초과 ' + str.tostring(t, '#') + '% · 한 번 평균 ' + sg(avg) + f2(avg) + '% (' + sg(avg) + fw(notional * avg / 100) + ')'
     out
 
 if barstate.islast
@@ -158,12 +161,12 @@ if barstate.islast
         float avgA = nA > 0 ? stP.get(5) / nA : na
         float avgG = nG > 0 ? stP.get(grp) / nG : na
 
-        cell(0, 0, '진입 계산기 · ' + side + ' · 진입 ' + fp(ent) + ' · 증거금 ' + f1(marg) + ' × ' + str.tostring(lev) + '배 = ' + f1(notional) + ' USDT', HD)
+        cell(0, 0, '진입 계산기 · ' + side + ' · 진입 ' + fp(ent) + ' · 증거금 ' + fw(marg) + ' (≈' + fu(marg) + ') × ' + str.tostring(lev) + '배 = ' + fw(notional), HD)
         table.merge_cells(tb, 0, 0, 1, 0)
         cell(0, 1, '손절 ' + fp(slp))
-        cell(1, 1, '-' + f2(slPct) + '% → -' + f1(lossAmt) + ' USDT (시드의 ' + f1(lossSeed) + '%)', lossSeed > maxRisk ? RED : na, lossSeed > maxRisk ? '한도(' + str.tostring(maxRisk) + '%)를 넘어요' : '수수료 포함')
+        cell(1, 1, '-' + f2(slPct) + '% → -' + fw(lossAmt) + ' (시드의 ' + f1(lossSeed) + '%)', lossSeed > maxRisk ? RED : na, lossSeed > maxRisk ? '한도(' + str.tostring(maxRisk) + '%)를 넘어요' : '수수료 포함')
         cell(0, 2, '익절 ' + fp(tpp))
-        cell(1, 2, '+' + f2(tpPct) + '% → +' + f1(winAmt) + ' USDT (시드의 +' + f1(winAmt / seed * 100) + '%)', na, '수수료 포함')
+        cell(1, 2, '+' + f2(tpPct) + '% → +' + fw(winAmt) + ' (시드의 +' + f1(winAmt / seed * 100) + '%)', na, '수수료 포함')
         cell(0, 3, '손익비')
         cell(1, 3, '1 : ' + str.tostring(rr, '#.##') + ' · 본전 되려면 승률 ' + str.tostring(beWin, '#') + '% 필요')
         cell(0, 4, '과거 승률 (아무 때나)')
@@ -177,11 +180,11 @@ if barstate.islast
             float wUse = nG >= 30 ? winG : winA
             float aUse = nG >= 30 ? avgG : avgA
             string base = nG >= 30 ? '같은 추세 기준' : '전체 기준(같은 추세 30번 미만)'
-            vd := base + ' 승률 ' + str.tostring(wUse, '#') + '% vs 본전 ' + str.tostring(beWin, '#') + '% → ' + (aUse > 0 ? '평균 플러스' : '평균 마이너스') + ' (한 번 평균 ' + sg(aUse) + f1(notional * aUse / 100) + ' USDT)'
+            vd := base + ' 승률 ' + str.tostring(wUse, '#') + '% vs 본전 ' + str.tostring(beWin, '#') + '% → ' + (aUse > 0 ? '평균 플러스' : '평균 마이너스') + ' (한 번 평균 ' + sg(aUse) + fw(notional * aUse / 100) + ')'
             vbg := aUse > 0 ? GRN : RED
         cell(0, 6, '판정')
         cell(1, 6, vd, vbg, '과거 아무 진입에 같은 손절·익절 폭을 썼을 때의 결과라 타점 실력은 빠져 있어요 · 본인 타점이 이보다 나은지 기록과 비교해보세요')
         cell(0, 7, '한도')
-        cell(1, 7, '시드 ' + str.tostring(maxRisk) + '% 한도면 증거금 최대 ' + f1(maxMarg) + ' USDT (' + str.tostring(lev) + '배 기준)', marg > maxMarg ? RED : na)
+        cell(1, 7, '시드 ' + str.tostring(maxRisk) + '% 한도면 증거금 최대 ' + fw(maxMarg) + ' (≈' + fu(maxMarg) + ', ' + str.tostring(lev) + '배 기준)', marg > maxMarg ? RED : na)
         cell(0, 8, '청산가 (대략)')
         cell(1, 8, fp(liq) + (liqFirst ? ' · 손절보다 먼저 청산돼요! 레버리지를 낮추세요' : ' · 손절이 먼저 닿아요'), liqFirst ? RED : na, '유지증거금·수수료 때문에 실제 청산가는 이보다 조금 더 가까워요')
