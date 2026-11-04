@@ -1,0 +1,187 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+//@version=6
+// 진입 계산기 — 진입가·손절가·익절가를 차트에서 누르면
+// ① 손절 때 잃는 돈 / 익절 때 버는 돈 / 손익비 / 본전 승률
+// ② 이 차트에서 과거에 "같은 거리로 손절·익절을 걸고 들어갔다면" 몇 %가 익절이었는지 (아무 때나 + 지금과 같은 추세 상태일 때)
+// ③ 시드 대비 한도를 넘는지, 청산가가 손절보다 가까운지 경고
+indicator('진입 계산기', overlay = true, max_bars_back = 5000, max_lines_count = 10, max_labels_count = 10)
+
+G1 = '진입 · 손절 · 익절 (추가할 때 차트를 눌러 고르기 · 나중엔 선을 끌어서 옮기기)'
+side = input.string('롱', '방향', options = ['롱', '숏'], group = G1)
+ent  = input.price(0, '진입가', confirm = true, group = G1)
+slp  = input.price(0, '손절가', confirm = true, group = G1)
+tpp  = input.price(0, '익절가', confirm = true, group = G1)
+G2 = '돈'
+seed    = input.float(1000, '시드 (USDT)', minval = 1, group = G2)
+marg    = input.float(100, '이번에 넣을 증거금 (USDT)', minval = 0, group = G2)
+lev     = input.float(5, '레버리지 (배)', minval = 1, group = G2)
+fee     = input.float(0.05, '수수료 (들어갈 때·나올 때 한 번씩, %)', minval = 0, step = 0.01, group = G2)
+maxRisk = input.float(2, '한 번에 잃어도 되는 한도 (시드의 %)', minval = 0.1, step = 0.1, group = G2)
+G3 = '승률 계산 · 표'
+maxHold = input.int(100, '최대 보유 봉수 (그때까지 안 닿으면 그 봉 가격으로 정리)', minval = 5, maxval = 500, group = G3)
+showLn  = input.bool(true, '차트에 진입·손절·익절 선', group = G3)
+tblPos  = input.string('오른쪽 아래', '표 위치', options = ['오른쪽 위', '오른쪽 가운데', '오른쪽 아래', '왼쪽 위', '왼쪽 아래'], group = G3)
+tSzIn   = input.string('작게', '글자 크기', options = ['아주 작게', '작게', '보통'], group = G3)
+tSz = tSzIn == '아주 작게' ? size.tiny : tSzIn == '작게' ? size.small : size.normal
+
+isLong = side == '롱'
+dir    = isLong ? 1.0 : -1.0
+valid  = ent > 0 and slp > 0 and tpp > 0 and (isLong ? slp < ent and tpp > ent : slp > ent and tpp < ent)
+slPct  = valid ? math.abs(ent - slp) / ent * 100 : na
+tpPct  = valid ? math.abs(tpp - ent) / ent * 100 : na
+
+// ───────── 추세 상태 (눌림 통계 지표와 같은 5가지) ─────────
+hasVol = ta.cum(nz(volume)) > 0
+m50  = ta.sma(close, 50)
+vwv  = ta.vwma(close, 100)
+s100 = ta.sma(close, 100)
+vw   = hasVol ? vwv : s100
+m200 = ta.sma(close, 200)
+m400 = ta.sma(close, 400)
+s0 = m50 - m50[20]
+s1 = vw - vw[20]
+s2 = m200 - m200[20]
+s3 = m400 - m400[20]
+grpOk = not na(s3)
+grp = not grpOk ? 5 : s0 >= 0 and s1 >= 0 and s2 >= 0 and s3 >= 0 ? 0 : s0 < 0 and s1 < 0 and s2 < 0 and s3 < 0 ? 1 : s0 >= 0 and s1 >= 0 and s2 < 0 and s3 < 0 ? 2 : close >= m200 ? 3 : 4
+grpName(int g) => g == 0 ? '네 선 다 상승' : g == 1 ? '네 선 다 하락' : g == 2 ? '장기 하락 속 단기 반등' : g == 3 ? '200선 위' : g == 4 ? '200선 아래' : '봉 부족'
+
+// ───────── 과거 가상 매매: 매 봉 종가에 같은 %거리로 손절·익절 걸고 들어갔다면 ─────────
+var vE = array.new_float()
+var vB = array.new_int()
+var vG = array.new_int()
+// 결과 누적: 0~4 추세별, 5 = 전체 (grp 5인 봉은 전체에만)
+var stN  = array.new_int(6, 0)
+var stW  = array.new_int(6, 0)
+var stL  = array.new_int(6, 0)
+var stT  = array.new_int(6, 0)
+var stP  = array.new_float(6, 0.0)
+addOne(int k, int kind, float pnl) =>
+    stN.set(k, stN.get(k) + 1)
+    stP.set(k, stP.get(k) + pnl)
+    if kind == 1
+        stW.set(k, stW.get(k) + 1)
+    else if kind == -1
+        stL.set(k, stL.get(k) + 1)
+    else
+        stT.set(k, stT.get(k) + 1)
+addRes(int g, int kind, float pnl) =>
+    addOne(5, kind, pnl)
+    if g < 5
+        addOne(g, kind, pnl)
+
+if valid and vE.size() > 0
+    for k = vE.size() - 1 to 0
+        float e = vE.get(k)
+        float sLv = e * (1 - dir * slPct / 100)
+        float tLv = e * (1 + dir * tpPct / 100)
+        bool hitS = isLong ? low <= sLv : high >= sLv
+        bool hitT = isLong ? high >= tLv : low <= tLv
+        int g = vG.get(k)
+        bool done = false
+        if hitS
+            // 한 봉에 둘 다 닿으면 손절로 침 (보수적)
+            addRes(g, -1, -slPct - 2 * fee)
+            done := true
+        else if hitT
+            addRes(g, 1, tpPct - 2 * fee)
+            done := true
+        else if bar_index - vB.get(k) >= maxHold
+            addRes(g, 0, dir * (close / e - 1) * 100 - 2 * fee)
+            done := true
+        if done
+            vE.remove(k)
+            vB.remove(k)
+            vG.remove(k)
+if valid
+    vE.push(close)
+    vB.push(bar_index)
+    vG.push(grp)
+
+// ───────── 표 · 선 ─────────
+BGC = color.new(#111111, 10)
+HD  = color.new(#617B55, 10)
+RED = color.new(#8B2E2E, 30)
+GRN = color.new(#2e7d32, 35)
+tPos = tblPos == '오른쪽 위' ? position.top_right : tblPos == '오른쪽 가운데' ? position.middle_right : tblPos == '오른쪽 아래' ? position.bottom_right : tblPos == '왼쪽 위' ? position.top_left : position.bottom_left
+var table tb = table.new(tPos, 2, 10, bgcolor = BGC, border_color = color.new(#617B55, 0), border_width = 1, frame_color = color.new(#617B55, 0), frame_width = 1)
+cell(int c, int r, string t, color bg = na, string tip = '') =>
+    table.cell(tb, c, r, t, text_color = color.white, text_size = tSz, text_halign = text.align_left, bgcolor = na(bg) ? BGC : bg, tooltip = tip)
+f2(float v) => str.tostring(v, '#,##0.00')
+f1(float v) => str.tostring(v, '#,##0.0')
+fp(float v) => str.tostring(v, format.mintick)
+sg(float v) => v >= 0 ? '+' : ''
+
+var line lE = na
+var line lS = na
+var line lT = na
+if barstate.islast and showLn and valid
+    line.delete(lE)
+    line.delete(lS)
+    line.delete(lT)
+    lE := line.new(bar_index - 30, ent, bar_index + 10, ent, extend = extend.right, color = color.new(#B0B0B0, 0), width = 1)
+    lS := line.new(bar_index - 30, slp, bar_index + 10, slp, extend = extend.right, color = color.new(#E53935, 0), width = 2)
+    lT := line.new(bar_index - 30, tpp, bar_index + 10, tpp, extend = extend.right, color = color.new(#43A047, 0), width = 2)
+
+statTxt(int k, float notional) =>
+    int n = stN.get(k)
+    string out = '아직 결과 없음'
+    if n > 0
+        float w = stW.get(k) * 100.0 / n
+        float l = stL.get(k) * 100.0 / n
+        float t = stT.get(k) * 100.0 / n
+        float avg = stP.get(k) / n
+        out := str.tostring(n) + '번 · 익절 ' + str.tostring(w, '#') + '% · 손절 ' + str.tostring(l, '#') + '% · 시간초과 ' + str.tostring(t, '#') + '% · 한 번 평균 ' + sg(avg) + f2(avg) + '% (' + sg(avg) + f1(notional * avg / 100) + ' USDT)'
+    out
+
+if barstate.islast
+    table.clear(tb, 0, 0, 1, 9)
+    if not valid
+        cell(0, 0, '진입 계산기', HD)
+        cell(0, 1, isLong ? '롱: 손절가 < 진입가 < 익절가 로 골라주세요' : '숏: 익절가 < 진입가 < 손절가 로 골라주세요', RED)
+        table.merge_cells(tb, 0, 0, 1, 0)
+        table.merge_cells(tb, 0, 1, 1, 1)
+    else
+        float notional = marg * lev
+        float lossAmt = notional * (slPct + 2 * fee) / 100
+        float winAmt  = notional * (tpPct - 2 * fee) / 100
+        float lossSeed = lossAmt / seed * 100
+        float rr = lossAmt > 0 ? winAmt / lossAmt : na
+        float beWin = winAmt + lossAmt > 0 ? lossAmt / (winAmt + lossAmt) * 100 : na
+        float maxMarg = (seed * maxRisk / 100) / ((slPct + 2 * fee) / 100) / lev
+        float liq = isLong ? ent * (1 - 1 / lev) : ent * (1 + 1 / lev)
+        bool liqFirst = isLong ? liq >= slp : liq <= slp
+        int nA = stN.get(5)
+        float winA = nA > 0 ? stW.get(5) * 100.0 / nA : na
+        int nG = grp <= 4 ? stN.get(grp) : 0
+        float winG = nG > 0 ? stW.get(grp) * 100.0 / nG : na
+        float avgA = nA > 0 ? stP.get(5) / nA : na
+        float avgG = nG > 0 ? stP.get(grp) / nG : na
+
+        cell(0, 0, '진입 계산기 · ' + side + ' · 진입 ' + fp(ent) + ' · 증거금 ' + f1(marg) + ' × ' + str.tostring(lev) + '배 = ' + f1(notional) + ' USDT', HD)
+        table.merge_cells(tb, 0, 0, 1, 0)
+        cell(0, 1, '손절 ' + fp(slp))
+        cell(1, 1, '-' + f2(slPct) + '% → -' + f1(lossAmt) + ' USDT (시드의 ' + f1(lossSeed) + '%)', lossSeed > maxRisk ? RED : na, lossSeed > maxRisk ? '한도(' + str.tostring(maxRisk) + '%)를 넘어요' : '수수료 포함')
+        cell(0, 2, '익절 ' + fp(tpp))
+        cell(1, 2, '+' + f2(tpPct) + '% → +' + f1(winAmt) + ' USDT (시드의 +' + f1(winAmt / seed * 100) + '%)', na, '수수료 포함')
+        cell(0, 3, '손익비')
+        cell(1, 3, '1 : ' + str.tostring(rr, '#.##') + ' · 본전 되려면 승률 ' + str.tostring(beWin, '#') + '% 필요')
+        cell(0, 4, '과거 승률 (아무 때나)')
+        cell(1, 4, statTxt(5, notional), na, '이 차트 매 봉 종가에 같은 % 거리로 손절·익절을 걸었다면 · 한 봉에 둘 다 닿으면 손절로 침 · ' + str.tostring(maxHold) + '봉 안에 안 닿으면 그 가격으로 정리')
+        cell(0, 5, '과거 승률 (지금처럼 ' + grpName(grp) + ')')
+        cell(1, 5, grp <= 4 ? statTxt(grp, notional) : '봉이 부족해요', na, '지금과 같은 추세 상태(50·거래량가중100·200·400선 20봉 방향, 200선 위/아래)였던 봉에서만 셈 · 같은 상태가 연달아 이어지므로 실제 독립된 횟수는 훨씬 적어요')
+        // 판정
+        string vd = na(winG) and na(winA) ? '과거 결과가 아직 없어요' : ''
+        color vbg = na
+        if vd == ''
+            float wUse = nG >= 30 ? winG : winA
+            float aUse = nG >= 30 ? avgG : avgA
+            string base = nG >= 30 ? '같은 추세 기준' : '전체 기준(같은 추세 30번 미만)'
+            vd := base + ' 승률 ' + str.tostring(wUse, '#') + '% vs 본전 ' + str.tostring(beWin, '#') + '% → ' + (aUse > 0 ? '평균 플러스' : '평균 마이너스') + ' (한 번 평균 ' + sg(aUse) + f1(notional * aUse / 100) + ' USDT)'
+            vbg := aUse > 0 ? GRN : RED
+        cell(0, 6, '판정')
+        cell(1, 6, vd, vbg, '과거 아무 진입에 같은 손절·익절 폭을 썼을 때의 결과라 타점 실력은 빠져 있어요 · 본인 타점이 이보다 나은지 기록과 비교해보세요')
+        cell(0, 7, '한도')
+        cell(1, 7, '시드 ' + str.tostring(maxRisk) + '% 한도면 증거금 최대 ' + f1(maxMarg) + ' USDT (' + str.tostring(lev) + '배 기준)', marg > maxMarg ? RED : na)
+        cell(0, 8, '청산가 (대략)')
+        cell(1, 8, fp(liq) + (liqFirst ? ' · 손절보다 먼저 청산돼요! 레버리지를 낮추세요' : ' · 손절이 먼저 닿아요'), liqFirst ? RED : na, '유지증거금·수수료 때문에 실제 청산가는 이보다 조금 더 가까워요')
