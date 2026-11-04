@@ -25,7 +25,7 @@ def sim(b, i, info, tf, fee):
     short = info.get("kind") == "매도"
     e = b[i]["c"]; sl = info.get("sl"); tp = info.get("tp")
     turtle = info["name"].startswith("터틀")
-    lows = [x["l"] for x in b]
+    lows = [x["l"] for x in b[max(0, i - 10):i + 1 + HOLD[tf]]] if turtle else None; o0 = max(0, i - 10)
     for j in range(i + 1, min(len(b), i + 1 + HOLD[tf])):
         x = b[j]
         if short:
@@ -33,8 +33,8 @@ def sim(b, i, info, tf, fee):
             if S.nn(tp) and x["l"] <= tp: return (e / tp - 1) * 100 - fee, 1
         else:
             if S.nn(sl) and x["l"] <= sl: return (sl / e - 1) * 100 - fee, -1
-            if turtle and j >= 10 and x["l"] < min(lows[j - 10:j]):
-                r = (min(lows[j - 10:j]) / e - 1) * 100 - fee; return r, (1 if r > 0 else -1)
+            if turtle and j >= 10 and x["l"] < min(lows[j - 10 - o0:j - o0]):
+                r = (min(lows[j - 10 - o0:j - o0]) / e - 1) * 100 - fee; return r, (1 if r > 0 else -1)
             if S.nn(tp) and x["h"] >= tp: return (tp / e - 1) * 100 - fee, 1
     j = min(len(b) - 1, i + HOLD[tf])
     if j <= i: return None
