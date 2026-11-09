@@ -325,7 +325,8 @@ def sig_cross(b, I):
         sl = c[i] - 2 * at[i]
         tp = c[i] + 2 * (c[i] - sl)
         slope = (a200[i] - a200[i - 40]) / at[i] if nn(a200[i - 40]) and at[i] else 0.0   # 큰 흐름: 200선 40봉 움직임 ÷ ATR
-        out.append((i, dict(name="50·100 동시 돌파" + (" (RSI 30 터치 + 거래량 3배)" if star else ""), rsistar=star, sl=sl, tp=tp, xg=True, slope=slope)))
+        up200 = nn(a200[i - 40]) and a200[i] > a200[i - 40]
+        out.append((i, dict(name="50·100 동시 돌파" + (" (RSI 30 터치 + 거래량 3배)" if star else ""), rsistar=star, sl=sl, tp=tp, xg=True, slope=slope, up200=up200)))
     return out
 
 
@@ -605,6 +606,13 @@ def scan(sym, data, btc_ctx):
                         info["bigdown"] = True
                         info["name"] += " · 큰 흐름 하락 중"
                         info["note"] = f"200선이 가파르게 내려가는 중 (40봉 {info['slope']:.1f} ATR) · 과거 이런 돌파는 평균 손해라 ★ 뺌"
+            if mkt == "미국" and tf == "5":
+                # [후보] SOXL 5분: 200선이 40봉 전보다 올라와 있을 때 (60일 34회 · 승률 59% · 평균 +1.23% · 앞/뒤 절반 모두 플러스)
+                for _, info in xs:
+                    if info.get("up200"):
+                        info["note"] = (info.get("note", "") + " · " if info.get("note") else "") + "[후보] 200선 오르는 중 → 5분봉 검증 34회 · 승률 59% · 평균 +1.23% (60일)"
+                    else:
+                        info["note"] = (info.get("note", "") + " · " if info.get("note") else "") + "200선 내려가는 중 → 같은 신호 중 성적 낮은 쪽"
             sigs += xs
         sigs += sig_short(b, I, label, tf)
         if mkt == "코인":
