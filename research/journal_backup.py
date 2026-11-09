@@ -26,7 +26,7 @@ now = datetime.now(timezone(timedelta(hours=9))); day = now.strftime("%Y%m%d")
 for k in keys:
     if k.startswith("backup:"): continue
     if k.startswith("jinwoo:"):
-        st2, _ = req("POST", "app_data", {"key": k, "value": None, "updated_at": datetime.now(timezone.utc).isoformat()}, {"Prefer": "resolution=merge-duplicates"})
+        st2, _ = req("POST", "app_data", {"key": k, "value": [], "updated_at": datetime.now(timezone.utc).isoformat()}, {"Prefer": "resolution=merge-duplicates"})
         L.append(f"비움 {k} {st2}"); continue
     s2, bb = req("GET", "app_data?select=value&key=eq." + urllib.parse.quote(k, safe=""))
     v = json.loads(bb)[0]["value"]
@@ -37,6 +37,6 @@ cut = (now - timedelta(days=14)).strftime("%Y%m%d")
 for k in keys:
     m = re.match(r"backup:(\d{8}):", k)
     if m and m.group(1) < cut:
-        st2, _ = req("POST", "app_data", {"key": k, "value": None, "updated_at": datetime.now(timezone.utc).isoformat()}, {"Prefer": "resolution=merge-duplicates"})
+        st2, _ = req("POST", "app_data", {"key": k, "value": [], "updated_at": datetime.now(timezone.utc).isoformat()}, {"Prefer": "resolution=merge-duplicates"})
         L.append(f"오래된 백업 비움 {k} {st2}")
 print("\n".join(L))

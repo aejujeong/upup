@@ -14,7 +14,7 @@ st, b = req("GET", "app_data?select=key&order=key"); keys = [r["key"] for r in j
 for k in keys:
     base = k.split(":")[0] if not k.startswith("backup:") else "backup"
     if k.startswith("backup:"):
-        L.append(f"백업 비움 {k} {put(k, None)}")
+        L.append(f"백업 비움 {k} {put(k, [])}")
     elif base in ("trades", "capital", "withdrawals") or k.endswith(":trades") or k.endswith(":capital") or k.endswith(":withdrawals"):
         if k.startswith("jinwoo:"): continue
         _, vb = req("GET", "app_data?select=value&key=eq." + urllib.parse.quote(k, safe=""))
@@ -23,7 +23,7 @@ for k in keys:
             keep = [t for t in v if isinstance(t, dict) and t.get("okxKey")]
             L.append(f"{k}: {len(v)}건 → {len(keep)}건 (OKX 자동 기록만 남김) {put(k, keep)}")
         else:
-            L.append(f"{k}: 비움 {put(k, None)}")
+            L.append(f"{k}: 비움 {put(k, [])}")
     else:
         L.append(f"남김 {k}")
 print("\n".join(L)); open("research/out_journal_reset.txt", "w", encoding="utf-8").write("\n".join(L))
