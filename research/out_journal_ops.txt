@@ -1,2 +1,43 @@
-[처음] 목록 응답 521
-error code: 521
+[처음] 목록 응답 200
+  feeRates                                 수정 2026-07-26T13:24 · 0.00MB
+  feeRates:journal2                        수정 2026-07-27T08:54 · 0.00MB
+  jinwoo:customTickers                     수정 2026-07-30T03:35 · 0.00MB
+  jinwoo:settings                          수정 2026-07-30T02:35 · 0.00MB
+  jinwoo:trades                            수정 2026-07-31T02:59 · 0.00MB · 매매 3건 · 사진 0장
+  jinwoo:usdtRate                          수정 2026-07-30T02:54 · 0.00MB
+  settings                                 수정 2026-07-25T06:01 · 0.00MB
+  settings:journal2                        수정 2026-07-25T06:03 · 0.00MB
+  trades                                   수정 2026-08-04T13:15 · 0.46MB · 매매 9건 · 사진 6장
+  trades:journal2                          수정 2026-07-27T08:55 · 0.19MB
+  usdtRate                                 수정 2026-07-26T13:13 · 0.00MB
+  백업 feeRates → backup:20261109:feeRates · 201
+  백업 feeRates:journal2 → backup:20261109:feeRates:journal2 · 201
+  백업 settings → backup:20261109:settings · 201
+  백업 settings:journal2 → backup:20261109:settings:journal2 · 201
+  백업 trades → backup:20261109:trades · 201
+  백업 trades:journal2 → backup:20261109:trades:journal2 · 201
+  백업 usdtRate → backup:20261109:usdtRate · 201
+진우 키 4개 삭제
+  삭제 jinwoo:customTickers · 200 · 지워진 줄 0
+  삭제 jinwoo:settings · 200 · 지워진 줄 0
+  삭제 jinwoo:trades · 200 · 지워진 줄 0
+  삭제 jinwoo:usdtRate · 200 · 지워진 줄 0
+[정리 후] 목록 응답 200
+  backup:20261109:feeRates                 수정 2026-11-09T13:06 · 0.00MB
+  backup:20261109:feeRates:journal2        수정 2026-11-09T13:06 · 0.00MB
+  backup:20261109:settings                 수정 2026-11-09T13:06 · 0.00MB
+  backup:20261109:settings:journal2        수정 2026-11-09T13:06 · 0.00MB
+  backup:20261109:trades                   수정 2026-11-09T13:06 · 0.46MB
+  backup:20261109:trades:journal2          수정 2026-11-09T13:06 · 0.19MB
+  backup:20261109:usdtRate                 수정 2026-11-09T13:06 · 0.00MB
+  feeRates                                 수정 2026-07-26T13:24 · 0.00MB
+  feeRates:journal2                        수정 2026-07-27T08:54 · 0.00MB
+  jinwoo:customTickers                     수정 2026-07-30T03:35 · 0.00MB
+  jinwoo:settings                          수정 2026-07-30T02:35 · 0.00MB
+  jinwoo:trades                            수정 2026-07-31T02:59 · 0.00MB · 매매 3건 · 사진 0장
+  jinwoo:usdtRate                          수정 2026-07-30T02:54 · 0.00MB
+  settings                                 수정 2026-07-25T06:01 · 0.00MB
+  settings:journal2                        수정 2026-07-25T06:03 · 0.00MB
+  trades                                   수정 2026-08-04T13:15 · 0.46MB · 매매 9건 · 사진 6장
+  trades:journal2                          수정 2026-07-27T08:55 · 0.19MB
+  usdtRate                                 수정 2026-07-26T13:13 · 0.00MB
