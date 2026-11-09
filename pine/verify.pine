@@ -1077,3 +1077,19 @@ if barstate.islast and czStOn
     stRow(7, "★ · 200선 오르는 중", xsN.get(2), xsW.get(2), xsP.get(2), 1)
     stRow(4, "★ 원금 " + str.tostring(czRisk) + "% 손절", ysN.get(0), ysW.get(0), ysP.get(0), 1)
     stRow(5, "전체 원금 " + str.tostring(czRisk) + "% 손절", ysN.get(1), ysW.get(1), ysP.get(1), 1)
+
+// ───────── 오늘의 매매 (하루 한 번) ─────────
+// 이 차트에서 하루(한국 날짜) 첫 번째로 뜬 '쓸 만한 롱 신호' 하나만 표시·알림: ★(1·3·5분) 또는 5분봉 동시 돌파 + 200선 오르는 중 [후보]
+// 알림 만들기: 지표 이름 옆 … → 알림 추가 → 조건 '검증 근거 v2' → 'alert() 함수 호출만'
+GD = "오늘의 매매 (하루 한 번)"
+tdOn = input.bool(true, "오늘의 매매 표시·알림", group = GD)
+tdSig = xOk and (xBot or (xTf == "5" and s200 > s200[40]))
+var int tdDay = na
+kDay = year(time, "Asia/Seoul") * 10000 + month(time, "Asia/Seoul") * 100 + dayofmonth(time, "Asia/Seoul")
+tdFire = tdOn and tdSig and barstate.isconfirmed and (na(tdDay) or kDay != tdDay)
+tdHist = tdOn and tdSig and (na(tdDay) or kDay != tdDay)
+if tdHist
+    tdDay := kDay
+plotshape(tdHist, "오늘의 매매", shape.labelup, location.belowbar, color.new(#FFD54F, 0), text = "오늘", textcolor = color.black, size = size.small)
+if tdFire
+    alert("[오늘의 매매] " + syminfo.ticker + " " + timeframe.period + "분 · " + (xBot ? "50·100 동시 돌파 ★" : "50·100 동시 돌파 + 200선 오르는 중 [후보]") + " · 진입 " + str.tostring(close, format.mintick) + " · 손절 " + str.tostring(xSl, format.mintick) + " (-" + str.tostring((1 - xSl / close) * 100, "#.##") + "%) · 익절 " + str.tostring(xTp, format.mintick) + " (+" + str.tostring((xTp / close - 1) * 100, "#.##") + "%) · 원금 " + str.tostring(czRisk) + "% 한도 증거금 최대 " + str.tostring(math.round((czSeed * czRisk / 100) / (((1 - xSl / close) * 100 + 2 * czFee) / 100) / czLev), "#,##0") + "원 · 오늘은 이것 하나만", alert.freq_once_per_bar_close)
