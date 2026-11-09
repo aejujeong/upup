@@ -1,0 +1,13 @@
+name: journal-keepalive
+# 매매일지 앱(Supabase 무료 프로젝트)이 일주일 안 쓰면 멈추는 걸 막고, 매일 기록을 백업한다
+on:
+  schedule:
+    - cron: "43 18 * * *"   # 한국 시간 새벽 3시 43분
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: python research/journal_backup.py
