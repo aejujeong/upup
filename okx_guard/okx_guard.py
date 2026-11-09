@@ -1,6 +1,6 @@
 """OKX 하루 매매 한도 잠금 봇
 - 한국 날짜 기준 하루에 새로 연 포지션(선물·마진)이 MAX_TRADES 개를 넘으면, 그다음 포지션은 열리자마자 시장가로 청산
-- 4번째·5번째 진입 때 텔레그램 안내, 강제 청산 때마다 알림
+- 진입할 때마다 텔레그램 안내 (몇 번째·남은 횟수), 강제 청산 때마다 알림
 - 진입 수는 OKX 기록(포지션 연 시각)으로 매번 다시 세서, 봇이 재시작돼도 정확함
 - 텔레그램에 "풀기" 보내면 5분 뒤 그날만 +1번 · 하루 최대 5번까지 (총 +5) · 5분 안에 "취소" 보내면 취소
 - 처음 켠 날(2026-11-09)은 켠 시각(23:10) 이후 진입만 셈
@@ -234,13 +234,14 @@ def main():
                 if now >= at and unote.get(k) == 1:
                     tg(f"[매매 잠금] 1번 열렸어요. 오늘 한도 {limit}번 · 지금까지 {n}번 진입 (풀기 남은 횟수 {UNLOCK_MAX - len(reqs)}번)")
                     unote[k] = 2
+            if d not in warned: warned[d] = n   # 봇 재시작 때 이미 지난 진입은 다시 안 보냄
             last = warned.get(d, 0)
             if n > last:
                 for k in range(last + 1, min(n, limit) + 1):
-                    if k == limit - 1:
-                        tg(f"[매매 잠금] 오늘 {k}번째 진입 · 남은 횟수 1번")
-                    elif k == limit:
+                    if k == limit:
                         tg(f"[매매 잠금] 오늘 {k}번째 진입 · 오늘 마지막이에요. 이후 새 포지션은 바로 청산돼요")
+                    else:
+                        tg(f"[매매 잠금] 오늘 {k}번째 진입 · 남은 횟수 {limit - k}번")
                 warned[d] = n
             # 한도 넘은 포지션: 오늘 연 순서로 MAX_TRADES 번째 이후 + 아직 열려 있는 것 → 청산
             for idx, (ct, stt, p) in enumerate(ents):
