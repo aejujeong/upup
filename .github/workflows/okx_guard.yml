@@ -1,0 +1,48 @@
+name: okx-guard
+
+# OKX 하루 매매 한도 잠금: 5번 넘게 새 포지션을 열면 바로 청산
+# 신호 봇처럼 5시간 45분 돌고 끝나기 직전에 다음 실행을 스스로 켬 · 끊겼을 때 대비 매시 예약
+on:
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: okx-guard
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # 텔레그램 대화방 번호는 신호 봇 상태에서 가져옴 (읽기만)
+      - name: 신호 봇 상태 불러오기
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: signal-state-none
+          restore-keys: signal-state-
+      - name: 매매 한도 지키기 (5시간 45분)
+        env:
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET: ${{ secrets.OKX_SECRET }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MAX_TRADES: "5"
+          RUN_MIN: "345"
+        run: python okx_guard/okx_guard.py
+      - name: 다음 실행 켜기
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run okx_guard.yml --ref main -R ${{ github.repository }}
