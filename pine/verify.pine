@@ -877,6 +877,56 @@ czCP = czPos == "오른쪽 위" ? position.top_right : czPos == "오른쪽 가�
 var table czTb = table.new(czCP, 2, 9, bgcolor = color.new(#111111, 10), border_color = color.new(#617B55, 0), border_width = 1, frame_color = color.new(#617B55, 0), frame_width = 1)
 czC(int c, int r, string t, color bg = na, string tip = "") =>
     table.cell(czTb, c, r, t, text_color = color.white, text_size = size.small, text_halign = text.align_left, bgcolor = na(bg) ? color.new(#111111, 10) : bg, tooltip = tip)
+// ───────── 이 차트 50·100 동시 돌파 성적 (★만 / 전체) · 트레이딩뷰 봉 그대로(야간 포함) · 신호 손절(종가-2ATR)·익절(+4ATR) ─────────
+var xvE = array.new_float()
+var xvS = array.new_float()
+var xvT = array.new_float()
+var xvB = array.new_int()
+var xvR = array.new_bool()
+var xvTm = array.new_int()
+var xsN = array.new_int(2, 0)      // 0 = ★만, 1 = 전체
+var xsW = array.new_int(2, 0)
+var xsP = array.new_float(2, 0.0)
+var xsLast = array.new_string()
+xAdd(int k, float r) =>
+    xsN.set(k, xsN.get(k) + 1)
+    xsW.set(k, xsW.get(k) + (r > 0 ? 1 : 0))
+    xsP.set(k, xsP.get(k) + r)
+if xvE.size() > 0
+    for k = xvE.size() - 1 to 0
+        float ve = xvE.get(k)
+        float r = na
+        if low <= xvS.get(k)
+            r := (xvS.get(k) / ve - 1) * 100
+        else if high >= xvT.get(k)
+            r := (xvT.get(k) / ve - 1) * 100
+        else if bar_index - xvB.get(k) >= czHold
+            r := (close / ve - 1) * 100
+        if not na(r)
+            r -= 2 * czFee
+            xAdd(1, r)
+            if xvR.get(k)
+                xAdd(0, r)
+                xsLast.push(str.format_time(xvTm.get(k), "MM/dd HH:mm", "Asia/Seoul") + " " + (r >= 0 ? "+" : "") + str.tostring(r, "#.##") + "%")
+                if xsLast.size() > 5
+                    xsLast.shift()
+            xvE.remove(k)
+            xvS.remove(k)
+            xvT.remove(k)
+            xvB.remove(k)
+            xvR.remove(k)
+            xvTm.remove(k)
+if xOk
+    xvE.push(close)
+    xvS.push(xSl)
+    xvT.push(xTp)
+    xvB.push(bar_index)
+    xvR.push(xBot)
+    xvTm.push(time)
+xStatTxt(int k) =>
+    int n = xsN.get(k)
+    n == 0 ? "아직 결과 없음" : str.tostring(n) + "번 · 승률 " + str.tostring(xsW.get(k) * 100.0 / n, "#") + "% · 한 번 평균 " + (xsP.get(k) >= 0 ? "+" : "") + str.tostring(xsP.get(k) / n, "#.##") + "% · 합계 " + (xsP.get(k) >= 0 ? "+" : "") + str.tostring(xsP.get(k), "#.#") + "%"
+
 if barstate.islast and czOn
     table.clear(czTb, 0, 0, 1, 8)
     line.delete(czLE)
@@ -945,3 +995,5 @@ if barstate.islast and czOn
             czC(1, 7, mn == 0 ? "이 차트에 결과가 난 같은 신호가 아직 없어요 (차트를 더 과거로 넘기면 늘어요)" : "이 차트 과거 같은 신호 " + str.tostring(mn) + "번 · 손절 -" + str.tostring(czDS, "#.##") + "% / 익절 +" + str.tostring(czDT, "#.##") + "% 로 걸었다면 승률 " + str.tostring(mw, "#") + "% · 한 번 평균 " + czSg(ma) + str.tostring(ma, "#.##") + "% (" + czSg(ma) + czW(notl * ma / 100) + ")" + (mn < 30 ? " · 횟수 적음" : ""), mn == 0 ? na : ma > 0 ? GN : RD, "신호 봉 종가에 진입 · 한 봉에 둘 다 닿으면 손절로 침 · " + str.tostring(czHold) + "봉 안에 안 닿으면 그 봉 종가로 정리 · 수수료 포함 · 차트에 불러온 봉만큼만 셈")
         czC(0, 6, "청산가 (대략)")
         czC(1, 6, str.tostring(liq, format.mintick) + (liq >= sv ? " · 손절보다 먼저 청산돼요! 레버리지를 낮추세요" : " · 손절이 먼저 닿아요"), liq >= sv ? RD : na)
+    czC(0, 8, "이 차트 ★ 성적")
+    czC(1, 8, "★ " + xStatTxt(0) + " | 동시 돌파 전체 " + xStatTxt(1) + (xsLast.size() > 0 ? " | 최근 ★: " + array.join(xsLast, " · ") : ""), xsN.get(0) == 0 ? na : xsP.get(0) > 0 ? color.new(#2e7d32, 35) : color.new(#8B2E2E, 30), "이 차트에 불러온 봉(트레이딩뷰 데이터, 야간 포함) 그대로 · 50·100 동시 돌파 ◆ 봉 종가에 진입 · 신호 손절(종가-2ATR)·익절(+4ATR) 중 먼저 닿는 쪽 · 한 봉에 둘 다 닿으면 손절로 침 · " + str.tostring(czHold) + "봉 안에 안 닿으면 그 봉 종가로 정리 · 수수료 포함 · 차트를 왼쪽으로 끌어 과거 봉을 더 불러오면 횟수가 늘어요")
