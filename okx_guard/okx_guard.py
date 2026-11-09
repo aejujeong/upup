@@ -4,8 +4,9 @@
 - 진입 수는 OKX 기록(포지션 연 시각)으로 매번 다시 세서, 봇이 재시작돼도 정확함
 - 텔레그램에 "풀기" 보내면 5분 뒤 그날만 +1번 · 하루 최대 5번까지 (총 +5) · 5분 안에 "취소" 보내면 취소
 - 처음 켠 날(2026-11-09)은 켠 시각(23:10) 이후 진입만 셈
+- 닫힌 포지션은 1분마다 매매일지(1억 챌린지, Supabase trades)에 자동 기록 (okxKey 로 중복 방지)
 - 키: OKX_API_KEY / OKX_SECRET / OKX_PASSPHRASE (GitHub Secrets) · 출금 권한 없는 키 사용"""
-import base64, hashlib, hmac, json, os, sys, time, urllib.request, urllib.error
+import base64, hashlib, hmac, json, os, sys, time, urllib.request, urllib.error, urllib.parse
 from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "signal_bot"))
 import signal_bot as SB   # 텔레그램 보내기 재사용
@@ -95,6 +96,69 @@ def close(p):
     if p.get("mgnMode") == "cross" and p.get("ccy"): body["ccy"] = p["ccy"]
     return okx("POST", "/api/v5/trade/close-position", body)
 
+# ───────── 매매일지(1억 챌린지) 자동 기록 ─────────
+SB_URL = SB_KEY = None
+def sb_init():
+    global SB_URL, SB_KEY
+    import re
+    src = urllib.request.urlopen("https://raw.githubusercontent.com/aejujeong/trading/main/index.html", timeout=30).read().decode()
+    SB_URL = re.search(r"SUPABASE_URL *= *'([^']*)'", src).group(1)
+    SB_KEY = re.search(r"SUPABASE_(?:ANON_)?KEY *= *'([^']*)'", src).group(1)
+def sb(method, path, body=None, extra=None):
+    h = {"apikey": SB_KEY, "Authorization": "Bearer " + SB_KEY, "Content-Type": "application/json"}
+    h.update(extra or {})
+    r = urllib.request.Request(SB_URL + "/rest/v1/" + path, data=None if body is None else json.dumps(body).encode(), headers=h, method=method)
+    with urllib.request.urlopen(r, timeout=30) as x:
+        return json.loads(x.read() or b"null")
+def sb_get(key, default):
+    j = sb("GET", "app_data?select=value&key=eq." + urllib.parse.quote(key, safe=""))
+    return j[0]["value"] if j else default
+forced = set()   # 잠금 봇이 강제 청산한 포지션 (posId:cTime)
+def sync_journal():
+    """OKX에서 닫힌 포지션(켠 시각 이후)을 매매일지 '1억 챌린지' 기록으로 추가 · 이미 넣은 건 건너뜀"""
+    if not SB_URL: sb_init()
+    j = okx("GET", "/api/v5/account/positions-history?limit=100")
+    if j.get("code") != "0": return 0
+    closed = [p for p in j.get("data", []) if int(p.get("cTime", 0)) >= START_MS]
+    if not closed: return 0
+    trades = sb_get("trades", []) or []
+    have = {t.get("okxKey") for t in trades if isinstance(t, dict)}
+    rate = sb_get("usdtRate", 1400) or 1400
+    try: rate = float(rate)
+    except Exception: rate = 1400.0
+    new = []
+    for p in sorted(closed, key=lambda p: int(p["cTime"])):
+        k = p.get("posId", "") + ":" + p.get("cTime", "")
+        if k in have: continue
+        try:
+            pnl = float(p.get("pnl") or 0); ratio = float(p.get("pnlRatio") or 0)
+            margin = abs(pnl / ratio) if ratio else None
+            real = float(p.get("realizedPnl") or 0); fee = float(p.get("fee") or 0); fund = float(p.get("fundingFee") or 0)
+        except Exception:
+            margin, real, fee, fund = None, 0.0, 0.0, 0.0
+        ct = int(p["cTime"]); ut = int(p.get("uTime") or ct)
+        tick = p["instId"].split("-")[0]
+        lev = p.get("lever") or "1"
+        why = f"[OKX 자동 기록] 실현손익 {real:+.2f} USDT (수수료 {fee:.2f} · 펀딩 {fund:.2f} 포함) · {datetime.fromtimestamp(ct/1000, KST):%H:%M} 진입 → {datetime.fromtimestamp(ut/1000, KST):%H:%M} 청산"
+        if k in forced: why += " · 하루 한도 초과로 강제 청산"
+        if p.get("type") in ("3", "4"): why += " · 강제청산(청산가 도달)"
+        new.append({
+            "id": ct, "okxKey": k,
+            "date": datetime.fromtimestamp(ct / 1000, KST).strftime("%Y-%m-%d"),
+            "ticker": tick, "dir": "short" if p.get("direction") == "short" else "long",
+            "entry": p.get("openAvgPx"), "amount": round(margin * rate) if margin else None,
+            "amountUsdt": round(margin, 2) if margin else None, "usdtRateUsed": rate,
+            "why": why, "ruleKept": "", "mistake": "", "checklist": {}, "checklistNotes": {}, "photos": [],
+            "broker": "", "market": None, "feeRatePct": 0,
+            "sells": [{"id": ut, "price": p.get("closeAvgPx"), "pct": 100, "leverage": lev,
+                       "date": datetime.fromtimestamp(ut / 1000, KST).strftime("%Y-%m-%d")}],
+        })
+    if not new: return 0
+    merged = new[::-1] + trades     # 최신이 위로
+    sb("POST", "app_data", {"key": "trades", "value": merged, "updated_at": datetime.now(timezone.utc).isoformat()},
+       {"Prefer": "resolution=merge-duplicates"})
+    return len(new)
+
 def main():
     global SB
     if not (KEY and SEC and PAS):
@@ -117,6 +181,7 @@ def main():
     unote = {}        # (날짜, 요청 시각) → 1 요청 안내 보냄 / 2 풀림 안내 보냄
     closed_keys = set()
     fails = 0
+    last_sync = 0
     while time.time() < end:
         try:
             ents, opened = today_entries()
@@ -150,7 +215,8 @@ def main():
                 if key in closed_keys: continue
                 r = close(p)
                 ok = r.get("code") == "0"
-                if ok: closed_keys.add(key)
+                if ok:
+                    closed_keys.add(key); forced.add(key)
                 upl = p.get("upl") or "?"
                 tg(f"[매매 잠금] 오늘 {idx + 1}번째 진입 ({p['instId']} {p.get('posSide','')}) → 한도 {limit}번 초과라 "
                    + ("바로 청산했어요" if ok else f"청산 실패 ({r.get('code')} {r.get('msg')}) · 직접 정리해주세요")
@@ -160,6 +226,14 @@ def main():
             print("확인 실패", e, flush=True)
             if fails == 30:
                 tg(f"[매매 잠금] OKX 확인이 계속 실패하고 있어요 ({e}) · 잠금이 안 될 수 있어요")
+        # 매매일지 기록 (1분마다)
+        if time.time() - last_sync >= 60:
+            last_sync = time.time()
+            try:
+                c = sync_journal()
+                if c: print(f"매매일지에 {c}건 기록", flush=True)
+            except Exception as e:
+                print("매매일지 기록 실패", e, flush=True)
         time.sleep(POLL)
     return 0
 
