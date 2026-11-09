@@ -677,7 +677,8 @@ def is_star(label, tf, info, grade):
     if info.get("xg"):
         if info.get("bigdown"):
             return False
-        return (grade is not None and grade >= 2) or bool(info.get("rsistar"))
+        # RSI 30 + 거래량 별은 1·3·5분봉만 (15분 이상은 검증상 손해)
+        return (grade is not None and grade >= 2) or (bool(info.get("rsistar")) and tf in ("1", "3", "5"))
     if info.get("kind") == "투매":
         return bool(info.get("far")) and (label, tf) in STAR_DUMP
     return (label, tf, info["name"]) in STAR_BASE
