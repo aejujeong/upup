@@ -18,6 +18,10 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from datetime import time as dtime
+import bisect
+from zoneinfo import ZoneInfo
+NYZ = ZoneInfo("America/New_York")
 
 KST = timezone(timedelta(hours=9))
 STATE_FILE = os.environ.get("STATE_FILE", "state.json")
@@ -361,6 +365,33 @@ def sig_dump(b, I, min_d):
     return out
 
 
+def sig_dip7(b, d1):
+    """[후보] SOXL 급락 매수: 정규장 중 전날 종가 대비 -7% 닿으면 그 가격에 매수 · 익절 +5% / 손절 -3% / 안 닿으면 그날 종가 정리
+    (research/soxl_day.py · 2023.12~2026.11 정규장 1시간봉 189회 · 승률 44% · 평균 +0.30% · 앞/뒤 1년 모두 플러스 · 60가지 중 고른 것이라 우연일 수 있어 후보로 지켜봄)"""
+    out = []
+    dd = sorted((datetime.fromtimestamp(x["t"], NYZ).date(), x["c"]) for x in d1)
+    keys = [d for d, _ in dd]
+    fired = set()
+    for i, x in enumerate(b):
+        t = datetime.fromtimestamp(x["t"], NYZ)
+        if not (dtime(9, 30) <= t.time() < dtime(16, 0)):
+            continue
+        d = t.date()
+        if d in fired:
+            continue
+        k = bisect.bisect_left(keys, d) - 1
+        if k < 0:
+            continue
+        pc = dd[k][1]
+        lv = pc * 0.93
+        if x["l"] <= lv:
+            fired.add(d)
+            e = min(x["o"], lv)
+            out.append((i, dict(name="급락 매수 -7% [후보]", kind="매수", sl=e * 0.97, tp=e * 1.05,
+                                note=f"전날 종가 {pc:.2f} 대비 -7% ({lv:.2f}) 닿음 · 진입 기준 {e:.2f} (지금 {x['c']:.2f}) · 장 마감까지 익절·손절 안 닿으면 그날 종가에 정리")))
+    return out
+
+
 def sig_trend(b, I, k_big, use_vol, rsi_min, slp, tpp, base="50", rsi4h=None):
     """추세 돌파 (30분·4시간 코인 / 30분·1시간·4시간 미국)"""
     out = []
@@ -610,6 +641,8 @@ def scan(sym, data, btc_ctx):
                 sigs += sig_trend(b, I, 1.3, False, 70, 3.0, 6.0)
             elif tf == "D":
                 sigs += sig_turtle(b, I, False)
+            if tf == "5":
+                sigs += sig_dip7(b, data.get("D") or [])
         for i, info in sigs:
             found.append((tf, b[i], info, x_grade(mkt, tf, btc) if info.get("xg") else None))
     return label, found
@@ -621,6 +654,7 @@ BASE_EV = {
     ("SOXL", "60", "추세 돌파"): "보통 · 평균 +0.76% (118회 · 1~2년)",
     ("SOXL", "240", "추세 돌파"): "강함 · 평균 +1.59% (3년 · 승률 52%)",
     ("SOXL", "D", "터틀 (20일 고점 돌파)"): "강함 · 평균 +5.7% (16년)",
+    ("SOXL", "5", "급락 매수 -7% [후보]"): "후보 · 평균 +0.30% (2년 189회 · 승률 44%) · 익절 +5% 손절 -3% · 60가지 중 고른 규칙이라 우연일 수 있어 지켜보는 중",
     ("BTC", "15", "저점 반등"): "약함 · 평균 +0.20% (98회 · 2년)",
     ("ETH", "15", "저점 반등"): "보통 · 평균 +0.69% (98회 · 2년)",
     ("BTC", "30", "추세 돌파"): "보통 · 평균 +0.63% (6년 · 승률 50%)",
