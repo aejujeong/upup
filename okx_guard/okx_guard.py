@@ -36,12 +36,13 @@ def okx(method, path, body=None):
     return j
 
 START_MS = int(datetime(2026, 11, 9, 23, 10, tzinfo=KST).timestamp() * 1000)   # 처음 켠 시각 (그 전 매매는 안 셈)
+COUNT_FROM_MS = int(datetime(2026, 11, 10, 0, 37, tzinfo=KST).timestamp() * 1000)   # 11/10 하루만 이 시각부터 다시 셈 (사용자 요청)
 UNLOCK_WAIT = 5 * 60
 UNLOCK_MAX = 5
 
 def day_start_ms():
     n = datetime.now(KST)
-    return max(START_MS, int(datetime(n.year, n.month, n.day, tzinfo=KST).timestamp() * 1000))
+    return max(START_MS, COUNT_FROM_MS, int(datetime(n.year, n.month, n.day, tzinfo=KST).timestamp() * 1000))
 
 def unlock_state():
     """오늘(한국) 텔레그램 '풀기' 요청 → [(요청 시각, 풀리는 시각)] (취소된 것 빼고, 최대 UNLOCK_MAX개)"""
