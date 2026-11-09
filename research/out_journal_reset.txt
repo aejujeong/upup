@@ -1,0 +1,17 @@
+백업 비움 backup:20261109:feeRates 200
+백업 비움 backup:20261109:feeRates:journal2 200
+백업 비움 backup:20261109:settings 200
+백업 비움 backup:20261109:settings:journal2 200
+백업 비움 backup:20261109:trades 200
+백업 비움 backup:20261109:trades:journal2 200
+백업 비움 backup:20261109:usdtRate 200
+남김 feeRates
+남김 feeRates:journal2
+남김 jinwoo:customTickers
+남김 jinwoo:settings
+남김 jinwoo:usdtRate
+남김 settings
+남김 settings:journal2
+trades: 9건 → 0건 (OKX 자동 기록만 남김) 200
+trades:journal2: 1건 → 0건 (OKX 자동 기록만 남김) 200
+남김 usdtRate
