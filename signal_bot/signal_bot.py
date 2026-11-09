@@ -724,6 +724,12 @@ def message(label, tf, bar, info, grade):
     return "\n".join(lines)
 
 
+TODAY_MAX = int(os.environ.get("TODAY_MAX", "5"))       # 오늘의 매매 하루 최대 횟수
+SEED_KRW = float(os.environ.get("SEED_KRW", "1000000"))  # 원금 (원)
+RISK_PCT = float(os.environ.get("RISK_PCT", "7"))        # 한 번 최대 손절 (원금 %)
+LEV = float(os.environ.get("LEV", "5"))                  # 레버리지
+
+
 def main():
     global CHAT_ID
     try:
@@ -742,6 +748,7 @@ def main():
     calm = btc15_calm(btc_d, btc_h)
 
     msgs = []
+    picks = []   # 오늘의 매매 후보 (SOXL 3·5분 ★ / 5분 동시 돌파 + 200선 오르는 중)
     counts = {}
     for sym in ("BTCUSDT", "ETHUSDT", "SOXL"):
         data = load(sym)
@@ -757,6 +764,9 @@ def main():
                 for ftf, bar, info, grade in found:
                     if ftf == tf and bar["t"] > prev:
                         msgs.append((bar["t"], message(label, tf, bar, info, grade)))
+                        if label == "SOXL" and tf in ("3", "5") and info.get("xg") and (
+                                (info.get("rsistar") and tf in ("3", "5")) or (tf == "5" and info.get("up200"))):
+                            picks.append((bar["t"], tf, bar, info))
             seen[key] = max(newest, prev or 0)
 
     print(f"::notice::토큰 {'있음' if TOKEN else '없음'} · 대화방 {'찾음' if CHAT_ID else '못 찾음'} · 데이터 " + " / ".join(f"{k}:{v}" for k, v in counts.items()))
@@ -766,6 +776,27 @@ def main():
     for _, m in sorted(msgs):
         tg_send(m)
         time.sleep(0.5)
+    # ───── 오늘의 매매: 한국 날짜 기준 하루 최대 TODAY_MAX번, 첫 신호부터 ─────
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+    td = state.setdefault("today", {})
+    if td.get("d") != today:
+        td.clear(); td.update(d=today, n=0, done=False)
+    for t, tf, bar, info in sorted(picks, key=lambda x: x[0]):
+        if td["n"] >= TODAY_MAX:
+            break
+        td["n"] += 1
+        e = bar["c"]; sl = info["sl"]; tp = info["tp"]
+        slp = (1 - sl / e) * 100
+        mx = SEED_KRW * RISK_PCT / 100 / ((slp + 0.1) / 100) / LEV
+        kind = "50·100 동시 돌파 ★" if info.get("rsistar") else "50·100 동시 돌파 + 200선 오르는 중 [후보]"
+        tg_send(f"[오늘의 매매 {td['n']}/{TODAY_MAX}] SOXL {tf}분 · {kind}\n"
+                f"진입 {e:.2f} · 손절 {sl:.2f} (-{slp:.2f}%) · 익절 {tp:.2f} (+{(tp / e - 1) * 100:.2f}%)\n"
+                f"원금 {RISK_PCT:g}% 한도 · {LEV:g}배면 증거금 최대 {mx:,.0f}원 (원금 {SEED_KRW:,.0f}원 기준)\n"
+                f"들어가면서 손절·익절 같이 걸고 손대지 않기")
+        time.sleep(0.5)
+        if td["n"] >= TODAY_MAX and not td.get("done"):
+            td["done"] = True
+            tg_send(f"[오늘 매매 끝] 오늘의 매매 {TODAY_MAX}번 다 썼어요. 내일 다시.")
     print(f"보낸 신호 {len(msgs)}개 · 대화방 {'있음' if CHAT_ID else '없음'}")
     json.dump(state, open(STATE_FILE, "w", encoding="utf-8"), ensure_ascii=False)
 
