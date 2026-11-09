@@ -4,6 +4,7 @@
 - 진입 수는 OKX 기록(포지션 연 시각)으로 매번 다시 세서, 봇이 재시작돼도 정확함
 - 텔레그램에 "풀기" 보내면 5분 뒤 그날만 +1번 · 하루 최대 5번까지 (총 +5) · 5분 안에 "취소" 보내면 취소
 - 처음 켠 날(2026-11-09)은 켠 시각(23:10) 이후 진입만 셈
+- 물타기 금지: 손실 중인 포지션을 늘리면 늘어난 만큼 바로 시장가로 줄임 (수익 중일 때 불타기는 자유, 횟수에도 안 셈)
 - 닫힌 포지션은 1분마다 매매일지(1억 챌린지, Supabase trades)에 자동 기록 (okxKey 로 중복 방지)
 - 키: OKX_API_KEY / OKX_SECRET / OKX_PASSPHRASE (GitHub Secrets) · 출금 권한 없는 키 사용"""
 import base64, hashlib, hmac, json, os, sys, time, urllib.request, urllib.error, urllib.parse
@@ -159,6 +160,21 @@ def sync_journal():
        {"Prefer": "resolution=merge-duplicates"})
     return len(new)
 
+def reduce_by(p, sz):
+    """포지션 p 를 sz(계약 수)만큼 시장가로 줄이기"""
+    pos = float(p["pos"])
+    ps = p.get("posSide") or "net"
+    if ps == "long": side = "sell"
+    elif ps == "short": side = "buy"
+    else: side = "sell" if pos > 0 else "buy"
+    body = {"instId": p["instId"], "tdMode": p["mgnMode"], "side": side, "ordType": "market", "sz": str(sz), "reduceOnly": True}
+    if ps != "net": body["posSide"] = ps
+    if p.get("mgnMode") == "cross" and p.get("ccy"): body["ccy"] = p["ccy"]
+    return okx("POST", "/api/v5/trade/order", body)
+
+def fmt_sz(x):
+    return ("%.8f" % x).rstrip("0").rstrip(".")
+
 def main():
     global SB
     if not (KEY and SEC and PAS):
@@ -182,10 +198,24 @@ def main():
     closed_keys = set()
     fails = 0
     last_sync = 0
+    prev = None       # 지난 확인 때 열린 포지션 {posId: (크기, 미실현손익, 포지션)}
     while time.time() < end:
         try:
             ents, opened = today_entries()
             fails = 0
+            # ── 물타기 금지: 지난번에 손실 중이던 포지션이 커졌으면 커진 만큼 줄이기
+            cur = {p["posId"]: (abs(float(p["pos"])), float(p.get("upl") or 0), p) for p in opened}
+            if prev is not None:
+                for pid, (sz, upl, p) in cur.items():
+                    if pid in prev and sz > prev[pid][0] + 1e-12 and prev[pid][1] < 0:
+                        add = sz - prev[pid][0]
+                        r = reduce_by(p, fmt_sz(add))
+                        ok = r.get("code") == "0"
+                        tg(f"[물타기 금지] {p['instId']} {p.get('posSide','')} 손실 중({prev[pid][1]:+.2f} USDT)에 {fmt_sz(add)}개 추가 → "
+                           + ("추가한 만큼 바로 줄였어요" if ok else f"줄이기 실패 ({r.get('code')} {r.get('msg')} {(r.get('data') or [{}])[0].get('sMsg','')}) · 직접 정리해주세요"))
+                        if ok:
+                            cur[pid] = (prev[pid][0], upl, p)
+            prev = cur
             n = len(ents)
             d = datetime.now(KST).strftime("%Y-%m-%d")
             reqs = unlock_state()
