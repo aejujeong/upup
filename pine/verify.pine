@@ -701,7 +701,7 @@ czMarg = input.float(100000, "이번에 넣을 증거금 (원)", minval = 0, ste
 czLev  = input.float(5, "레버리지 (배)", minval = 1, group = GC)
 czFx   = input.float(1400, "환율 (USDT 1개 = 몇 원)", minval = 1, group = GC)
 czFee  = input.float(0.05, "수수료 (들어갈 때·나올 때 한 번씩, %)", minval = 0, step = 0.01, group = GC)
-czRisk = input.float(2, "한 번에 잃어도 되는 한도 (시드의 %)", minval = 0.1, step = 0.1, group = GC)
+czRisk = input.float(5, "한 번에 잃어도 되는 최대 손절 (원금의 %, 레버리지 포함)", minval = 0.1, step = 0.1, group = GC)
 czMine = input.bool(true, "내가 옮긴 선 쓰기 (끄면 신호의 진입·손절·익절)", group = GC)
 czEP   = input.price(0, "내 진입가 (차트에서 선을 끌어서 옮기기)", confirm = true, group = GC)
 czSP   = input.price(0, "내 손절가", confirm = true, group = GC)
@@ -874,7 +874,7 @@ var label czBE = na
 var label czBS = na
 var label czBT = na
 czCP = czPos == "오른쪽 위" ? position.top_right : czPos == "오른쪽 가운데" ? position.middle_right : czPos == "왼쪽 위" ? position.top_left : position.bottom_left
-var table czTb = table.new(czCP, 2, 9, bgcolor = color.new(#111111, 10), border_color = color.new(#617B55, 0), border_width = 1, frame_color = color.new(#617B55, 0), frame_width = 1)
+var table czTb = table.new(czCP, 2, 10, bgcolor = color.new(#111111, 10), border_color = color.new(#617B55, 0), border_width = 1, frame_color = color.new(#617B55, 0), frame_width = 1)
 czC(int c, int r, string t, color bg = na, string tip = "") =>
     table.cell(czTb, c, r, t, text_color = color.white, text_size = size.small, text_halign = text.align_left, bgcolor = na(bg) ? color.new(#111111, 10) : bg, tooltip = tip)
 // ───────── 이 차트 50·100 동시 돌파 성적 (★만 / 전체) · 트레이딩뷰 봉 그대로(야간 포함) · 신호 손절(종가-2ATR)·익절(+4ATR) ─────────
@@ -884,6 +884,46 @@ var xvT = array.new_float()
 var xvB = array.new_int()
 var xvR = array.new_bool()
 var xvTm = array.new_int()
+// 원금 한도 손절: 증거금 × 레버리지로 들어갔을 때 원금의 czRisk% 를 잃는 가격 폭
+czCapPct = czMarg * czLev > 0 ? czRisk * czSeed / (czMarg * czLev) : na
+var yvE = array.new_float()
+var yvT = array.new_float()
+var yvB = array.new_int()
+var yvR = array.new_bool()
+var ysN = array.new_int(2, 0)
+var ysW = array.new_int(2, 0)
+var ysP = array.new_float(2, 0.0)
+yAdd(int k, float r) =>
+    ysN.set(k, ysN.get(k) + 1)
+    ysW.set(k, ysW.get(k) + (r > 0 ? 1 : 0))
+    ysP.set(k, ysP.get(k) + r)
+if not na(czCapPct) and yvE.size() > 0
+    for k = yvE.size() - 1 to 0
+        float ve = yvE.get(k)
+        float r = na
+        if low <= ve * (1 - czCapPct / 100)
+            r := -czCapPct
+        else if high >= yvT.get(k)
+            r := (yvT.get(k) / ve - 1) * 100
+        else if bar_index - yvB.get(k) >= czHold
+            r := (close / ve - 1) * 100
+        if not na(r)
+            r -= 2 * czFee
+            yAdd(1, r)
+            if yvR.get(k)
+                yAdd(0, r)
+            yvE.remove(k)
+            yvT.remove(k)
+            yvB.remove(k)
+            yvR.remove(k)
+if xOk and not na(czCapPct)
+    yvE.push(close)
+    yvT.push(xTp)
+    yvB.push(bar_index)
+    yvR.push(xBot)
+yStatTxt(int k) =>
+    int n = ysN.get(k)
+    n == 0 ? "아직 결과 없음" : str.tostring(n) + "번 · 승률 " + str.tostring(ysW.get(k) * 100.0 / n, "#") + "% · 한 번 평균 " + (ysP.get(k) >= 0 ? "+" : "") + str.tostring(ysP.get(k) / n, "#.##") + "% (원금 " + (ysP.get(k) >= 0 ? "+" : "") + str.tostring(ysP.get(k) / n * czMarg * czLev / czSeed, "#.##") + "%)"
 var xsN = array.new_int(2, 0)      // 0 = ★만, 1 = 전체
 var xsW = array.new_int(2, 0)
 var xsP = array.new_float(2, 0.0)
@@ -928,7 +968,7 @@ xStatTxt(int k) =>
     n == 0 ? "아직 결과 없음" : str.tostring(n) + "번 · 승률 " + str.tostring(xsW.get(k) * 100.0 / n, "#") + "% · 한 번 평균 " + (xsP.get(k) >= 0 ? "+" : "") + str.tostring(xsP.get(k) / n, "#.##") + "% · 합계 " + (xsP.get(k) >= 0 ? "+" : "") + str.tostring(xsP.get(k), "#.#") + "%"
 
 if barstate.islast and czOn
-    table.clear(czTb, 0, 0, 1, 8)
+    table.clear(czTb, 0, 0, 1, 9)
     line.delete(czLE)
     line.delete(czLS)
     line.delete(czLT)
@@ -997,3 +1037,5 @@ if barstate.islast and czOn
         czC(1, 6, str.tostring(liq, format.mintick) + (liq >= sv ? " · 손절보다 먼저 청산돼요! 레버리지를 낮추세요" : " · 손절이 먼저 닿아요"), liq >= sv ? RD : na)
     czC(0, 8, "이 차트 ★ 성적")
     czC(1, 8, "★ " + xStatTxt(0) + " | 동시 돌파 전체 " + xStatTxt(1) + (xsLast.size() > 0 ? " | 최근 ★: " + array.join(xsLast, " · ") : ""), xsN.get(0) == 0 ? na : xsP.get(0) > 0 ? color.new(#2e7d32, 35) : color.new(#8B2E2E, 30), "이 차트에 불러온 봉(트레이딩뷰 데이터, 야간 포함) 그대로 · 50·100 동시 돌파 ◆ 봉 종가에 진입 · 신호 손절(종가-2ATR)·익절(+4ATR) 중 먼저 닿는 쪽 · 한 봉에 둘 다 닿으면 손절로 침 · " + str.tostring(czHold) + "봉 안에 안 닿으면 그 봉 종가로 정리 · 수수료 포함 · 차트를 왼쪽으로 끌어 과거 봉을 더 불러오면 횟수가 늘어요")
+    czC(0, 9, "원금 " + str.tostring(czRisk) + "% 손절 기준")
+    czC(1, 9, na(czCapPct) ? "증거금·레버리지를 넣어주세요" : "손절 = 가격 -" + str.tostring(czCapPct, "#.##") + "% (증거금 " + czW(czMarg) + " × " + str.tostring(czLev) + "배면 원금 " + czW(czSeed) + "의 " + str.tostring(czRisk) + "%) · ★ " + yStatTxt(0) + " | 동시 돌파 전체 " + yStatTxt(1), ysN.get(0) == 0 ? na : ysP.get(0) > 0 ? color.new(#2e7d32, 35) : color.new(#8B2E2E, 30), "손절만 원금 한도 지점으로 바꾸고 익절은 신호 그대로(+4ATR) · 증거금·레버리지를 키우면 손절 폭이 좁아지고, 줄이면 넓어져요 · 손절이 너무 좁으면 증거금이나 레버리지를 줄이세요")
