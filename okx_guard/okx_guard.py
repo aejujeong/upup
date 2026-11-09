@@ -120,17 +120,19 @@ def sync_journal():
     if not SB_URL: sb_init()
     j = okx("GET", "/api/v5/account/positions-history?limit=100")
     if j.get("code") != "0": return 0
-    closed = [p for p in j.get("data", []) if int(p.get("cTime", 0)) >= START_MS]
+    # type 1 = 일부만 판 상태(포지션 아직 열림) → 다 닫힐 때까지 기다림
+    closed = [p for p in j.get("data", []) if int(p.get("cTime", 0)) >= START_MS and p.get("type") != "1"]
     if not closed: return 0
     trades = sb_get("trades", []) or []
-    have = {t.get("okxKey") for t in trades if isinstance(t, dict)}
+    have = {t.get("okxKey"): t for t in trades if isinstance(t, dict) and t.get("okxKey")}
     rate = sb_get("usdtRate", 1400) or 1400
     try: rate = float(rate)
     except Exception: rate = 1400.0
-    new = []
+    new = []; upd = 0
     for p in sorted(closed, key=lambda p: int(p["cTime"])):
         k = p.get("posId", "") + ":" + p.get("cTime", "")
-        if k in have: continue
+        old = have.get(k)
+        if old and (old.get("sells") or [{}])[0].get("id") == int(p.get("uTime") or 0): continue
         try:
             pnl = float(p.get("pnl") or 0); ratio = float(p.get("pnlRatio") or 0)
             margin = abs(pnl / ratio) if ratio else None
@@ -143,7 +145,7 @@ def sync_journal():
         why = f"[OKX 자동 기록] 실현손익 {real:+.2f} USDT (수수료 {fee:.2f} · 펀딩 {fund:.2f} 포함) · {datetime.fromtimestamp(ct/1000, KST):%H:%M} 진입 → {datetime.fromtimestamp(ut/1000, KST):%H:%M} 청산"
         if k in forced: why += " · 하루 한도 초과로 강제 청산"
         if p.get("type") in ("3", "4"): why += " · 강제청산(청산가 도달)"
-        new.append({
+        rec = {
             "id": ct, "okxKey": k,
             "date": datetime.fromtimestamp(ct / 1000, KST).strftime("%Y-%m-%d"),
             "ticker": tick, "dir": "short" if p.get("direction") == "short" else "long",
@@ -153,12 +155,18 @@ def sync_journal():
             "broker": "", "market": None, "feeRatePct": 0,
             "sells": [{"id": ut, "price": p.get("closeAvgPx"), "pct": 100, "leverage": lev,
                        "date": datetime.fromtimestamp(ut / 1000, KST).strftime("%Y-%m-%d")}],
-        })
-    if not new: return 0
+        }
+        if old:   # 일부만 팔았을 때 들어간 기록 → 최종 청산 값으로 고침 (내가 적은 메모·체크는 그대로)
+            for f in ("entry", "amount", "amountUsdt", "usdtRateUsed", "why", "sells", "dir", "date"):
+                old[f] = rec[f]
+            upd += 1
+        else:
+            new.append(rec)
+    if not new and not upd: return 0
     merged = new[::-1] + trades     # 최신이 위로
     sb("POST", "app_data", {"key": "trades", "value": merged, "updated_at": datetime.now(timezone.utc).isoformat()},
        {"Prefer": "resolution=merge-duplicates"})
-    return len(new)
+    return len(new) + upd
 
 def reduce_by(p, sz):
     """포지션 p 를 sz(계약 수)만큼 시장가로 줄이기"""
