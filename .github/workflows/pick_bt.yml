@@ -1,6 +1,9 @@
 name: pick-bt
 on:
   workflow_dispatch:
+    inputs:
+      lim:
+        default: ""
 permissions:
   contents: write
 jobs:
@@ -17,6 +20,7 @@ jobs:
         timeout-minutes: 160
         env:
           GH_TOKEN: ${{ github.token }}
+          LIM: ${{ inputs.lim }}
       - name: 결과 올리기
         if: always()
         run: |
