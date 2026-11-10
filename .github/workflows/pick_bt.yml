@@ -1,0 +1,31 @@
+name: pick-bt
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm i --no-save playwright@1.48.2 && npx playwright install --with-deps chromium
+      - run: node research/pick_bt.js
+        timeout-minutes: 160
+      - name: 결과 올리기
+        if: always()
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          mkdir -p /tmp/out && cp research/out_*.txt /tmp/out/ 2>/dev/null || true
+          for k in 1 2 3 4 5 6; do
+            git fetch -q origin research-out && git checkout -q -f -B research-out origin/research-out || git checkout -q -f -B research-out
+            cp /tmp/out/out_*.txt research/ 2>/dev/null || true
+            git add -f research/out_*.txt
+            git commit -q -m "검증 결과 pick_bt" || true
+            git push origin research-out && break
+            sleep 7
+          done
