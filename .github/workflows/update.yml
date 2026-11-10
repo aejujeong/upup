@@ -44,6 +44,19 @@ jobs:
         with:
           path: cache
           key: krx-${{ github.run_id }}
+      - uses: actions/setup-node@v4     # 섹터 추천 종목 기록 (며칠째·과거 성적) → site/picks_hist.json
+        if: always()
+        with:
+          node-version: "20"
+      - name: 추천 기록 만들기
+        if: always()
+        timeout-minutes: 25
+        continue-on-error: true
+        run: |
+          test -f site/index.html || exit 0
+          npm i --no-save playwright@1.48.2 && npx playwright install --with-deps chromium
+          (cd site && python -m http.server 8000 >/dev/null 2>&1 &) ; sleep 2
+          node pick_hist.js
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

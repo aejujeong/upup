@@ -2537,7 +2537,7 @@ td.st{text-align:center;width:44px}
     </table></div>
     <h2 class="ph" id="cycTitle">섹터 순환 주기</h2>
     <div class="flowopt"><span>수급 조건</span><div class="seg" id="flowOpt"><button data-v="strict" class="on">거르기</button><button data-v="show">표시만</button></div>
-      <span>내 기준</span><div class="seg" id="myOpt"><button data-v="off">끔</button><button data-v="on" class="on">켬</button></div>
+      <span>내 기준</span><div class="seg" id="myOpt"><button data-v="off" class="on">끔</button><button data-v="on">켬</button></div>
       <span class="note">이번 달 <input id="myMin" type="number" min="1" max="40" value="2" class="myn">~<input id="myMax" type="number" min="1" max="40" value="12" class="myn">위 + 10일 평균 순위가 한 달 전보다 상승(▲), 추천 섹터 중에서만</span>
       <span>추천 안정도</span><div class="seg" id="stabOpt"><button data-v="0" class="on">전체</button><button data-v="6">6일 이상</button></div></div>
     <p class="mktwarn" id="mktWarn" hidden></p>
@@ -2551,7 +2551,7 @@ td.st{text-align:center;width:44px}
     <h2 class="ph">단기·선진입·추세 지속 섹터 후보 종목</h2>
     <details class="notebox"><summary>추천 섹터 안에서 수급·위치·실적·과열로 점수 매긴 상위 종목 <span class="more">자세히 보기</span></summary><p class="pnote" id="pickNote"></p></details>
     <div class="tbl"><table class="ptbl ktbl">
-      <thead><tr><th>섹터</th><th>순위</th><th>종목명</th><th>총점</th><th>수급 (30)</th><th>위치 (20)</th><th>실적 (25)</th><th>패턴 (10)</th><th>과열 회피 (15)</th><th class="asofc">기준일 이후<br><select class="retto" aria-label="등락 비교 끝날"></select></th><th>선별 이유</th></tr></thead>
+      <thead><tr><th>섹터</th><th>순위</th><th>종목명</th><th>총점</th><th>추천 기간</th><th>같은 판단 과거 성적<br><span class="muted">새로 추천된 날 종가 매수</span></th><th>수급 (30)</th><th>위치 (20)</th><th>실적 (25)</th><th>패턴 (10)</th><th>과열 회피 (15)</th><th class="asofc">기준일 이후<br><select class="retto" aria-label="등락 비교 끝날"></select></th><th>선별 이유</th></tr></thead>
       <tbody id="pickRows"></tbody>
     </table></div>
     <h2 class="ph">진입 판단 기준 과거 검증</h2>
@@ -2762,7 +2762,7 @@ const CREF = __CYCREF__;
 const REFBY = Object.fromEntries(((CREF && CREF.secs) || []).map(x => [x.sec.replace(/\s/g, ''), x]));
 const refOf = sec => REFBY[(sec || '').replace(/\s/g, '')];
 const DAYS = META.days, ND = DAYS.length;
-const S = {per:'10', mkt:'ALL', sr:'IN', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', allf:'ALL', dan:false, fb:false, k2f:'ALL', k2good:false, k2c5:false, sigf:'ALL', szf:'ALL', hideHot:true, flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:true, myMin:2, myMax:12, view:'sec', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
+const S = {per:'10', mkt:'ALL', sr:'IN', sort:'net', dir:-1, minCap:0, top:100, q:'', page:1, watch:'ALL', pf:'ALL', sec:'', sub:'', asof:'', allf:'ALL', dan:false, fb:false, k2f:'ALL', k2good:false, k2c5:false, sigf:'ALL', szf:'ALL', hideHot:true, flowOpen:false, flowStrict:true, cycAll:false, stabMin:0, my:false, myMin:2, myMax:12, view:'sec', psel:null, fsel:null, ssort:'rt', sdir:-1, secOpen: new Set()};
 const RT = (r, p) => S.asof ? (r.h ? r.h.rt[p] : null) : (r.rt ? r.rt[p] : null);   // 기간 등락률
 const AA = (r, p) => S.asof ? r.h.a[p] : r.a[p];   // 외국인 (기준일 반영)
 const BB = (r, p) => S.asof ? r.h.b[p] : r.b[p];   // 기관 (기준일 반영)
@@ -3601,6 +3601,28 @@ $('refBox').addEventListener('click', e => {
   render(); window.scrollTo({top: 0, behavior: 'smooth'});
 });
 // ---- 진입 검토 섹터 후보 선별 (점수 기준은 가설: 수급 40, 위치 25, 실적 15, 패턴 10, 과열 회피 10) ----
+// ---- 추천 기록 (picks_hist.json, 배포 때 만든 것): 며칠째 추천 중인지, 첫 추천 뒤 등락, 판단별 과거 성적 ----
+const PH = {data: null, loading: false};
+function loadPH(){
+  if (PH.data || PH.loading) return; PH.loading = true;
+  fetch('picks_hist.json').then(r => r.ok ? r.json() : null).then(j => { PH.data = j || {none: true}; PH.loading = false; if (S.view === 'sec') renderPicks(); })
+    .catch(() => { PH.data = {none: true}; PH.loading = false; });
+}
+const phCat = l => ['추세 지속', '선진입 ★', '선진입 · 수급 약함', '선진입', '단기 · 수급 약함', '단기'].find(k => (l || '').startsWith(k)) || null;
+function phStreak(code, nowPx){
+  const P = PH.data && PH.data.p; if (!P) return null;
+  const D = Object.keys(P).sort(), d = S.asof || HD[HD.length - 1]; let k = D.indexOf(d);
+  if (k < 0) return null;
+  const has = j => P[D[j]].some(x => x[0] === code && (!S.my || x[2]));
+  let n = 0; while (k >= 0 && has(k)) { n++; k--; }
+  if (!n) return null;
+  const f = D[k + 1], e = P[f].find(x => x[0] === code), p0 = e && e[3];
+  return {n, first: f, ret: p0 && nowPx ? (nowPx / p0 - 1) * 100 : null};
+}
+function phStat(lab){
+  const st = PH.data && PH.data.stats && PH.data.stats[S.my ? 'on' : 'off']; const c = phCat(lab);
+  return st && c && st[c] ? st[c] : null;
+}
 const PICK = {minCap: 1000, minTv: 10, maxQ: 50, maxQnorm: 30, perSec: 5, hot: 20};
 function pickStocks(){
   if (!CYC || !CYC.rows) return [];
@@ -3669,16 +3691,19 @@ function pickStocks(){
   return out;
 }
 function renderPicks(){
+  loadPH();
   const list = pickStocks();
   const asofTxt = S.asof ? ` 지금은 기준일 ${S.asof} 모드라서 그날 기준 주기의 [단기]·[선진입] 섹터와 그날까지의 수급·등락률로 다시 골랐고, 위치(지지·저항) 점수는 그날까지의 봉으로 계산한 지지선으로 매기고, 그날 기준 값이 없는 패턴 점수만 빼서 90점을 100점으로 환산했습니다. 실적은 최신 결산 기준이고, "기준일 이후"는 그날 종가에서 고른 끝날(기본은 최신) 종가까지의 등락입니다.` : '';
   const reg = regime(), regTxt = {강세: '강세장', 보통: '보통', 약세: '약세장'}[reg];
-  $('pickNote').textContent = `지금 장세: ${regTxt} (시장 최근 20거래일 ${RR.data && !RR.data.none && RR.data.market !== null ? plus(RR.data.market) + fmt(RR.data.market, 1) + '%' : '계산 중'}, +5% 이상 강세·-5% 이하 약세). [단기]·[선진입]·[추세 지속] 섹터 안에서 시총 ${fmt(PICK.minCap)}억 이상, 최근 20일 평균 거래대금 ${PICK.minTv}억 이상, 3달 등락률 +${reg === '강세' ? PICK.maxQ : PICK.maxQnorm}% 이하인 종목만 골랐고${reg === '약세' ? ', 약세장이라 최근 20일 +20% 이상 오른 종목은 뺐습니다' : ''}. 점수는 지난 2년 데이터 검증 결과로 정했습니다. 실적 25점(흑자 18, 섹터 중간보다 낮은 PER 7: 모든 시기에 통한 유일한 기준), 수급 30점(시총 구간별로 통한 잣대가 달라 대형 1조 이상은 외국인 20일 중 순매수한 날 수, 중형 3천억~1조는 외국인·기관 중 많은 쪽, 소형은 기관 순매수일을 18점으로 보고, 섹터 안 순매수 금액 순위 6점, 대형은 외국인 순매수면 6점·중소형은 한달 순매도 하위 20%가 아니면 6점), 위치 20점(지지선 근접 12·구간 안 5·접근 2, 위쪽 저항선까지 여유 최대 8, 강세장에서는 절반), 패턴 10점, 과열 회피 15점(강세장은 만점, 보통·약세장은 최근 20일 +20% 미만 7, 3달·1년 등락이 섹터 평균보다 낮으면 각 4)이고, 섹터마다 상위 ${PICK.perSec}개를 보여줍니다. 검증에서도 차이는 몇 %p 수준이라 매수 추천이 아닌 참고용입니다.` + asofTxt;
-  if (!list.length) { $('pickRows').innerHTML = `<tr><td colspan="11" class="empty">조건에 맞는 후보가 없습니다.</td></tr>`; return; }
+  $('pickNote').textContent = `지금 장세: ${regTxt} (시장 최근 20거래일 ${RR.data && !RR.data.none && RR.data.market !== null ? plus(RR.data.market) + fmt(RR.data.market, 1) + '%' : '계산 중'}, +5% 이상 강세·-5% 이하 약세). [단기]·[선진입]·[추세 지속] 섹터 안에서 시총 ${fmt(PICK.minCap)}억 이상, 최근 20일 평균 거래대금 ${PICK.minTv}억 이상, 3달 등락률 +${reg === '강세' ? PICK.maxQ : PICK.maxQnorm}% 이하인 종목만 골랐고${reg === '약세' ? ', 약세장이라 최근 20일 +20% 이상 오른 종목은 뺐습니다' : ''}. 점수는 지난 2년 데이터 검증 결과로 정했습니다. 실적 25점(흑자 18, 섹터 중간보다 낮은 PER 7: 모든 시기에 통한 유일한 기준), 수급 30점(시총 구간별로 통한 잣대가 달라 대형 1조 이상은 외국인 20일 중 순매수한 날 수, 중형 3천억~1조는 외국인·기관 중 많은 쪽, 소형은 기관 순매수일을 18점으로 보고, 섹터 안 순매수 금액 순위 6점, 대형은 외국인 순매수면 6점·중소형은 한달 순매도 하위 20%가 아니면 6점), 위치 20점(지지선 근접 12·구간 안 5·접근 2, 위쪽 저항선까지 여유 최대 8, 강세장에서는 절반), 패턴 10점, 과열 회피 15점(강세장은 만점, 보통·약세장은 최근 20일 +20% 미만 7, 3달·1년 등락이 섹터 평균보다 낮으면 각 4)이고, 섹터마다 상위 ${PICK.perSec}개를 보여줍니다. 검증에서도 차이는 몇 %p 수준이라 매수 추천이 아닌 참고용입니다.` + (() => { const T = PH.data && PH.data.stats; if (!T) return ''; const a = T[S.my ? 'on' : 'off'] && T[S.my ? 'on' : 'off']['전체'], bs = T.base; const f = t => t ? `승률 ${t.w}% · 평균 ${plus(t.a)}${fmt(t.a, 1)}%` : '-'; return ` [추천 기간] 날마다 다시 계산한 추천 목록에 연속으로 들어 있던 거래일 수(첫 추천일이 1일째)와 첫 추천일 종가 대비 지금(기준일) 등락입니다. [과거 성적] ${T.from}~${T.to} 동안 그 판단으로 새로 추천된 날 종가에 사서 손절·익절 없이 20·60거래일 뒤 종가에 판 결과(승률 = 플러스 비율)이고, 내 기준 ${S.my ? '켬' : '끔'} 기준입니다. 전체 20일 뒤 ${f(a && a[20])}, 비교로 같은 기간 시총 1000억 이상 아무 종목은 20일 뒤 ${f(bs && bs[20])}였습니다. 같은 시기 추천끼리 같이 움직여서 건수만큼 확실하진 않습니다.`; })() + asofTxt;
+  if (!list.length) { $('pickRows').innerHTML = `<tr><td colspan="13" class="empty">조건에 맞는 후보가 없습니다.</td></tr>`; return; }
   let prev = null, rank = 0;
   $('pickRows').innerHTML = list.map(x => {
     const first = x.sec !== prev; if (first) rank = 0; rank++; prev = x.sec;
     return `<tr data-code="${x.r.code}" class="${first ? 'first' : ''}"><td class="name nw">${first ? `${esc(x.sec)}<div class="hist">${esc(x.lab || '')}</div>` : ''}</td><td class="nw">${rank}</td>
       <td class="name nw">${esc(x.r.name)}</td><td class="nw"><span class="tot">${fmt(x.total, 0)}</span></td>
+      <td class="nw">${(() => { const k = phStreak(x.r.code, S.asof ? (x.r.h && x.r.h.px) : x.r.price); if (!k) return PH.data && !PH.data.none ? '<span class="muted">-</span>' : '<span class="muted">불러오는 중</span>'; return `${k.n}일째${k.n > 1 && k.ret !== null ? ` · <span class="${k.ret > 0 ? 'pos' : k.ret < 0 ? 'neg' : ''}">${plus(k.ret)}${fmt(k.ret, 1)}%</span>` : ''}<div class="hist">첫 추천 ${k.first.slice(5)}</div>`; })()}</td>
+      <td class="nw">${(() => { const t = phStat(x.lab); if (!t) return '<span class="muted">-</span>'; const f = (h, lb) => t[h] ? `${lb} 승률 ${t[h].w}% · 평균 <span class="${t[h].a > 0 ? 'pos' : t[h].a < 0 ? 'neg' : ''}">${plus(t[h].a)}${fmt(t[h].a, 1)}%</span>` : ''; return `${f(20, '20일 뒤')}<div class="hist">${f(60, '60일 뒤')} · ${t[20] ? t[20].n : 0}건</div>`; })()}</td>
       <td class="nw">${fmt(x.flow, 0)}</td><td class="nw">${S.asof && !(x.r.h && x.r.h.sr) ? '-' : fmt(x.pos, 0)}</td><td class="nw">${fmt(x.earn, 0)}</td><td class="nw">${S.asof ? '-' : fmt(x.pat, 0)}</td><td class="nw">${fmt(x.cool, 0)}</td>
       <td class="asofc nw">${x.ret === null || x.ret === undefined ? '-' : `<span class="${x.ret > 0 ? 'pos' : x.ret < 0 ? 'neg' : ''}">${plus(x.ret)}${fmt(x.ret, 1)}%</span>`}</td>
       <td>${esc(x.why.join(', '))}</td></tr>`;
