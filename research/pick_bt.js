@@ -1,6 +1,13 @@
 // 사이트 '섹터 추천 종목'을 과거 기준일마다 다시 계산해 기록 → research/out_pick_bt.txt (JSON)
 const { chromium } = require('playwright');
 const fs = require('fs');
+const { execSync } = require('child_process');
+function pushOut(msg){   // 중간 결과를 research-out 브랜치에 올림 (시간 초과돼도 남게)
+  try {
+    fs.mkdirSync('/tmp/po', {recursive: true});
+    execSync(`cp research/out_pick_bt.txt /tmp/po/ && cd /tmp/po && (test -d r || git clone -q -b research-out --depth 1 "https://x-access-token:${process.env.GH_TOKEN}@github.com/${process.env.GITHUB_REPOSITORY}.git" r) && cd r && git pull -q && mkdir -p research && cp ../out_pick_bt.txt research/ && git add -f research/out_pick_bt.txt && git -c user.name=gha -c user.email=gha@x commit -qm "${msg}" && git push -q`, {stdio: 'inherit'});
+  } catch (e) { console.log('push fail', e.message); }
+}
 (async () => {
   const b = await chromium.launch();
   const page = await b.newPage();
@@ -17,17 +24,18 @@ const fs = require('fs');
       && STAB.key && STAB.key.startsWith(d) && STAB.data && !STAB.loading);
   }, d);
   const t0 = Date.now();
-  const all = dates.concat(['']);
+  const all = [''].concat(dates.slice().reverse());
   for (let k = 0; k < all.length; k++) {
     const d = all[k];
     await page.evaluate(d => { S.my = false; S.stabMin = 0; S.view = 'sec'; return setAsof(d); }, d);
     const key = d || info.last;
     let ok = false;
-    for (let w = 0; w < 300; w++) { if (await ready(key)) { ok = true; break; } await page.waitForTimeout(200); }
+    for (let w = 0; w < 75; w++) { if (await ready(key)) { ok = true; break; } await page.waitForTimeout(200); }
     const ps = await page.evaluate(() => pickStocks().map(p => ({ c: p.r.code, n: p.r.name, s: p.sec, l: p.lab, t: Math.round(p.total * 10) / 10,
       px: S.asof ? (p.r.h && p.r.h.px) : p.r.price, my: myOk(p.sec), st: stabOf(p.sec), reg: regime() })));
     out.picks[key] = ps; out.dates.push(key);
     if (!ok) console.log('not ready', key);
+    if (k % 40 === 0) { fs.writeFileSync('research/out_pick_bt.txt', JSON.stringify(out)); pushOut(`pick_bt ${k}/${all.length} ${key} ${Math.round((Date.now() - t0) / 1000)}s`); }
     if (k % 20 === 0) console.log(k, '/', all.length, key, ps.length, '개', Math.round((Date.now() - t0) / 1000) + 's');
   }
   // 가격: 시총 1000억 이상 전 종목, 모든 날짜 (기준 수익률 비교용)
@@ -44,6 +52,7 @@ const fs = require('fs');
   });
   out.px = res.px; out.names = res.names;
   fs.writeFileSync('research/out_pick_bt.txt', JSON.stringify(out));
+  pushOut('pick_bt done');
   console.log('done', Object.keys(out.px).length, 'codes');
   await b.close();
 })().catch(e => { console.error(e); process.exit(1); });
