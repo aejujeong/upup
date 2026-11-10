@@ -40,7 +40,7 @@ function pushOut(msg){   // 중간 결과를 research-out 브랜치에 올림 (�
     if (k % 40 === 0) { fs.writeFileSync('research/out_pick_bt.txt', JSON.stringify(out)); pushOut(`pick_bt ${k}/${all.length} ${key} ${Math.round((Date.now() - t0) / 1000)}s`); }
     if (k % 20 === 0) console.log(k, '/', all.length, key, ps.length, '개', Math.round((Date.now() - t0) / 1000) + 's');
   }
-  if (LIM) { console.log(JSON.stringify(out.picks).slice(0, 1500)); await b.close(); return; }
+  if (LIM) { await page.evaluate(() => setAsof('')); await page.waitForTimeout(8000); console.log('ROWS', await page.evaluate(() => [S.my, document.querySelector('#pickRows').innerText.slice(0, 900), document.querySelector('#pickNote').textContent.slice(-520)].join(' || '))); await b.close(); return; }
   // 가격: 시총 1000억 이상 전 종목, 모든 날짜 (기준 수익률 비교용)
   const res = await page.evaluate(async () => {
     const codes = DATA.filter(r => r.cap >= 1000).map(r => r.code);
