@@ -38,7 +38,7 @@ jobs:
           OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MAX_TRADES: "5"
+          MAX_TRADES: "7"
           RUN_MIN: "345"
         run: python okx_guard/okx_guard.py
       - name: 다음 실행 켜기
