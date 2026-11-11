@@ -727,6 +727,38 @@ def message(label, tf, bar, info, grade):
     return "\n".join(lines)
 
 
+# ───── 연말까지 미국 반도체·정치 큰 일정 (한국 시간) ─────
+EVENTS = [
+    ("2026-11-18 06:20", "엔비디아 실적 발표 (미국 11/17 장 마감 후)", "반도체 전체 방향 · SOXL 하루 ±10~20% 가능"),
+    ("2026-12-10 04:00", "FOMC 금리 결정 + 파월 기자회견", "금리·점도표"),
+    ("2026-12-10 06:10", "브로드컴 실적 발표 (미국 12/9 장 마감 후)", "AI 반도체 2위 · FOMC와 같은 날"),
+    ("2026-12-18 23:30", "쿼드러플 위칭 (선물·옵션 동시 만기)", "거래량·변동 커짐"),
+]
+EVENTS_SUMMARY = ("[연말 일정] 미국 반도체·정치 큰 이슈 (한국 시간)\n"
+                  "· 11/18(수) 오전 엔비디아 실적 — 반도체 전체 방향, SOXL 하루 ±10~20% 가능\n"
+                  "· 12/10(목) 새벽 4시 FOMC 금리 결정\n"
+                  "· 12/10(목) 오전 브로드컴 실적 — FOMC와 같은 날\n"
+                  "· 12월 중하순 마이크론 실적 (날짜 미발표)\n"
+                  "· 12/18(금) 쿼드러플 위칭\n"
+                  "· 정치: 중간선거 끝(11/3 민주당 상·하원 장악, 새 의회 1월) · 반도체 관세(섹션 232) 뉴스 나오면 흔들림\n"
+                  "7배 레버리지면 실적 발표 전후로 포지션 가볍게 / 손절 꼭 걸기. 하루 전·1시간 전에 다시 알려드릴게요.")
+
+
+def event_alerts(state):
+    now = datetime.now(KST)
+    sent = state.setdefault("ev_sent", [])
+    if not state.get("ev_summary_v1"):
+        if tg_send(EVENTS_SUMMARY):
+            state["ev_summary_v1"] = True
+    for at, name, why in EVENTS:
+        t = datetime.strptime(at, "%Y-%m-%d %H:%M").replace(tzinfo=KST)
+        for key, before, txt in ((f"{at}:24h", timedelta(hours=24), "내일"), (f"{at}:1h", timedelta(hours=1), "1시간 뒤")):
+            if key in sent or not (t - before <= now < t):
+                continue
+            if tg_send(f"[일정 알림] {txt} {t:%m/%d %H:%M} {name}\n{why}\n포지션 크기·손절 다시 확인하기"):
+                sent.append(key)
+
+
 TODAY_MAX = int(os.environ.get("TODAY_MAX", "5"))       # 오늘의 매매 하루 최대 횟수
 SEED_KRW = float(os.environ.get("SEED_KRW", "1000000"))  # 원금 (원)
 RISK_PCT = float(os.environ.get("RISK_PCT", "7"))        # 한 번 최대 손절 (원금 %)
@@ -779,6 +811,11 @@ def main():
     for _, m in sorted(msgs):
         tg_send(m)
         time.sleep(0.5)
+    if CHAT_ID:
+        try:
+            event_alerts(state)
+        except Exception as e:  # noqa: BLE001
+            print("일정 알림 실패", e)
     # ───── 오늘의 매매: 한국 날짜 기준 하루 최대 TODAY_MAX번, 첫 신호부터 ─────
     today = datetime.now(KST).strftime("%Y-%m-%d")
     td = state.setdefault("today", {})
