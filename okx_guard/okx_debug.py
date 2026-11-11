@@ -21,3 +21,7 @@ for x in tr[:10]:
 j = G.okx("GET", "/api/v5/public/instruments?instType=SWAP&instId=SOXL-USDT-SWAP")
 d = (j.get("data") or [{}])[0]
 print(f"::notice::계약 ctVal={d.get('ctVal')} ctMult={d.get('ctMult')} ctValCcy={d.get('ctValCcy')}")
+ok = [x for x in tr if x.get("okxKey")]
+print(f"::notice::합계 OKX 자동 기록 {len(ok)}건 실현손익 {sum(float(x.get('realizedUsdt') or 0) for x in ok):+.2f} USDT · 첫 기록 {min((x.get('date') for x in ok), default='-')} · 수기 기록 {len(tr)-len(ok)}건")
+cap = G.sb_get("capital", None); rate = G.sb_get("usdtRate", None); wd = G.sb_get("withdrawals", None)
+print(f"::notice::자본금 {cap} 환율 {rate} 출금 {wd}")
