@@ -134,7 +134,7 @@ def sync_journal():
     if j.get("code") != "0": return 0
     # type 1 = 일부만 판 상태(포지션 아직 열림) → 다 닫힐 때까지 기다림
     closed = [p for p in j.get("data", []) if int(p.get("cTime", 0)) >= START_MS and p.get("type") != "1"]
-    if not closed: return 0
+    # (닫힌 게 없어도 보유 중 포지션은 기록)
     trades = sb_get("trades", []) or []
     have = {t.get("okxKey"): t for t in trades if isinstance(t, dict) and t.get("okxKey")}
     rate = sb_get("usdtRate", 1400) or 1400
@@ -173,8 +173,36 @@ def sync_journal():
         if old:   # 일부만 팔았을 때 들어간 기록 → 최종 청산 값으로 고침 (내가 적은 메모·체크는 그대로)
             for f in ("entry", "amount", "amountUsdt", "usdtRateUsed", "realizedUsdt", "realizedKrw", "okxV", "why", "sells", "dir", "date"):
                 old[f] = rec[f]
+            old.pop("okxOpen", None)
             upd += 1
         else:
+            new.append(rec)
+    # 아직 열려 있는 포지션도 '투자 중'으로 기록 (매도 없음) → 닫히면 위에서 같은 키로 청산 값이 채워짐
+    try:
+        opens = okx("GET", "/api/v5/account/positions").get("data", [])
+    except Exception:
+        opens = []
+    for p in opens:
+        try:
+            if not float(p.get("pos") or 0) or int(p.get("cTime", 0)) < START_MS: continue
+            k = p.get("posId", "") + ":" + p.get("cTime", "")
+            sz = abs(float(p["pos"])); avg = float(p.get("avgPx") or 0); lev = float(p.get("lever") or 1)
+            margin = sz * avg * ct_val(p["instId"]) / lev
+        except Exception:
+            continue
+        ct = int(p["cTime"]); old = have.get(k) or next((x for x in new if x.get("okxKey") == k), None)
+        d = "short" if float(p["pos"]) < 0 or p.get("posSide") == "short" else "long"
+        rec = {"entry": round(avg, 4), "amount": round(margin * rate), "amountUsdt": round(margin, 2), "usdtRateUsed": rate,
+               "dir": d, "why": f"[OKX 자동 기록] 보유 중 · {datetime.fromtimestamp(ct/1000, KST):%H:%M} 진입 · {sz:g}개 · {p.get('lever')}배",
+               "sells": [], "realizedKrw": None, "realizedUsdt": None, "okxV": 2, "okxOpen": True}
+        if old:
+            if not old.get("okxOpen"): continue          # 이미 청산 기록이 들어간 것
+            if old.get("amountUsdt") == rec["amountUsdt"] and old.get("entry") == rec["entry"]: continue
+            old.update(rec); upd += 1
+        else:
+            rec.update({"id": ct, "okxKey": k, "date": datetime.fromtimestamp(ct / 1000, KST).strftime("%Y-%m-%d"),
+                        "ticker": p["instId"].split("-")[0], "ruleKept": "", "mistake": "", "checklist": {}, "checklistNotes": {},
+                        "photos": [], "broker": "", "market": None, "feeRatePct": 0})
             new.append(rec)
     if not new and not upd: return 0
     merged = new[::-1] + trades     # 최신이 위로
