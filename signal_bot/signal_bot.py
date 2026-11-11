@@ -681,15 +681,18 @@ STAR_DUMP = {("BTC", "3"), ("BTC", "5"), ("ETH", "5")}
 
 
 def is_star(label, tf, info, grade):
-    """진짜 중요한 신호: 검증이 확실한 것만"""
-    if info.get("xg"):
-        if info.get("bigdown"):
-            return False
-        # RSI 30 + 거래량 별은 1·3·5분봉만 (15분 이상은 검증상 손해)
-        return (grade is not None and grade >= 2) or (bool(info.get("rsistar")) and tf in ("1", "3", "5"))
+    """★ = 무조건 들어갈 자리 (사용자 기준 2026-11-11)
+    - SOXL 투매 (반등 여유 있을 때 · 3·5분)
+    - SOXL 4시간·일봉 매수 신호 (동시 돌파 · 추세 돌파 · 터틀)
+    - [오늘의 매매] 메시지는 따로 ★를 붙여 보냄
+    그 외(BTC·ETH, 숏, 과열, 짧은 봉 돌파 등)는 참고용이라 ★ 없음"""
+    if label != "SOXL":
+        return False
     if info.get("kind") == "투매":
-        return bool(info.get("far")) and (label, tf) in STAR_DUMP
-    return (label, tf, info["name"]) in STAR_BASE
+        return bool(info.get("far"))
+    if info.get("kind", "매수") != "매수":
+        return False
+    return tf in ("240", "D")
 
 
 def message(label, tf, bar, info, grade):
@@ -789,7 +792,7 @@ def main():
         slp = (1 - sl / e) * 100
         mx = SEED_KRW * RISK_PCT / 100 / ((slp + 0.1) / 100) / LEV
         kind = "50·100 동시 돌파 ★" if info.get("rsistar") else "50·100 동시 돌파 + 200선 오르는 중 [후보]"
-        tg_send(f"[오늘의 매매 {td['n']}/{TODAY_MAX}] SOXL {tf}분 · {kind}\n"
+        tg_send(f"★ [오늘의 매매 {td['n']}/{TODAY_MAX}] SOXL {tf}분 · {kind}\n"
                 f"진입 {e:.2f} · 손절 {sl:.2f} (-{slp:.2f}%) · 익절 {tp:.2f} (+{(tp / e - 1) * 100:.2f}%)\n"
                 f"원금 {RISK_PCT:g}% 한도 · {LEV:g}배면 증거금 최대 {mx:,.0f}원 (원금 {SEED_KRW:,.0f}원 기준)\n"
                 f"들어가면서 손절·익절 같이 걸고 손대지 않기")
