@@ -116,6 +116,17 @@ def sb_get(key, default):
     j = sb("GET", "app_data?select=value&key=eq." + urllib.parse.quote(key, safe=""))
     return j[0]["value"] if j else default
 forced = set()   # 잠금 봇이 강제 청산한 포지션 (posId:cTime)
+CTVAL = {}
+def ct_val(inst):
+    """계약 1개 = 기초자산 몇 개 (SOXL 무기한 = 1)"""
+    if inst not in CTVAL:
+        try:
+            d = (okx("GET", f"/api/v5/public/instruments?instType=SWAP&instId={inst}").get("data") or [{}])[0]
+            CTVAL[inst] = float(d.get("ctVal") or 1) * float(d.get("ctMult") or 1)
+        except Exception:
+            return 1.0
+    return CTVAL[inst]
+
 def sync_journal():
     """OKX에서 닫힌 포지션(켠 시각 이후)을 매매일지 '1억 챌린지' 기록으로 추가 · 이미 넣은 건 건너뜀"""
     if not SB_URL: sb_init()
@@ -133,10 +144,11 @@ def sync_journal():
     for p in sorted(closed, key=lambda p: int(p["cTime"])):
         k = p.get("posId", "") + ":" + p.get("cTime", "")
         old = have.get(k)
-        if old and (old.get("sells") or [{}])[0].get("id") == int(p.get("uTime") or 0): continue
+        if old and old.get("okxV") == 2 and (old.get("sells") or [{}])[0].get("id") == int(p.get("uTime") or 0): continue
         try:
-            pnl = float(p.get("pnl") or 0); ratio = float(p.get("pnlRatio") or 0)
-            margin = abs(pnl / ratio) if ratio else None
+            # 투자금액 = 한 번에 가장 많이 들고 있던 수량 × 평단 ÷ 레버리지 (실제로 묶였던 증거금)
+            # (pnlRatio 로 거꾸로 구하면 같은 포지션 안에서 사고판 것까지 다 더해져 부풀려짐)
+            margin = float(p.get("openMaxPos") or 0) * float(p.get("openAvgPx") or 0) * ct_val(p["instId"]) / float(p.get("lever") or 1) or None
             real = float(p.get("realizedPnl") or 0); fee = float(p.get("fee") or 0); fund = float(p.get("fundingFee") or 0)
         except Exception:
             margin, real, fee, fund = None, 0.0, 0.0, 0.0
@@ -150,15 +162,16 @@ def sync_journal():
             "id": ct, "okxKey": k,
             "date": datetime.fromtimestamp(ct / 1000, KST).strftime("%Y-%m-%d"),
             "ticker": tick, "dir": "short" if p.get("direction") == "short" else "long",
-            "entry": p.get("openAvgPx"), "amount": round(margin * rate) if margin else None,
+            "entry": round(float(p.get("openAvgPx") or 0), 4), "amount": round(margin * rate) if margin else None,
             "amountUsdt": round(margin, 2) if margin else None, "usdtRateUsed": rate,
+            "realizedUsdt": round(real, 4), "realizedKrw": round(real * rate), "okxV": 2,
             "why": why, "ruleKept": "", "mistake": "", "checklist": {}, "checklistNotes": {}, "photos": [],
             "broker": "", "market": None, "feeRatePct": 0,
             "sells": [{"id": ut, "price": p.get("closeAvgPx"), "pct": 100, "leverage": lev,
                        "date": datetime.fromtimestamp(ut / 1000, KST).strftime("%Y-%m-%d")}],
         }
         if old:   # 일부만 팔았을 때 들어간 기록 → 최종 청산 값으로 고침 (내가 적은 메모·체크는 그대로)
-            for f in ("entry", "amount", "amountUsdt", "usdtRateUsed", "why", "sells", "dir", "date"):
+            for f in ("entry", "amount", "amountUsdt", "usdtRateUsed", "realizedUsdt", "realizedKrw", "okxV", "why", "sells", "dir", "date"):
                 old[f] = rec[f]
             upd += 1
         else:
