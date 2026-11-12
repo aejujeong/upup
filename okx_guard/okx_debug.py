@@ -46,3 +46,12 @@ try:
         print(f"::notice::진입{i} {t(ct)} {stt} {p.get('direction') or p.get('posSide')} pos={p.get('pos')} type={p.get('type')} 진입 {p.get('openAvgPx') or p.get('avgPx')} 청산 {p.get('closeAvgPx')} 최대 {p.get('openMaxPos')} 갱신 {t(p.get('uTime') or 0)} key={p.get('posId')}:{p.get('cTime')}")
 except Exception as e:
     print("::notice::today_entries 실패", e)
+j = G.okx("GET", "/api/v5/trade/orders-history?instType=SWAP&limit=20")
+for o in j.get("data", [])[:14]:
+    print(f"::notice::주문 걸림 {t(o.get('cTime') or 0)} 체결 {t(o.get('fillTime') or o.get('uTime') or 0)} {o.get('side')} {o.get('ordType')} 가격 {o.get('px')} 체결가 {o.get('avgPx')} 수량 {o.get('sz')} reduceOnly={o.get('reduceOnly')} 상태 {o.get('state')} 출처 {o.get('source')} algo={o.get('algoId')} cat={o.get('category')} tag={o.get('tag')}")
+j = G.okx("GET", "/api/v5/trade/orders-pending?instType=SWAP")
+print(f"::notice::지금 미체결 주문 {len(j.get('data', []))}개 " + " / ".join(f"{o.get('side')} {o.get('ordType')} {o.get('px')} x{o.get('sz')} reduceOnly={o.get('reduceOnly')} 걸림 {t(o.get('cTime'))}" for o in j.get('data', [])))
+for typ in ("conditional", "oco", "trigger"):
+    j = G.okx("GET", f"/api/v5/trade/orders-algo-pending?ordType={typ}")
+    for o in j.get("data", []):
+        print(f"::notice::대기 알고 {typ} {o.get('side')} sz={o.get('sz')} tp={o.get('tpTriggerPx')} sl={o.get('slTriggerPx')} trig={o.get('triggerPx')} reduceOnly={o.get('reduceOnly')} 걸림 {t(o.get('cTime'))}")
