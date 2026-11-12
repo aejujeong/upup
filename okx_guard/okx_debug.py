@@ -26,6 +26,8 @@ print(f"::notice::합계 OKX 자동 기록 {len(ok)}건 실현손익 {sum(float(
 cap = G.sb_get("capital", None); rate = G.sb_get("usdtRate", None); wd = G.sb_get("withdrawals", None)
 print(f"::notice::자본금 {cap} 환율 {rate} 출금 {wd}")
 import urllib.request as _u
+try: G.SB.CHAT_ID = G.SB.CHAT_ID or json.load(open("state.json")).get("chat_id", "")
+except Exception as e: print("::notice::state.json 없음", e)
 print(f"::notice::텔레그램 토큰 {'있음' if G.SB.TOKEN else '없음'} · 대화방 {'있음' if G.SB.CHAT_ID else '없음'}")
 try:
     with _u.urlopen(f"https://api.telegram.org/bot{G.SB.TOKEN}/getUpdates?limit=100", timeout=20) as x:
