@@ -36,4 +36,5 @@ try:
     print(f"::notice::getUpdates ok={r.get('ok')} {len(ups)}개 · 최근: " + " / ".join(f"{t((u.get('message') or {}).get('date',0)*1000)} {((u.get('message') or {}).get('text') or '')[:10]} 같은방={str(((u.get('message') or {}).get('chat') or {}).get('id'))==str(G.SB.CHAT_ID)}" for u in ups[-5:]))
 except Exception as e:
     print(f"::notice::getUpdates 실패 {str(e)[:150]}")
+print("::notice::글자 " + " / ".join(repr([hex(ord(ch)) for ch in ((u.get('message') or {}).get('text') or '')]) for u in ups[-2:]))
 print(f"::notice::풀기 상태 {G.unlock_state()}")

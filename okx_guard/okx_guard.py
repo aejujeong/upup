@@ -57,10 +57,10 @@ def unlock_state():
     for u in sorted(ups, key=lambda u: u.get("update_id", 0)):
         m = u.get("message") or {}
         if str((m.get("chat") or {}).get("id")) != str(SB.CHAT_ID) or m.get("date", 0) < d0: continue
-        t = (m.get("text") or "").strip()
-        if t in ("풀기", "/풀기", "/unlock"):
+        t = unicodedata.normalize("NFC", (m.get("text") or "")).strip()   # 아이폰 키보드는 자모가 풀린 채로 올 때가 있음
+        if "풀기" in t or "풀어" in t or t == "/unlock":
             if len(reqs) < UNLOCK_MAX: reqs.append(m["date"])
-        elif t in ("취소", "/취소"):
+        elif "취소" in t:
             # 아직 안 풀린(5분 안 된) 요청만 취소
             reqs = [r for r in reqs if not (r < m["date"] < r + UNLOCK_WAIT)]
     return [(r, r + UNLOCK_WAIT) for r in reqs]
