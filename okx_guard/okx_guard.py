@@ -7,7 +7,7 @@
 - 물타기 알림: 손실 중인 포지션을 늘리면 텔레그램 알림만 (줄이지 않음) · 수익 중 불타기는 자유, 횟수에도 안 셈
 - 닫힌 포지션은 1분마다 매매일지(1억 챌린지, Supabase trades)에 자동 기록 (okxKey 로 중복 방지)
 - 키: OKX_API_KEY / OKX_SECRET / OKX_PASSPHRASE (GitHub Secrets) · 출금 권한 없는 키 사용"""
-import base64, hashlib, hmac, json, os, sys, time, urllib.request, urllib.error, urllib.parse
+import base64, hashlib, hmac, json, os, sys, time, unicodedata, urllib.request, urllib.error, urllib.parse
 from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "signal_bot"))
 import signal_bot as SB   # 텔레그램 보내기 재사용
