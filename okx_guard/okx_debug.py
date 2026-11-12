@@ -40,7 +40,7 @@ print("::notice::글자 " + " / ".join(repr([hex(ord(ch)) for ch in ((u.get('mes
 print(f"::notice::풀기 상태 {[(t(a*1000), t(b*1000)) for a, b in G.unlock_state()]}")
 print("::notice::원본 " + " / ".join(f"{u.get('update_id')} {sorted(u.keys())} {(u.get('message') or {}).get('date')}" for u in ups))
 try:
-    ents = G.today_entries()
+    ents, _op = G.today_entries()
     print(f"::notice::오늘 진입 {len(ents)}개 (기준 {t(G.day_start_ms())})")
     for i, (ct, stt, p) in enumerate(ents, 1):
         print(f"::notice::진입{i} {t(ct)} {stt} {p.get('direction') or p.get('posSide')} pos={p.get('pos')} type={p.get('type')} 진입 {p.get('openAvgPx') or p.get('avgPx')} 청산 {p.get('closeAvgPx')} 최대 {p.get('openMaxPos')} 갱신 {t(p.get('uTime') or 0)} key={p.get('posId')}:{p.get('cTime')}")
