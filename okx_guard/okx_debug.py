@@ -25,3 +25,13 @@ ok = [x for x in tr if x.get("okxKey")]
 print(f"::notice::합계 OKX 자동 기록 {len(ok)}건 실현손익 {sum(float(x.get('realizedUsdt') or 0) for x in ok):+.2f} USDT · 첫 기록 {min((x.get('date') for x in ok), default='-')} · 수기 기록 {len(tr)-len(ok)}건")
 cap = G.sb_get("capital", None); rate = G.sb_get("usdtRate", None); wd = G.sb_get("withdrawals", None)
 print(f"::notice::자본금 {cap} 환율 {rate} 출금 {wd}")
+import urllib.request as _u
+print(f"::notice::텔레그램 토큰 {'있음' if G.SB.TOKEN else '없음'} · 대화방 {'있음' if G.SB.CHAT_ID else '없음'}")
+try:
+    with _u.urlopen(f"https://api.telegram.org/bot{G.SB.TOKEN}/getUpdates?limit=100", timeout=20) as x:
+        r = json.loads(x.read())
+    ups = r.get("result", [])
+    print(f"::notice::getUpdates ok={r.get('ok')} {len(ups)}개 · 최근: " + " / ".join(f"{t((u.get('message') or {}).get('date',0)*1000)} {((u.get('message') or {}).get('text') or '')[:10]} 같은방={str(((u.get('message') or {}).get('chat') or {}).get('id'))==str(G.SB.CHAT_ID)}" for u in ups[-5:]))
+except Exception as e:
+    print(f"::notice::getUpdates 실패 {str(e)[:150]}")
+print(f"::notice::풀기 상태 {G.unlock_state()}")
