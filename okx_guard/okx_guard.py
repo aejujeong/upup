@@ -37,6 +37,7 @@ def okx(method, path, body=None):
 
 START_MS = int(datetime(2026, 11, 9, 23, 10, tzinfo=KST).timestamp() * 1000)   # 처음 켠 시각 (그 전 매매는 안 셈)
 COUNT_FROM_MS = int(datetime(2026, 11, 12, 12, 25, tzinfo=KST).timestamp() * 1000)   # 11/12 하루만 이 시각부터 다시 셈 (사용자 요청)
+EXTRA_TODAY = {"2026-11-12": 5}   # 그날만 한도 추가 (사용자 요청)
 UNLOCK_WAIT = 5 * 60
 UNLOCK_MAX = 5
 
@@ -267,7 +268,7 @@ def main():
             reqs = unlock_state()
             now = time.time()
             opened_n = sum(1 for _, at in reqs if now >= at)
-            limit = MAX_TRADES + opened_n
+            limit = MAX_TRADES + opened_n + EXTRA_TODAY.get(d, 0)
             for i, (rq, at) in enumerate(reqs, 1):
                 k = (d, rq)
                 if not unote.get(k):
