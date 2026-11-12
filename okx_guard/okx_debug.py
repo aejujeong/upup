@@ -37,4 +37,5 @@ try:
 except Exception as e:
     print(f"::notice::getUpdates 실패 {str(e)[:150]}")
 print("::notice::글자 " + " / ".join(repr([hex(ord(ch)) for ch in ((u.get('message') or {}).get('text') or '')]) for u in ups[-2:]))
-print(f"::notice::풀기 상태 {G.unlock_state()}")
+print(f"::notice::풀기 상태 {[(t(a*1000), t(b*1000)) for a, b in G.unlock_state()]}")
+print("::notice::원본 " + " / ".join(f"{u.get('update_id')} {sorted(u.keys())} {(u.get('message') or {}).get('date')}" for u in ups))
