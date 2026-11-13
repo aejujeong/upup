@@ -38,6 +38,7 @@ def okx(method, path, body=None):
 START_MS = int(datetime(2026, 11, 9, 23, 10, tzinfo=KST).timestamp() * 1000)   # 처음 켠 시각 (그 전 매매는 안 셈)
 COUNT_FROM_MS = int(datetime(2026, 11, 13, 8, 30, tzinfo=KST).timestamp() * 1000)   # 11/13 하루만 이 시각부터 다시 셈 (사용자 요청)
 EXTRA_TODAY = {"2026-11-13": 15}   # 그날만 한도 추가 (사용자 요청)
+COOL_MIN = int(os.environ.get("COOL_MIN", "30"))   # 손절(손실로 닫힘) 뒤 쉬는 시간(분) · 그동안 새로 연 포지션은 바로 청산
 UNLOCK_WAIT = 5 * 60
 UNLOCK_MAX = 5
 
@@ -250,6 +251,7 @@ def main():
     fails = 0
     last_sync = 0
     prev = None       # 지난 확인 때 열린 포지션 {posId: (크기, 미실현손익, 포지션)}
+    cool_said = set() # 쉬는 시간 안내 보낸 손절 (닫힌 시각 ms)
     while time.time() < end:
         try:
             ents, opened = today_entries()
@@ -286,6 +288,32 @@ def main():
                     else:
                         tg(f"[매매 잠금] 오늘 {k}번째 진입 · 남은 횟수 {limit - k}번")
                 warned[d] = n
+            # ── 손절 뒤 쉬는 시간: 손실로 닫힌 포지션(봇이 강제로 닫은 건 빼고) 뒤 COOL_MIN 분 안에 연 포지션은 바로 청산
+            lossT, lossP = 0, 0.0
+            for ct, stt, p in ents:
+                if stt != "닫힘" or p.get("type") == "1": continue
+                key = p.get("posId", "") + ":" + p.get("cTime", "")
+                ut = int(p.get("uTime") or 0)
+                if key in forced or ut - int(p.get("cTime") or 0) < 45000: continue   # 봇이 바로 닫은 건 손절 아님
+                pnl = float(p.get("realizedPnl") or p.get("pnl") or 0)
+                if pnl < 0 and ut > lossT:
+                    lossT, lossP = ut, pnl
+            if lossT:
+                until = lossT + COOL_MIN * 60000
+                if lossT not in cool_said and time.time() * 1000 < until:
+                    cool_said.add(lossT)
+                    tg(f"[쉬는 시간] 손절했어요 ({lossP:+.2f} USDT). {datetime.fromtimestamp(until / 1000, KST):%H:%M}까지 {COOL_MIN}분은 새로 들어가면 바로 청산돼요. 잠깐 쉬어가요")
+                for ct, stt, p in ents:
+                    if stt != "열림" or not (lossT < ct < until): continue
+                    key = p.get("posId") + ":" + p.get("cTime")
+                    if key in closed_keys: continue
+                    r = close(p)
+                    ok = r.get("code") == "0"
+                    if ok:
+                        closed_keys.add(key); forced.add(key)
+                    tg(f"[쉬는 시간] 손절 뒤 {COOL_MIN}분 안에 들어간 포지션 ({p['instId']}) → "
+                       + ("바로 청산했어요" if ok else f"청산 실패 ({r.get('code')} {r.get('msg')}) · 직접 정리해주세요")
+                       + f" · {datetime.fromtimestamp(until / 1000, KST):%H:%M} 이후에 다시 들어가세요")
             # 한도 넘은 포지션: 오늘 연 순서로 MAX_TRADES 번째 이후 + 아직 열려 있는 것 → 청산
             for idx, (ct, stt, p) in enumerate(ents):
                 if idx < limit or stt != "열림": continue
