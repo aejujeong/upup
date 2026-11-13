@@ -5,7 +5,7 @@ GitHub Actions에서 5분마다 실행된다 (.github/workflows/signal_bot.yml).
 
 데이터
 - BTC·ETH: 바이낸스 현물 공개 API (data-api.binance.vision · 미국 서버에서도 열림)
-- SOXL: 야후 파이낸스 (장전·장후 포함 · 3분은 1분을 묶고, 4시간은 1시간을 묶음)
+- SOXL: 1·3·5·15·30분은 OKX SOXL 무기한 선물 봉 (24시간 · 야간장 포함), 1시간·4시간·일봉은 야후 파이낸스 (장전·장후 포함 · 4시간은 1시간을 묶음)
 
 중복 방지: 마지막으로 확인한 봉 시각을 state.json에 저장 (Actions 캐시로 이어 씀)
 첫 실행 때는 지난 신호를 보내지 않고 "연결됐어요" 메시지만 보낸다.
@@ -205,6 +205,22 @@ def yahoo(sym, iv, rng, prepost=True):
     return out
 
 
+def okx_candles(inst, bar, n=600):
+    """OKX 봉 (24시간 · 야간장 포함). 최신부터 100개씩 거슬러 받아 오래된 순으로 돌려줌"""
+    out, after = [], ""
+    for _ in range((n + 99) // 100):
+        j = get_json(f"https://www.okx.com/api/v5/market/history-candles?instId={inst}&bar={bar}&limit=100" + (f"&after={after}" if after else ""))
+        rows = (j or {}).get("data") or []
+        if not rows:
+            break
+        for x in rows:
+            out.append(dict(t=int(x[0]) // 1000, o=float(x[1]), h=float(x[2]), l=float(x[3]), c=float(x[4]), v=float(x[5])))
+        after = rows[-1][0]
+        time.sleep(0.12)
+    out.sort(key=lambda x: x["t"])
+    return out
+
+
 def resample(b, sec, key=None):
     """봉 묶기. key(t) 가 같은 봉끼리 합친다."""
     key = key or (lambda t: t - t % sec)
@@ -259,7 +275,19 @@ def load(sym):
     d1 = yahoo(sym, "1d", "10y", prepost=False)
     m3 = resample(m1, 180)
     h4 = resample(h1, 0, key_us4h)
-    for tf, b, sec in (("3", m3, 180), ("5", m5, 300), ("15", m15, 900), ("30", m30, 1800),
+    m1y = m1
+    # 짧은 봉(1·3·5·15·30분)은 OKX SOXL 무기한 선물 봉으로: 24시간이라 야간장에도 신호가 나옴 · 실제 매매 가격 그대로
+    # (OKX 가 안 되면 야후로)
+    ok1 = okx_candles("SOXL-USDT-SWAP", "1m", 600)
+    if len(ok1) > 450:
+        m1 = ok1
+        m3 = okx_candles("SOXL-USDT-SWAP", "3m", 600) or resample(ok1, 180)
+        m5 = okx_candles("SOXL-USDT-SWAP", "5m", 600) or m5
+        m15 = okx_candles("SOXL-USDT-SWAP", "15m", 600) or m15
+        m30 = okx_candles("SOXL-USDT-SWAP", "30m", 600) or m30
+    else:
+        m1 = m1y
+    for tf, b, sec in (("1", m1, 60), ("3", m3, 180), ("5", m5, 300), ("15", m15, 900), ("30", m30, 1800),
                        ("60", h1, 3600), ("240", h4, 4 * 3600), ("D", d1, 86400)):
         data[tf] = [x for x in b if x["t"] + sec <= now] if tf != "D" else b[:-1]
     return data
@@ -274,7 +302,7 @@ def x_grade(mkt, tf, btc):
 
 
 GTXT = {3: "강함", 2: "보통", 1: "약함", 0: "검증 안 됨"}
-TFNAME = {"3": "3분", "5": "5분", "15": "15분", "30": "30분", "60": "1시간", "240": "4시간", "D": "일봉"}
+TFNAME = {"1": "1분", "3": "3분", "5": "5분", "15": "15분", "30": "30분", "60": "1시간", "240": "4시간", "D": "일봉"}
 
 
 # ───────────────────────── 신호 계산 ─────────────────────────
