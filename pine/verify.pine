@@ -576,6 +576,14 @@ xG   = xGrade(mkt, xTf, isBTC)
 x200near = s200 > close and (s200 / close - 1) * 100 < 3
 plotshape(xOk and (showOld or barstate.islast), "50·100 동시 돌파", shape.diamond, location.belowbar, color.new(#2e7d32, 0), size = size.small, text = "◆", textcolor = color.new(#000000, 100))
 x200up = s200 > s200[40]
+// ▽ 50·100 동시 이탈 (숏) — 봇 문자와 같은 규칙: SOXL 15분 · BTC·ETH 4시간 · BTC·ETH 30분(200선 가파르게 내려갈 때만)
+shSym = isBTC ? "BTC" : str.contains(syminfo.ticker, "ETH") ? "ETH" : str.contains(syminfo.ticker, "SOXL") ? "SOXL" : ""
+shSlope = xAt > 0 ? (s200 - s200[40]) / xAt : 0.0
+shRule = (shSym == "SOXL" and tf == "15") or ((shSym == "BTC" or shSym == "ETH") and tf == "240") or ((shSym == "BTC" or shSym == "ETH") and tf == "30" and shSlope < -1)
+shOk = shRule and xA50 > xAv and close < math.min(xA50, xAv) and close[1] >= math.min(xA50[1], xAv[1])
+shSl = close + 2 * xAt
+shTp = close - 4 * xAt
+plotshape(shOk and (showOld or barstate.islast), "50·100 동시 이탈 (숏)", shape.triangledown, location.abovebar, color.new(#e53935, 0), size = size.small, text = "숏", textcolor = color.new(#e57373, 0))
 var int  xlT = na      // 마지막 동시 돌파 시각 · ★ 여부 · 200선 오르는 중 여부 (표에 '지금 신호' 표시용)
 var bool xlStar = false
 var bool xlUp = false
@@ -720,9 +728,11 @@ czEP   = input.price(0, "내 진입가 (차트에서 선을 끌어서 옮기기)
 czSP   = input.price(0, "내 손절가", confirm = true, group = GC)
 czTP   = input.price(0, "내 익절가", confirm = true, group = GC)
 czHold = input.int(100, "내 선 승률: 최대 보유 봉수 (안 닿으면 그 봉 종가로 정리)", minval = 5, maxval = 500, group = GC)
-czMineOk = czMine and czEP > 0 and czSP > 0 and czTP > 0 and czSP < czEP and czTP > czEP
-czDS = czMineOk ? (1 - czSP / czEP) * 100 : na
-czDT = czMineOk ? (czTP / czEP - 1) * 100 : na
+czMineL = czMine and czEP > 0 and czSP > 0 and czTP > 0 and czSP < czEP and czTP > czEP     // 롱 순서
+czMineS = czMine and czEP > 0 and czSP > 0 and czTP > 0 and czSP > czEP and czTP < czEP     // 숏 순서
+czMineOk = czMineL or czMineS
+czDS = czMineL ? (1 - czSP / czEP) * 100 : na
+czDT = czMineL ? (czTP / czEP - 1) * 100 : na
 czPos  = input.string("오른쪽 위", "계산기 표 위치", options = ["오른쪽 위", "오른쪽 가운데", "왼쪽 위", "왼쪽 아래"], group = GC)
 czStOn = input.bool(true, "신호 성적 표 보기", group = GC)
 czStPos = input.string("왼쪽 아래", "신호 성적 표 위치", options = ["오른쪽 위", "오른쪽 가운데", "오른쪽 아래", "왼쪽 위", "왼쪽 아래"], group = GC)
@@ -827,6 +837,7 @@ var float  czS   = na
 var float  czT   = na
 var int    czB   = na
 var int    czK   = na
+var int    czDir = 1     // 1 = 롱, -1 = 숏
 // 내 선 기준 과거 승률: 이 차트의 같은 종류 신호마다 종가에 들어가 내 손절·익절 폭(%)을 걸었다면
 var czVE = array.new_float()
 var czVK = array.new_int()
@@ -834,7 +845,7 @@ var czVB = array.new_int()
 var czSN = array.new_int(2, 0)
 var czSW = array.new_int(2, 0)
 var czSP_ = array.new_float(2, 0.0)
-if czMineOk and czVE.size() > 0
+if czMineL and czVE.size() > 0
     for k = czVE.size() - 1 to 0
         float ve = czVE.get(k)
         int kk = czVK.get(k)
@@ -854,11 +865,11 @@ if czMineOk and czVE.size() > 0
             czVK.remove(k)
             czVB.remove(k)
 bool czSig0 = buy and not na(sl) and not krOv and mkt != "한국"
-if czMineOk and czSig0
+if czMineL and czSig0
     czVE.push(close)
     czVK.push(0)
     czVB.push(bar_index)
-if czMineOk and xOk
+if czMineL and xOk
     czVE.push(close)
     czVK.push(1)
     czVB.push(bar_index)
@@ -870,6 +881,7 @@ if buy and not na(sl) and not krOv and mkt != "한국"
     czS   := sl
     czT   := tp
     czB   := bar_index
+    czDir := 1
 if xOk
     czK   := 1
     czKey := czSym + "|" + czTf + "|매수|50·100 동시 돌파" + (xBot ? " (RSI 30 터치 + 거래량 3배)" : "") + (czBigDn ? " · 큰 흐름 하락 중" : "")
@@ -878,6 +890,16 @@ if xOk
     czS   := xSl
     czT   := xTp
     czB   := bar_index
+    czDir := 1
+if shOk
+    czK   := 2
+    czKey := shSym + "|" + tf + "|매도|50·100 동시 이탈"
+    czNm  := "50·100 동시 이탈 (숏)"
+    czE   := close
+    czS   := shSl
+    czT   := shTp
+    czB   := bar_index
+    czDir := -1
 
 czW(float v) => str.tostring(math.round(v), "#,##0") + "원"
 czU(float v) => str.tostring(v / czFx, "#,##0.0") + " USDT"
@@ -1050,6 +1072,47 @@ if buy
     bvD2.push(false)
     if na(bsFirst)
         bsFirst := time
+// ───────── ▽ 50·100 동시 이탈 숏 성적 (신호 손절 +2ATR · 익절 -4ATR · 같은 봉에 둘 다면 손절) ─────────
+var svE = array.new_float()
+var svS = array.new_float()
+var svT = array.new_float()
+var svB = array.new_int()
+var int ssN = 0
+var int ssW = 0
+var float ssP = 0.0
+var float ssWin = 0.0
+var float ssLos = 0.0
+var int slT = na
+if svE.size() > 0
+    for k = svE.size() - 1 to 0
+        float ve = svE.get(k)
+        float r = na
+        if high >= svS.get(k)
+            r := (1 - svS.get(k) / ve) * 100
+        else if low <= svT.get(k)
+            r := (1 - svT.get(k) / ve) * 100
+        else if bar_index - svB.get(k) >= czHold
+            r := (1 - close / ve) * 100
+        if not na(r)
+            r -= 2 * czFee
+            ssN += 1
+            ssW += r > 0 ? 1 : 0
+            ssP += r
+            if r > 0
+                ssWin += r
+            else
+                ssLos += r
+            svE.remove(k)
+            svS.remove(k)
+            svT.remove(k)
+            svB.remove(k)
+if shOk and barstate.isconfirmed
+    slT := time
+if shOk
+    svE.push(close)
+    svS.push(shSl)
+    svT.push(shTp)
+    svB.push(bar_index)
 xStatTxt(int k) =>
     int n = xsN.get(k)
     n == 0 ? "아직 결과 없음" : str.tostring(n) + "번 · 승률 " + str.tostring(xsW.get(k) * 100.0 / n, "#") + "% · 한 번 평균 " + (xsP.get(k) >= 0 ? "+" : "") + str.tostring(xsP.get(k) / n, "#.##") + "% · 합계 " + (xsP.get(k) >= 0 ? "+" : "") + str.tostring(xsP.get(k), "#.#") + "%"
@@ -1068,33 +1131,35 @@ if barstate.islast and czOn
         czC(0, 0, "진입 계산기 · 이 차트에 아직 신호가 없어요", color.new(#617B55, 10))
         table.merge_cells(czTb, 0, 0, 1, 0)
     else
-        float e = czMineOk ? czEP : czE
-        float sv = czMineOk ? czSP : czS
-        float tv = czMineOk ? czTP : czT
-        float slP = (1 - sv / e) * 100
-        bool badOrd = sv >= e or (not na(tv) and tv <= e)
-        float tpP = na(tv) ? na : (tv / e - 1) * 100
+        bool useMine = czMineOk and (czMineL ? czDir == 1 : czDir == -1)   // 내 선 순서가 신호 방향과 맞을 때만
+        int  dr = czDir
+        float e = useMine ? czEP : czE
+        float sv = useMine ? czSP : czS
+        float tv = useMine ? czTP : czT
+        float slP = dr == 1 ? (1 - sv / e) * 100 : (sv / e - 1) * 100
+        bool badOrd = dr == 1 ? (sv >= e or (not na(tv) and tv <= e)) : (sv <= e or (not na(tv) and tv >= e))
+        float tpP = na(tv) ? na : dr == 1 ? (tv / e - 1) * 100 : (1 - tv / e) * 100
         float notl = czMarg * czLev
         float lossA = notl * (slP + 2 * czFee) / 100
         float winA = na(tpP) ? na : notl * (tpP - 2 * czFee) / 100
         float maxM = (czSeed * czRisk / 100) / ((slP + 2 * czFee) / 100) / czLev
-        float liq = e * (1 - 1 / czLev)
+        float liq = dr == 1 ? e * (1 - 1 / czLev) : e * (1 + 1 / czLev)
         int ago_ = bar_index - czB
         cE = color.new(#FFD54F, 0)
         cS = color.new(#FF5252, 0)
         cT = color.new(#00E676, 0)
         czLE := line.new(czB, e, bar_index + 5, e, extend = extend.right, color = cE, width = 2)
         czLS := line.new(czB, sv, bar_index + 5, sv, extend = extend.right, color = cS, width = 2)
-        czBE := label.new(bar_index + 3, e, "진입 " + str.tostring(e, format.mintick) + (czMineOk ? " (내 선)" : ""), style = label.style_label_left, color = cE, textcolor = color.black, size = size.small)
+        czBE := label.new(bar_index + 3, e, (dr == -1 ? "숏 진입 " : "진입 ") + str.tostring(e, format.mintick) + (useMine ? " (내 선)" : ""), style = label.style_label_left, color = cE, textcolor = color.black, size = size.small)
         czBS := label.new(bar_index + 3, sv, "손절 -" + str.tostring(slP, "#.##") + "% · -" + czW(lossA), style = label.style_label_left, color = cS, textcolor = color.black, size = size.small)
         if not na(tv)
             czLT := line.new(czB, tv, bar_index + 5, tv, extend = extend.right, color = cT, width = 2)
             czBT := label.new(bar_index + 3, tv, "익절 +" + str.tostring(tpP, "#.##") + "% · +" + czW(winA), style = label.style_label_left, color = cT, textcolor = color.black, size = size.small)
-        czC(0, 0, "진입 계산기 · 마지막 신호: " + czNm + " · " + (ago_ == 0 ? "지금 봉" : str.tostring(ago_) + "봉 전") + " · 진입 " + str.tostring(e, format.mintick) + " · 증거금 " + czW(czMarg) + " (≈" + czU(czMarg) + ") × " + str.tostring(czLev) + "배", color.new(#617B55, 10))
+        czC(0, 0, "진입 계산기 · 마지막 신호: " + (czDir == -1 ? "[숏] " : "") + czNm + " · " + (ago_ == 0 ? "지금 봉" : str.tostring(ago_) + "봉 전") + " · 진입 " + str.tostring(e, format.mintick) + " · 증거금 " + czW(czMarg) + " (≈" + czU(czMarg) + ") × " + str.tostring(czLev) + "배", color.new(#617B55, 10))
         table.merge_cells(czTb, 0, 0, 1, 0)
-        czC(0, 1, "손절 " + str.tostring(sv, format.mintick) + (czMineOk ? " (내 선)" : ""))
-        czC(1, 1, badOrd ? "순서가 틀려요 · 손절 < 진입 < 익절 로 넣어주세요" : "-" + str.tostring(slP, "#.##") + "% → -" + czW(lossA) + " (시드의 " + str.tostring(lossA / czSeed * 100, "#.#") + "%)", lossA / czSeed * 100 > czRisk ? RD : na, "수수료 포함")
-        czC(0, 2, na(tv) ? "익절" : "익절 " + str.tostring(tv, format.mintick) + (czMineOk ? " (내 선)" : ""))
+        czC(0, 1, "손절 " + str.tostring(sv, format.mintick) + (useMine ? " (내 선)" : ""))
+        czC(1, 1, badOrd ? (dr == 1 ? "순서가 틀려요 · 손절 < 진입 < 익절 로 넣어주세요" : "순서가 틀려요 · 숏은 익절 < 진입 < 손절") : "-" + str.tostring(slP, "#.##") + "% → -" + czW(lossA) + " (시드의 " + str.tostring(lossA / czSeed * 100, "#.#") + "%)", lossA / czSeed * 100 > czRisk ? RD : na, "수수료 포함")
+        czC(0, 2, na(tv) ? "익절" : "익절 " + str.tostring(tv, format.mintick) + (useMine ? " (내 선)" : ""))
         czC(1, 2, na(tv) ? "정해진 익절 없음 · " + tpTxt : "+" + str.tostring(tpP, "#.##") + "% → +" + czW(winA) + " · 손익비 1 : " + str.tostring(winA / lossA, "#.##"))
         bool isDump = str.contains(czKey, "|투매|")
         [gn, gw, ga, gaw, gal, gp] = czGet(czKey)
@@ -1104,7 +1169,7 @@ if barstate.islast and czOn
         else if na(gn)
             czC(1, 3, "이 시장·봉 조합은 봇 검증이 없어요 (" + czKey + ")", RD)
         else
-            bool slDiff = czMineOk
+            bool slDiff = useMine
             czC(1, 3, str.tostring(gn, "#") + "회 · 승률 " + str.tostring(gw, "#") + "% · 한 번 평균 " + czSg(ga) + str.tostring(ga, "#.##") + "% · 이길 때 " + czSg(gaw) + str.tostring(gaw, "#.##") + "% · 질 때 " + str.tostring(gal, "#.##") + "% · " + gp + (gn < 30 ? " · 횟수 적음" : ""), na, "봇 문자와 같은 조건 · 신호 손절·익절 그대로 들어갔을 때 · 레버리지 안 곱한 값" + (slDiff ? " · 내 선을 쓰는 중이라 이건 신호 손절·익절 기준이에요 (내 선 기준은 아래 줄)" : ""))
             czC(0, 4, "내 돈으로")
             czC(1, 4, "한 번 평균 " + czSg(ga) + czW(notl * ga / 100) + " · " + (ga > 0 ? "검증상 평균 플러스" : "검증상 평균 손해 · 들어가지 않는 게 나아요") + (slDiff ? " · 신호 손절·익절 기준" : ""), ga > 0 ? GN : RD)
@@ -1113,7 +1178,9 @@ if barstate.islast and czOn
         czC(0, 7, "내 선 기준 승률")
         if not czMine
             czC(1, 7, "'내가 옮긴 선 쓰기'를 켜면 내 손절·익절 폭으로 이 차트 과거 같은 신호를 다시 계산해요")
-        else if not czMineOk
+        else if czDir == -1 or czK == 2
+            czC(1, 7, "숏은 내 선 기준 승률을 따로 안 셈 · 성적 표의 ▽ 동시 이탈 줄 참고")
+        else if not czMineL
             czC(1, 7, "내 선 순서가 틀려요 · 손절 < 진입 < 익절 로 선을 옮겨주세요 (지금은 신호 값으로 계산)", RD)
         else
             int mn = czSN.get(czK)
@@ -1121,24 +1188,24 @@ if barstate.islast and czOn
             float ma = mn > 0 ? czSP_.get(czK) / mn : na
             czC(1, 7, mn == 0 ? "이 차트에 결과가 난 같은 신호가 아직 없어요 (차트를 더 과거로 넘기면 늘어요)" : "이 차트 과거 같은 신호 " + str.tostring(mn) + "번 · 손절 -" + str.tostring(czDS, "#.##") + "% / 익절 +" + str.tostring(czDT, "#.##") + "% 로 걸었다면 승률 " + str.tostring(mw, "#") + "% · 한 번 평균 " + czSg(ma) + str.tostring(ma, "#.##") + "% (" + czSg(ma) + czW(notl * ma / 100) + ")" + (mn < 30 ? " · 횟수 적음" : ""), mn == 0 ? na : ma > 0 ? GN : RD, "신호 봉 종가에 진입 · 한 봉에 둘 다 닿으면 손절로 침 · " + str.tostring(czHold) + "봉 안에 안 닿으면 그 봉 종가로 정리 · 수수료 포함 · 차트에 불러온 봉만큼만 셈")
         czC(0, 6, "청산가 (대략)")
-        czC(1, 6, str.tostring(liq, format.mintick) + (liq >= sv ? " · 손절보다 먼저 청산돼요! 레버리지를 낮추세요" : " · 손절이 먼저 닿아요"), liq >= sv ? RD : na)
+        czC(1, 6, str.tostring(liq, format.mintick) + ((dr == 1 ? liq >= sv : liq <= sv) ? " · 손절보다 먼저 청산돼요! 레버리지를 낮추세요" : " · 손절이 먼저 닿아요"), (dr == 1 ? liq >= sv : liq <= sv) ? RD : na)
 
 // ───────── 신호 성적 표 (작게 · 칸 나눔) ─────────
 czSP2 = czStPos == "오른쪽 위" ? position.top_right : czStPos == "오른쪽 가운데" ? position.middle_right : czStPos == "오른쪽 아래" ? position.bottom_right : czStPos == "왼쪽 위" ? position.top_left : position.bottom_left
-var table stTb = table.new(czSP2, 5, 11, bgcolor = color.new(#111111, 10), border_color = color.new(#617B55, 0), border_width = 1, frame_color = color.new(#617B55, 0), frame_width = 1)
+var table stTb = table.new(czSP2, 5, 12, bgcolor = color.new(#111111, 10), border_color = color.new(#617B55, 0), border_width = 1, frame_color = color.new(#617B55, 0), frame_width = 1)
 stC(int c, int r, string t, color bg = na, string tip = "", color tc = color.white) =>
     table.cell(stTb, c, r, t, text_color = tc, text_size = size.small, text_halign = c == 0 ? text.align_left : text.align_right, bgcolor = na(bg) ? color.new(#111111, 10) : bg, tooltip = tip)
 stRow(int r, string nm, int n, int w, float p, float mul, bool hl = false) =>
-    stC(0, r, (hl ? "▶ " : "") + nm, na, hl ? "마지막 동시 돌파 신호가 이 줄에 들어가요" : "", hl ? color.new(#FFD54F, 0) : color.white)
+    stC(0, r, (hl ? "▶ " : "") + nm, na, hl ? "마지막 신호가 이 줄에 들어가요" : "", hl ? color.new(#FFD54F, 0) : color.white)
     stC(1, r, n == 0 ? "-" : str.tostring(n))
     stC(2, r, n == 0 ? "-" : str.tostring(w * 100.0 / n, "#") + "%")
     stC(3, r, n == 0 ? "-" : (p >= 0 ? "+" : "") + str.tostring(p / n * mul, "#.##") + "%", n == 0 ? na : p > 0 ? color.new(#2e7d32, 35) : color.new(#8B2E2E, 30))
     stC(4, r, n == 0 ? "-" : (p >= 0 ? "+" : "") + str.tostring(p * mul, "#.#") + "%")
 if barstate.islast and czStOn
-    table.clear(stTb, 0, 0, 4, 10)
+    table.clear(stTb, 0, 0, 4, 11)
     xlHas = not na(xlT)
-    xlOn = xlHas and (na(blT) or xlT >= blT)
-    stC(0, 0, "이 차트 신호 성적 (◆ 동시 돌파 · ▲ 기본 근거)" + (na(xsFirst) ? "" : " · " + str.format_time(xsFirst, "yy/MM/dd", "Asia/Seoul") + "~"), color.new(#617B55, 10), "트레이딩뷰 봉 그대로(야간 포함) · 신호 봉 종가 진입 · 한 봉에 둘 다 닿으면 손절 · " + str.tostring(czHold) + "봉 안에 안 닿으면 종가 정리 · 수수료 포함")
+    xlOn = xlHas and (na(blT) or xlT >= blT) and (na(slT) or xlT >= slT)
+    stC(0, 0, "이 차트 신호 성적 (◆ 동시 돌파 · ▲ 기본 근거 · ▽ 숏)" + (na(xsFirst) ? "" : " · " + str.format_time(xsFirst, "yy/MM/dd", "Asia/Seoul") + "~"), color.new(#617B55, 10), "트레이딩뷰 봉 그대로(야간 포함) · 신호 봉 종가 진입 · 한 봉에 둘 다 닿으면 손절 · " + str.tostring(czHold) + "봉 안에 안 닿으면 종가 정리 · 수수료 포함")
     table.merge_cells(stTb, 0, 0, 4, 0)
     stC(0, 1, "구분", color.new(#617B55, 40))
     stC(1, 1, "횟수", color.new(#617B55, 40))
@@ -1151,13 +1218,20 @@ if barstate.islast and czStOn
     stRow(7, "★ · 200선 오르는 중", xsN.get(2), xsW.get(2), xsP.get(2), 1, xlOn and xlStar and xlUp)
     stRow(4, "★ 원금 " + str.tostring(czRisk) + "% 손절", ysN.get(0), ysW.get(0), ysP.get(0), 1, xlOn and xlStar)
     stRow(5, "전체 원금 " + str.tostring(czRisk) + "% 손절", ysN.get(1), ysW.get(1), ysP.get(1), 1, xlOn)
-    blLast = not na(blT) and (na(xlT) or blT > xlT)   // 둘 중 더 최근 신호에 ▶
+    int tX = na(xlT) ? 0 : xlT
+    int tB = na(blT) ? 0 : blT
+    int tS = na(slT) ? 0 : slT
+    blLast = tB > 0 and tB > tX and tB >= tS
+    shLast = tS > 0 and tS > tX and tS > tB
     blName = name == "" or name == "근거 없음" ? "기본 근거" : str.split(name, " (").get(0)
     stRow(8, "▲ " + blName + " (신호 손절·익절)", bsN.get(0), bsW.get(0), bsP.get(0), 1, blLast)
     stRow(9, "▲ 원금 " + str.tostring(czRisk) + "% 손절", bsN.get(1), bsW.get(1), bsP.get(1), 1, blLast)
-    xlHas2 = xlHas and not blLast
-    stC(0, 10, blLast ? "마지막 신호 " + str.format_time(blT, "MM/dd HH:mm", "Asia/Seoul") + " · ▲ " + blName + " → ▶ 줄 참고" : xlHas2 ? "마지막 신호 " + str.format_time(xlT, "MM/dd HH:mm", "Asia/Seoul") + " · ◆ " + (xlStar ? "★" : "★ 아님") + " · 200선 " + (xlUp ? "오르는 중" : "내려가는 중") + " → ▶ 줄 참고" : "아직 신호 없음", color.new(#3a3a1a, 0), "", color.new(#FFD54F, 0))
-    table.merge_cells(stTb, 0, 10, 4, 10)
+    int sw = ssW
+    int sl_ = ssN - ssW
+    string rr = sw > 0 and sl_ > 0 and ssLos < 0 ? " · 손익비 1:" + str.tostring((ssWin / sw) / (-ssLos / sl_), "#.#") : ""
+    stRow(10, (shRule ? "▽ 동시 이탈 숏" : "▽ 동시 이탈 숏 (이 봉은 규칙 없음)") + rr, ssN, ssW, ssP, 1, shLast)
+    stC(0, 11, blLast ? "마지막 신호 " + str.format_time(blT, "MM/dd HH:mm", "Asia/Seoul") + " · ▲ " + blName + " → ▶ 줄 참고" : shLast ? "마지막 신호 " + str.format_time(slT, "MM/dd HH:mm", "Asia/Seoul") + " · ▽ 동시 이탈 숏 → ▶ 줄 참고" : tX > 0 ? "마지막 신호 " + str.format_time(xlT, "MM/dd HH:mm", "Asia/Seoul") + " · ◆ " + (xlStar ? "★" : "★ 아님") + " · 200선 " + (xlUp ? "오르는 중" : "내려가는 중") + " → ▶ 줄 참고" : "아직 신호 없음", color.new(#3a3a1a, 0), "", color.new(#FFD54F, 0))
+    table.merge_cells(stTb, 0, 11, 4, 11)
 
 // ───────── 오늘의 매매 (하루 한 번) ─────────
 // 이 차트에서 하루(한국 날짜) 첫 번째로 뜬 '쓸 만한 롱 신호' 하나만 표시·알림: ★(1·3·5분) 또는 5분봉 동시 돌파 + 200선 오르는 중 [후보]
