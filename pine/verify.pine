@@ -575,6 +575,19 @@ xTp  = close + 2 * (close - xSl)
 xG   = xGrade(mkt, xTf, isBTC)
 x200near = s200 > close and (s200 / close - 1) * 100 < 3
 plotshape(xOk and (showOld or barstate.islast), "50·100 동시 돌파", shape.diamond, location.belowbar, color.new(#2e7d32, 0), size = size.small, text = "◆", textcolor = color.new(#000000, 100))
+x200up = s200 > s200[40]
+var int  xlT = na      // 마지막 동시 돌파 시각 · ★ 여부 · 200선 오르는 중 여부 (표에 '지금 신호' 표시용)
+var bool xlStar = false
+var bool xlUp = false
+if xOk and barstate.isconfirmed
+    xlT := time
+    xlStar := xBot
+    xlUp := x200up
+var label xlLb = na
+if xOk
+    if not showOld
+        label.delete(xlLb)
+    xlLb := label.new(bar_index, low, x200up ? "200↑" : "200↓", yloc = yloc.belowbar, style = label.style_none, textcolor = x200up ? color.new(#81c784, 0) : color.new(#e57373, 0), size = size.tiny, tooltip = "50·100 동시 돌파 · " + (xBot ? "★ (RSI 30 + 거래량)" : "★ 아님") + " · 200선 " + (x200up ? "오르는 중 (40봉 전보다 위)" : "내려가는 중"))
 plotshape(xOk and xBot and (showOld or barstate.islast), "동시 돌파 ★ (RSI 30 + 거래량)", shape.labelup, location.belowbar, color.new(#ab47bc, 100), text = "★", textcolor = color.new(#ffd54f, 0), size = size.tiny)
 if xOk
     line.new(bar_index, xSl, bar_index + 20, xSl, color = color.new(#c62828, 0), style = line.style_dotted)
@@ -1053,17 +1066,18 @@ if barstate.islast and czOn
 
 // ───────── 신호 성적 표 (작게 · 칸 나눔) ─────────
 czSP2 = czStPos == "오른쪽 위" ? position.top_right : czStPos == "오른쪽 가운데" ? position.middle_right : czStPos == "오른쪽 아래" ? position.bottom_right : czStPos == "왼쪽 위" ? position.top_left : position.bottom_left
-var table stTb = table.new(czSP2, 5, 8, bgcolor = color.new(#111111, 10), border_color = color.new(#617B55, 0), border_width = 1, frame_color = color.new(#617B55, 0), frame_width = 1)
-stC(int c, int r, string t, color bg = na, string tip = "") =>
-    table.cell(stTb, c, r, t, text_color = color.white, text_size = size.small, text_halign = c == 0 ? text.align_left : text.align_right, bgcolor = na(bg) ? color.new(#111111, 10) : bg, tooltip = tip)
-stRow(int r, string nm, int n, int w, float p, float mul) =>
-    stC(0, r, nm)
+var table stTb = table.new(czSP2, 5, 9, bgcolor = color.new(#111111, 10), border_color = color.new(#617B55, 0), border_width = 1, frame_color = color.new(#617B55, 0), frame_width = 1)
+stC(int c, int r, string t, color bg = na, string tip = "", color tc = color.white) =>
+    table.cell(stTb, c, r, t, text_color = tc, text_size = size.small, text_halign = c == 0 ? text.align_left : text.align_right, bgcolor = na(bg) ? color.new(#111111, 10) : bg, tooltip = tip)
+stRow(int r, string nm, int n, int w, float p, float mul, bool hl = false) =>
+    stC(0, r, (hl ? "▶ " : "") + nm, na, hl ? "마지막 동시 돌파 신호가 이 줄에 들어가요" : "", hl ? color.new(#FFD54F, 0) : color.white)
     stC(1, r, n == 0 ? "-" : str.tostring(n))
     stC(2, r, n == 0 ? "-" : str.tostring(w * 100.0 / n, "#") + "%")
     stC(3, r, n == 0 ? "-" : (p >= 0 ? "+" : "") + str.tostring(p / n * mul, "#.##") + "%", n == 0 ? na : p > 0 ? color.new(#2e7d32, 35) : color.new(#8B2E2E, 30))
     stC(4, r, n == 0 ? "-" : (p >= 0 ? "+" : "") + str.tostring(p * mul, "#.#") + "%")
 if barstate.islast and czStOn
-    table.clear(stTb, 0, 0, 4, 7)
+    table.clear(stTb, 0, 0, 4, 8)
+    xlHas = not na(xlT)
     stC(0, 0, "이 차트 50·100 동시 돌파 성적" + (na(xsFirst) ? "" : " · " + str.format_time(xsFirst, "yy/MM/dd", "Asia/Seoul") + "~"), color.new(#617B55, 10), "트레이딩뷰 봉 그대로(야간 포함) · 신호 봉 종가 진입 · 한 봉에 둘 다 닿으면 손절 · " + str.tostring(czHold) + "봉 안에 안 닿으면 종가 정리 · 수수료 포함")
     table.merge_cells(stTb, 0, 0, 4, 0)
     stC(0, 1, "구분", color.new(#617B55, 40))
@@ -1071,12 +1085,14 @@ if barstate.islast and czStOn
     stC(2, 1, "승률", color.new(#617B55, 40))
     stC(3, 1, "한 번 평균", color.new(#617B55, 40))
     stC(4, 1, "합계", color.new(#617B55, 40))
-    stRow(2, "★ (신호 손절)", xsN.get(0), xsW.get(0), xsP.get(0), 1)
-    stRow(3, "전체 (신호 손절)", xsN.get(1), xsW.get(1), xsP.get(1), 1)
-    stRow(6, "전체 · 200선 오르는 중 [후보]", xsN.get(3), xsW.get(3), xsP.get(3), 1)
-    stRow(7, "★ · 200선 오르는 중", xsN.get(2), xsW.get(2), xsP.get(2), 1)
-    stRow(4, "★ 원금 " + str.tostring(czRisk) + "% 손절", ysN.get(0), ysW.get(0), ysP.get(0), 1)
-    stRow(5, "전체 원금 " + str.tostring(czRisk) + "% 손절", ysN.get(1), ysW.get(1), ysP.get(1), 1)
+    stRow(2, "★ (신호 손절)", xsN.get(0), xsW.get(0), xsP.get(0), 1, xlHas and xlStar)
+    stRow(3, "전체 (신호 손절)", xsN.get(1), xsW.get(1), xsP.get(1), 1, xlHas)
+    stRow(6, "전체 · 200선 오르는 중 [후보]", xsN.get(3), xsW.get(3), xsP.get(3), 1, xlHas and xlUp)
+    stRow(7, "★ · 200선 오르는 중", xsN.get(2), xsW.get(2), xsP.get(2), 1, xlHas and xlStar and xlUp)
+    stRow(4, "★ 원금 " + str.tostring(czRisk) + "% 손절", ysN.get(0), ysW.get(0), ysP.get(0), 1, xlHas and xlStar)
+    stRow(5, "전체 원금 " + str.tostring(czRisk) + "% 손절", ysN.get(1), ysW.get(1), ysP.get(1), 1, xlHas)
+    stC(0, 8, xlHas ? "마지막 신호 " + str.format_time(xlT, "MM/dd HH:mm", "Asia/Seoul") + " · " + (xlStar ? "★" : "★ 아님") + " · 200선 " + (xlUp ? "오르는 중" : "내려가는 중") + " → ▶ 줄 참고" : "아직 동시 돌파 신호 없음", color.new(#3a3a1a, 0), "", color.new(#FFD54F, 0))
+    table.merge_cells(stTb, 0, 8, 4, 8)
 
 // ───────── 오늘의 매매 (하루 한 번) ─────────
 // 이 차트에서 하루(한국 날짜) 첫 번째로 뜬 '쓸 만한 롱 신호' 하나만 표시·알림: ★(1·3·5분) 또는 5분봉 동시 돌파 + 200선 오르는 중 [후보]
