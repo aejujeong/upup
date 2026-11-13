@@ -1152,7 +1152,7 @@ if barstate.islast and czStOn
     stRow(4, "★ 원금 " + str.tostring(czRisk) + "% 손절", ysN.get(0), ysW.get(0), ysP.get(0), 1, xlOn and xlStar)
     stRow(5, "전체 원금 " + str.tostring(czRisk) + "% 손절", ysN.get(1), ysW.get(1), ysP.get(1), 1, xlOn)
     blLast = not na(blT) and (na(xlT) or blT > xlT)   // 둘 중 더 최근 신호에 ▶
-    blName = name == "" ? "기본 근거" : str.split(name, " (").get(0)
+    blName = name == "" or name == "근거 없음" ? "기본 근거" : str.split(name, " (").get(0)
     stRow(8, "▲ " + blName + " (신호 손절·익절)", bsN.get(0), bsW.get(0), bsP.get(0), 1, blLast)
     stRow(9, "▲ 원금 " + str.tostring(czRisk) + "% 손절", bsN.get(1), bsW.get(1), bsP.get(1), 1, blLast)
     xlHas2 = xlHas and not blLast
