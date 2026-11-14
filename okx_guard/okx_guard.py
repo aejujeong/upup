@@ -39,6 +39,7 @@ START_MS = int(datetime(2026, 11, 9, 23, 10, tzinfo=KST).timestamp() * 1000)   #
 COUNT_FROM_MS = int(datetime(2026, 11, 13, 8, 30, tzinfo=KST).timestamp() * 1000)   # 11/13 하루만 이 시각부터 다시 셈 (사용자 요청)
 EXTRA_TODAY = {"2026-11-14": 10}   # 그날만 한도 추가 (사용자 요청)
 COOL_MIN = int(os.environ.get("COOL_MIN", "5"))   # 5분 (사용자 요청 11/13 · 0 = 끔)   # 손절(손실로 닫힘) 뒤 쉬는 시간(분) · 그동안 새로 연 포지션은 바로 청산
+DUMP_GRACE = int(os.environ.get("DUMP_GRACE_SEC", "180"))   # SOXL 투매 신호 봉 마감 뒤 이 시간(초) 안에 연 포지션은 횟수·쉬는 시간에서 뺌 (알림 오고 약 2분)
 UNLOCK_WAIT = 5 * 60
 UNLOCK_MAX = 5
 
@@ -93,6 +94,19 @@ def today_entries():
             out[k] = (int(p["cTime"]), "열림", p)
         opened.append(p)
     return sorted(out.values(), key=lambda x: x[0]), opened
+
+DUMP_T = set()      # SOXL 투매 신호 봉 마감 시각 (ms)
+def refresh_dumps():
+    """신호 봇과 같은 계산(OKX SOXL 3·5분봉)으로 투매 신호 시각을 모아둠"""
+    for bar, sec, md in (("3m", 180, 1.5), ("5m", 300, 3.0)):
+        b = SB.okx_candles("SOXL-USDT-SWAP", bar, 500)
+        if len(b) < 420: continue
+        I = SB.ind(b)
+        for i, _ in SB.sig_dump(b, I, md):
+            DUMP_T.add((b[i]["t"] + sec) * 1000)
+
+def dump_exempt(ct):
+    return any(-60000 <= ct - dt <= DUMP_GRACE * 1000 for dt in DUMP_T)
 
 def close(p):
     body = {"instId": p["instId"], "mgnMode": p["mgnMode"], "autoCxl": True}
@@ -252,10 +266,27 @@ def main():
     last_sync = 0
     prev = None       # 지난 확인 때 열린 포지션 {posId: (크기, 미실현손익, 포지션)}
     cool_said = set() # 쉬는 시간 안내 보낸 손절 (닫힌 시각 ms)
+    last_dump = 0
+    dump_said = set()
     while time.time() < end:
         try:
             ents, opened = today_entries()
             fails = 0
+            # ── 투매 신호 직후 진입은 횟수·쉬는 시간에서 빼기
+            if time.time() - last_dump >= 45:
+                last_dump = time.time()
+                try:
+                    refresh_dumps()
+                except Exception as e:
+                    print("투매 신호 확인 실패", e, flush=True)
+            free = [e for e in ents if dump_exempt(e[0])]
+            for ct, stt, p in free:
+                kk = p.get("posId", "") + ":" + p.get("cTime", "")
+                if kk not in dump_said:
+                    dump_said.add(kk)
+                    if time.time() * 1000 - ct < 10 * 60000:   # 봇 재시작 때 지난 것까지 다시 알리지 않게
+                        tg(f"[매매 잠금] {datetime.fromtimestamp(ct / 1000, KST):%H:%M} 진입은 투매 신호 직후라 횟수에 안 셌어요")
+            ents = [e for e in ents if not dump_exempt(e[0])]
             # ── 물타기 금지: 지난번에 손실 중이던 포지션이 커졌으면 커진 만큼 줄이기
             cur = {p["posId"]: (abs(float(p["pos"])), float(p.get("upl") or 0), p) for p in opened}
             if prev is not None:
