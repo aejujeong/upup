@@ -48,7 +48,9 @@ def tg_send(text):
     if not TOKEN or not CHAT_ID:
         print("[텔레그램 미설정]\n" + text)
         return
-    data = json.dumps({"chat_id": CHAT_ID, "text": text, "disable_web_page_preview": True}).encode()
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    quiet = 0 <= _dt.now(_tz(_td(hours=9))).hour < 6   # 밤 12시~6시(한국)는 소리·진동 없이 조용히 (사용자 요청)
+    data = json.dumps({"chat_id": CHAT_ID, "text": text, "disable_web_page_preview": True, "disable_notification": quiet}).encode()
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{TOKEN}/sendMessage", data=data,
         headers={"Content-Type": "application/json"})
