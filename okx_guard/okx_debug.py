@@ -43,7 +43,7 @@ try:
     ents, _op = G.today_entries()
     print(f"::notice::오늘 진입 {len(ents)}개 (기준 {t(G.day_start_ms())})")
     for i, (ct, stt, p) in enumerate(ents, 1):
-        print(f"::notice::진입{i} {t(ct)} {stt} {p.get('direction') or p.get('posSide')} pos={p.get('pos')} type={p.get('type')} 진입 {p.get('openAvgPx') or p.get('avgPx')} 청산 {p.get('closeAvgPx')} 최대 {p.get('openMaxPos')} 갱신 {t(p.get('uTime') or 0)} key={p.get('posId')}:{p.get('cTime')}")
+        print(f"::notice::진입{i} {t(ct)} {stt} 실현 {p.get('realizedPnl')} pnl {p.get('pnl')} fee {p.get('fee')} inst {p.get('instId')} {p.get('direction') or p.get('posSide')} pos={p.get('pos')} type={p.get('type')} 진입 {p.get('openAvgPx') or p.get('avgPx')} 청산 {p.get('closeAvgPx')} 최대 {p.get('openMaxPos')} 갱신 {t(p.get('uTime') or 0)} key={p.get('posId')}:{p.get('cTime')}")
 except Exception as e:
     print("::notice::today_entries 실패", e)
 j = G.okx("GET", "/api/v5/trade/orders-history?instType=SWAP&limit=20")
