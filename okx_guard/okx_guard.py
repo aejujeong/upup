@@ -38,7 +38,8 @@ def okx(method, path, body=None):
 START_MS = int(datetime(2026, 11, 9, 23, 10, tzinfo=KST).timestamp() * 1000)   # 처음 켠 시각 (그 전 매매는 안 셈)
 COUNT_FROM_MS = int(datetime(2026, 11, 16, 9, 21, tzinfo=KST).timestamp() * 1000)   # 11/16 하루만 이 시각부터 다시 셈 (사용자 요청)
 EXTRA_TODAY = {"2026-11-16": 10}   # 그날만 한도 추가 (사용자 요청)
-COOL_MIN = int(os.environ.get("COOL_MIN", "0"))   # 끔 (11/16 사용자 요청 · 잘못 걸리는 문제)
+COOL_MIN = int(os.environ.get("COOL_MIN", "5"))   # 손절 뒤 쉬는 시간(분)
+COOL_KRW = int(os.environ.get("COOL_KRW", "5000"))   # 이 금액(원) 이상 잃고 닫혔을 때만 쉬는 시간 (수수료 포함 실제 손익 · 11/16 사용자 기준)
 DUMP_GRACE = int(os.environ.get("DUMP_GRACE_SEC", "180"))   # SOXL·BTC·ETH 투매 신호 봉 마감 뒤 이 시간(초) 안에 연 포지션은 횟수·쉬는 시간에서 뺌 (알림 오고 약 2분)
 UNLOCK_WAIT = 5 * 60
 UNLOCK_MAX = 5
@@ -133,7 +134,36 @@ def sb(method, path, body=None, extra=None):
 def sb_get(key, default):
     j = sb("GET", "app_data?select=value&key=eq." + urllib.parse.quote(key, safe=""))
     return j[0]["value"] if j else default
-forced = set()   # 잠금 봇이 강제 청산한 포지션 (posId:cTime)
+def sb_set(key, value):
+    sb("POST", "app_data", {"key": key, "value": value, "updated_at": datetime.now(timezone.utc).isoformat()},
+       {"Prefer": "resolution=merge-duplicates"})
+forced = set()   # 잠금 봇이 강제 청산한 포지션 (posId:cTime) — 매매 횟수에서 뺌
+def forced_load():
+    try:
+        if not SB_URL: sb_init()
+        v = sb_get("guardForced", None)
+        if v is None:
+            # 처음 한 번: 오늘 15초 안에 닫힌 건 봇이 강제 청산한 걸로 보고 채워둠 (그 전엔 기록을 안 남겨서)
+            v = []
+            try:
+                for ct, stt, p in today_entries()[0]:
+                    if stt == "닫힘" and int(p.get("uTime") or 0) - int(p.get("cTime") or 0) <= 15000:
+                        v.append(p.get("posId", "") + ":" + p.get("cTime", ""))
+                sb_set("guardForced", v)
+            except Exception as e:
+                print("강제 청산 목록 처음 채우기 실패", e, flush=True)
+        forced.update(x for x in v if isinstance(x, str))
+        print(f"::notice::강제 청산 기억 {len(forced)}개", flush=True)
+    except Exception as e:
+        print("강제 청산 목록 불러오기 실패", e, flush=True)
+def forced_add(k):
+    forced.add(k)
+    try:
+        if not SB_URL: sb_init()
+        sb_set("guardForced", sorted(forced)[-300:])
+    except Exception as e:
+        print("강제 청산 목록 저장 실패", e, flush=True)
+KRW_RATE = 1460.0
 CTVAL = {}
 def ct_val(inst):
     """계약 1개 = 기초자산 몇 개 (SOXL 무기한 = 1)"""
@@ -260,6 +290,12 @@ def main():
     print("::notice::OKX 키 확인 완료 · 대화방 " + ("있음" if SB.CHAT_ID else "없음"))
     if os.environ.get("HELLO") == "1":
         tg(f"[매매 잠금] 켜졌어요. 하루(한국 날짜) {MAX_TRADES}번 넘게 새 포지션을 열면 바로 청산해요. 오늘은 지금(23:10) 이후부터 셉니다. 그날만 더 하고 싶으면 '풀기'를 보내면 5분 뒤 1번 더 열려요 (하루 최대 5번).")
+    global KRW_RATE
+    forced_load()
+    try:
+        KRW_RATE = float(sb_get("usdtRate", 1460) or 1460)
+    except Exception:
+        pass
     end = time.time() + RUN_MIN * 60
     warned = {}       # 날짜 → 이미 보낸 안내 개수
     unote = {}        # (날짜, 요청 시각) → 1 요청 안내 보냄 / 2 풀림 안내 보냄
@@ -288,7 +324,8 @@ def main():
                     dump_said.add(kk)
                     if time.time() * 1000 - ct < 10 * 60000:   # 봇 재시작 때 지난 것까지 다시 알리지 않게
                         tg(f"[매매 잠금] {datetime.fromtimestamp(ct / 1000, KST):%H:%M} 진입은 투매 신호 직후라 횟수에 안 셌어요")
-            ents = [e for e in ents if not dump_exempt(e[0], e[2].get("instId"))]
+            ents = [e for e in ents if not dump_exempt(e[0], e[2].get("instId"))
+                    and (e[2].get("posId", "") + ":" + e[2].get("cTime", "")) not in forced]   # 봇이 강제 청산한 건 횟수에서 뺌
             # ── 물타기 금지: 지난번에 손실 중이던 포지션이 커졌으면 커진 만큼 줄이기
             cur = {p["posId"]: (abs(float(p["pos"])), float(p.get("upl") or 0), p) for p in opened}
             if prev is not None:
@@ -328,14 +365,14 @@ def main():
                 key = p.get("posId", "") + ":" + p.get("cTime", "")
                 ut = int(p.get("uTime") or 0)
                 if key in forced or ut - int(p.get("cTime") or 0) < 45000: continue   # 봇이 바로 닫은 건 손절 아님
-                pnl = float(p.get("pnl") or 0)   # 가격 손익만 (수수료 때문에 본전 청산이 손절로 잡히지 않게)
-                if pnl < 0 and ut > lossT:
+                pnl = float(p.get("realizedPnl") or p.get("pnl") or 0)   # 수수료 포함 실제 손익
+                if pnl * KRW_RATE <= -COOL_KRW and ut > lossT:
                     lossT, lossP = ut, pnl
             if lossT and COOL_MIN > 0:
                 until = lossT + COOL_MIN * 60000
                 if lossT not in cool_said and time.time() * 1000 < until:
                     cool_said.add(lossT)
-                    tg(f"[쉬는 시간] 손절했어요 ({lossP:+.2f} USDT). {datetime.fromtimestamp(until / 1000, KST):%H:%M}까지 {COOL_MIN}분은 새로 들어가면 바로 청산돼요. 잠깐 쉬어가요")
+                    tg(f"[쉬는 시간] {COOL_KRW:,}원 넘게 손절했어요 ({lossP:+.2f} USDT · 약 {lossP * KRW_RATE:+,.0f}원). {datetime.fromtimestamp(until / 1000, KST):%H:%M}까지 {COOL_MIN}분은 새로 들어가면 바로 청산돼요. 잠깐 쉬어가요")
                 for ct, stt, p in ents:
                     if stt != "열림" or not (lossT < ct < until): continue
                     key = p.get("posId") + ":" + p.get("cTime")
@@ -343,7 +380,7 @@ def main():
                     r = close(p)
                     ok = r.get("code") == "0"
                     if ok:
-                        closed_keys.add(key); forced.add(key)
+                        closed_keys.add(key); forced_add(key)
                     tg(f"[쉬는 시간] 손절 뒤 {COOL_MIN}분 안에 들어간 포지션 ({p['instId']}) → "
                        + ("바로 청산했어요" if ok else f"청산 실패 ({r.get('code')} {r.get('msg')}) · 직접 정리해주세요")
                        + f" · {datetime.fromtimestamp(until / 1000, KST):%H:%M} 이후에 다시 들어가세요")
@@ -355,7 +392,7 @@ def main():
                 r = close(p)
                 ok = r.get("code") == "0"
                 if ok:
-                    closed_keys.add(key); forced.add(key)
+                    closed_keys.add(key); forced_add(key)
                 upl = p.get("upl") or "?"
                 tg(f"[매매 잠금] 오늘 {idx + 1}번째 진입 ({p['instId']} {p.get('posSide','')}) → 한도 {limit}번 초과라 "
                    + ("바로 청산했어요" if ok else f"청산 실패 ({r.get('code')} {r.get('msg')}) · 직접 정리해주세요")
