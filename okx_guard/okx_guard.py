@@ -36,7 +36,7 @@ def okx(method, path, body=None):
     return j
 
 START_MS = int(datetime(2026, 11, 9, 23, 10, tzinfo=KST).timestamp() * 1000)   # 처음 켠 시각 (그 전 매매는 안 셈)
-COUNT_FROM_MS = int(datetime(2026, 11, 16, 9, 21, tzinfo=KST).timestamp() * 1000)   # 11/16 하루만 이 시각부터 다시 셈 (사용자 요청)
+COUNT_FROM_MS = int(datetime(2026, 11, 17, 7, 51, tzinfo=KST).timestamp() * 1000)   # 11/17 하루만 이 시각부터 다시 셈 (사용자 요청)
 EXTRA_TODAY = {"2026-11-17": 5}   # 그날만 한도 추가 (사용자 요청)
 COOL_MIN = int(os.environ.get("COOL_MIN", "2"))   # 손절 뒤 쉬는 시간(분) · 11/17 사용자 요청 2분
 COOL_KRW = int(os.environ.get("COOL_KRW", "5000"))   # 이 금액(원) 이상 잃고 닫혔을 때만 쉬는 시간 (수수료 포함 실제 손익 · 11/16 사용자 기준)
