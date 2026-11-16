@@ -36,7 +36,7 @@ def okx(method, path, body=None):
     return j
 
 START_MS = int(datetime(2026, 11, 9, 23, 10, tzinfo=KST).timestamp() * 1000)   # 처음 켠 시각 (그 전 매매는 안 셈)
-COUNT_FROM_MS = int(datetime(2026, 11, 13, 8, 30, tzinfo=KST).timestamp() * 1000)   # 11/13 하루만 이 시각부터 다시 셈 (사용자 요청)
+COUNT_FROM_MS = int(datetime(2026, 11, 16, 9, 21, tzinfo=KST).timestamp() * 1000)   # 11/16 하루만 이 시각부터 다시 셈 (사용자 요청)
 EXTRA_TODAY = {"2026-11-14": 10}   # 그날만 한도 추가 (사용자 요청)
 COOL_MIN = int(os.environ.get("COOL_MIN", "5"))   # 5분 (사용자 요청 11/13 · 0 = 끔)   # 손절(손실로 닫힘) 뒤 쉬는 시간(분) · 그동안 새로 연 포지션은 바로 청산
 DUMP_GRACE = int(os.environ.get("DUMP_GRACE_SEC", "180"))   # SOXL·BTC·ETH 투매 신호 봉 마감 뒤 이 시간(초) 안에 연 포지션은 횟수·쉬는 시간에서 뺌 (알림 오고 약 2분)
@@ -328,7 +328,7 @@ def main():
                 key = p.get("posId", "") + ":" + p.get("cTime", "")
                 ut = int(p.get("uTime") or 0)
                 if key in forced or ut - int(p.get("cTime") or 0) < 45000: continue   # 봇이 바로 닫은 건 손절 아님
-                pnl = float(p.get("realizedPnl") or p.get("pnl") or 0)
+                pnl = float(p.get("pnl") or 0)   # 가격 손익만 (수수료 때문에 본전 청산이 손절로 잡히지 않게)
                 if pnl < 0 and ut > lossT:
                     lossT, lossP = ut, pnl
             if lossT and COOL_MIN > 0:
