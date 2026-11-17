@@ -1,0 +1,17 @@
+1분 · 마지막 봉 11/17 16:28 · 봉 599개
+  ◆ 13:59 가격 51.30 rsistar=False up200=True
+  ◆ 14:28 가격 50.81 rsistar=False up200=True
+  ◆ 15:54 가격 49.93 rsistar=False up200=False
+  ◆ 16:00 가격 49.94 rsistar=False up200=False
+3분 · 마지막 봉 11/17 16:24 · 봉 599개
+  ◆ 09:06 가격 48.99 rsistar=False up200=False
+  ◆ 09:24 가격 49.05 rsistar=False up200=False
+  ◆ 10:06 가격 49.32 rsistar=False up200=False
+5분 · 마지막 봉 11/17 16:20 · 봉 599개
+  ◆ 01:20 가격 51.90 rsistar=False up200=False
+  ◆ 01:55 가격 51.69 rsistar=False up200=False
+  ◆ 04:50 가격 50.87 rsistar=False up200=False
+  ◆ 10:10 가격 49.90 rsistar=False up200=False
+15분 · 마지막 봉 11/17 16:00 · 봉 599개
+  ◆ 12:00 가격 51.45 rsistar=False up200=False
+  ◆ 13:45 가격 51.30 rsistar=False up200=False
