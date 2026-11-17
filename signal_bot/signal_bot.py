@@ -817,6 +817,42 @@ RISK_PCT = float(os.environ.get("RISK_PCT", "7"))        # 한 번 최대 손절
 LEV = float(os.environ.get("LEV", "5"))                  # 레버리지
 
 
+def short_idx(b, I):
+    """▽ 50·100 동시 이탈 봉 번호들 (50선 > 거래량가중100선에서 종가가 둘 다 아래로 처음 내려감)"""
+    c, a50, a100 = I["c"], I["a50"], I["a100"]; out = []
+    for i in range(401, len(b)):
+        if all(nn(x) for x in (a50[i], a100[i], a50[i - 1], a100[i - 1])) and a50[i] > a100[i] \
+                and c[i] < min(a50[i], a100[i]) and c[i - 1] >= min(a50[i - 1], a100[i - 1]):
+            out.append(i)
+    return out
+
+
+def cluster_msgs(tf, b):
+    """SOXL 다발 알림 (검증 11/17 · OKX 26.5~11월): 마지막 봉에서 조건이 막 맞았을 때만
+    숏 다발 = 5분·15분 직전 16봉 안 ▽ 3개↑ + 롱 신호 없음 / 롱 다발 = 5분 직전 16봉 안 롱 신호(◆·▲) 2개↑ + ▽ 없음"""
+    if len(b) < 420: return []
+    I = ind(b); L = len(b) - 1
+    sh = set(short_idx(b, I))
+    lg = set(i for i, _ in sig_cross(b, I))
+    if tf == "5":
+        lg |= set(i for i, _ in sig_dump(b, I, 3.0))
+    win = range(L - 15, L + 1)
+    nsh = sum(1 for k in win if k in sh); nlg = sum(1 for k in win if k in lg)
+    bar = b[L]; when = datetime.fromtimestamp(bar["t"], KST).strftime("%m/%d %H:%M")
+    span = "80분" if tf == "5" else "4시간"
+    out = []
+    if L in sh and nsh >= 3 and nlg == 0:
+        ev = ("80분 뒤 승률 65% · 평균 +1.26% (55번)" if tf == "5" else "4시간 뒤 승률 55% · 평균 +1.30% (40번)")
+        out.append(f"[숏 다발] SOXL {tf}분 · 직전 {span} 안 ▽ 동시 이탈 {nsh}개 · 롱 신호 없음\n"
+                   f"가격 {bar['c']:.2f} · 봉 {when} (한국 시간)\n"
+                   f"검증: {ev} · 하락장 기간 위주라 [후보] · 손절 꼭 걸고 몇 시간 들고 가는 쪽")
+    if tf == "5" and L in lg and nlg >= 2 and nsh == 0:
+        out.append(f"[롱 다발] SOXL 5분 · 직전 80분 안 롱 신호(◆·▲) {nlg}개 · ▽ 없음\n"
+                   f"가격 {bar['c']:.2f} · 봉 {when} (한국 시간)\n"
+                   f"검증: 1시간 뒤 승률 54% · 평균 +0.47% (52번) [후보] · 혼자 뜬 롱 신호는 손해였음")
+    return out
+
+
 def main():
     global CHAT_ID
     try:
@@ -847,10 +883,19 @@ def main():
             key = f"{sym}:{tf}"
             prev = seen.get(key)
             newest = b[-1]["t"]
+            if not first and prev is not None and label == "SOXL" and tf in ("5", "15") and b[-1]["t"] > prev:
+                try:
+                    for m in cluster_msgs(tf, b):
+                        msgs.append((b[-1]["t"], m))
+                except Exception as e:  # noqa: BLE001
+                    print("다발 계산 실패", e)
             if not first and prev is not None:
                 for ftf, bar, info, grade in found:
                     if ftf == tf and bar["t"] > prev:
                         msgs.append((bar["t"], message(label, tf, bar, info, grade)))
+                        if label == "SOXL" and tf == "60" and info.get("xg"):
+                            msgs.append((bar["t"] + 1, f"[1시간 롱] SOXL 1시간봉 ◆ 동시 돌파 · 가격 {bar['c']:.2f}\n"
+                                         "검증: 4봉 뒤 승률 60% · +1.6% / 16봉 뒤 승률 75% · +3.4% (20번뿐이라 [후보]) · 몇 시간 이상 들고 가는 자리"))
                         if label == "SOXL" and tf in ("3", "5") and info.get("xg") and (
                                 (info.get("rsistar") and tf in ("3", "5")) or (tf == "5" and info.get("up200"))):
                             picks.append((bar["t"], tf, bar, info))

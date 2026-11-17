@@ -581,6 +581,18 @@ shSym = isBTC ? "BTC" : str.contains(syminfo.ticker, "ETH") ? "ETH" : str.contai
 shSlope = xAt > 0 ? (s200 - s200[40]) / xAt : 0.0
 shRule = (shSym == "SOXL" and tf == "15") or ((shSym == "BTC" or shSym == "ETH") and tf == "240") or ((shSym == "BTC" or shSym == "ETH") and tf == "30" and shSlope < -1)
 shOk = shRule and xA50 > xAv and close < math.min(xA50, xAv) and close[1] >= math.min(xA50[1], xAv[1])
+// ── 다발 (검증 11/17 · OKX SOXL): 숏 = 5·15분 직전 16봉 안 ▽ 3개↑ + 롱 신호 없음 / 롱 = 5분 직전 16봉 안 롱 신호 2개↑ + ▽ 없음 / 1시간 ◆ 롱
+shRawB = xA50 > xAv and close < math.min(xA50, xAv) and close[1] >= math.min(xA50[1], xAv[1])
+lgB = xOk or buy
+cntSh = math.sum(shRawB ? 1 : 0, 16)
+cntLg = math.sum(lgB ? 1 : 0, 16)
+isSoxl = str.contains(syminfo.ticker, "SOXL")
+shClu = isSoxl and (tf == "5" or tf == "15") and shRawB and cntSh >= 3 and cntLg == 0
+lgClu = isSoxl and tf == "5" and lgB and cntLg >= 2 and cntSh == 0
+h1Long = isSoxl and tf == "60" and xOk
+plotshape(shClu and (showOld or barstate.islast), "숏 다발", shape.labeldown, location.abovebar, color.new(#c62828, 0), size = size.tiny, text = "숏 다발", textcolor = color.white)
+plotshape(lgClu and (showOld or barstate.islast), "롱 다발", shape.labelup, location.belowbar, color.new(#2e7d32, 0), size = size.tiny, text = "롱 다발", textcolor = color.white)
+plotshape(h1Long and (showOld or barstate.islast), "1시간 롱", shape.labelup, location.belowbar, color.new(#1565c0, 0), size = size.tiny, text = "1시간 롱", textcolor = color.white)
 shSl = close + 2 * xAt
 shTp = close - 4 * xAt
 plotshape(shOk and (showOld or barstate.islast), "50·100 동시 이탈 (숏)", shape.triangledown, location.abovebar, color.new(#e53935, 0), size = size.small, text = "숏", textcolor = color.new(#e57373, 0))
