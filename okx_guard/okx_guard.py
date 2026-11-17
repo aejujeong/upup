@@ -5,9 +5,11 @@
 - 텔레그램에 "풀기" 보내면 5분 뒤 그날만 +1번 · 하루 최대 5번까지 (총 +5) · 5분 안에 "취소" 보내면 취소
 - 처음 켠 날(2026-11-09)은 켠 시각(23:10) 이후 진입만 셈
 - 물타기 알림: 손실 중인 포지션을 늘리면 텔레그램 알림만 (줄이지 않음) · 수익 중 불타기는 자유, 횟수에도 안 셈
+- 시간 금지: 한국 새벽 0~6시 · 낮 10~18시에 연 포지션은 바로 청산 (텔레그램 '시간 풀어' → 그날 해제)
+- 증거금 상한: 한 포지션 증거금이 계좌의 40%를 넘으면 새로 연 지 90초 안이면 넘은 만큼 줄이고, 그 뒤엔 알림만
 - 닫힌 포지션은 1분마다 매매일지(1억 챌린지, Supabase trades)에 자동 기록 (okxKey 로 중복 방지)
 - 키: OKX_API_KEY / OKX_SECRET / OKX_PASSPHRASE (GitHub Secrets) · 출금 권한 없는 키 사용"""
-import base64, hashlib, hmac, json, os, sys, time, unicodedata, urllib.request, urllib.error, urllib.parse
+import base64, hashlib, hmac, json, math, os, sys, time, unicodedata, urllib.request, urllib.error, urllib.parse
 from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "signal_bot"))
 import signal_bot as SB   # 텔레그램 보내기 재사용
@@ -41,6 +43,10 @@ EXTRA_TODAY = {"2026-11-17": 20}   # 그날만 한도 추가 (사용자 요청)
 COOL_MIN = int(os.environ.get("COOL_MIN", "0"))   # 끔 (11/17 사용자 요청)
 COOL_KRW = int(os.environ.get("COOL_KRW", "5000"))   # 이 금액(원) 이상 잃고 닫혔을 때만 쉬는 시간 (수수료 포함 실제 손익 · 11/16 사용자 기준)
 DUMP_GRACE = int(os.environ.get("DUMP_GRACE_SEC", "180"))   # SOXL·BTC·ETH 투매 신호 봉 마감 뒤 이 시간(초) 안에 연 포지션은 횟수·쉬는 시간에서 뺌 (알림 오고 약 2분)
+BLOCK_HOURS = ((0, 6), (10, 18))   # 한국 시간 진입 금지 구간 (새벽 0~6시 · 낮 10~18시) · 텔레그램 '시간 풀어'면 그날은 바로 풀림
+TIME_OFF_DAYS = set()               # 이 날짜(YYYY-MM-DD)는 시간 금지 끔 (Claude에게 요청 시)
+BLOCK_FROM_MS = int(datetime(2026, 11, 17, 12, 15, tzinfo=KST).timestamp() * 1000)   # 이 시각 이후 연 포지션부터 적용 (이미 들고 있던 건 안 건드림)
+MARGIN_CAP = float(os.environ.get("MARGIN_CAP", "0.4"))   # 포지션 증거금 상한 = 계좌의 40%
 UNLOCK_WAIT = 5 * 60
 UNLOCK_MAX = 5
 
@@ -62,12 +68,46 @@ def unlock_state():
         m = u.get("message") or {}
         if str((m.get("chat") or {}).get("id")) != str(SB.CHAT_ID) or m.get("date", 0) < d0: continue
         t = unicodedata.normalize("NFC", (m.get("text") or "")).strip()   # 아이폰 키보드는 자모가 풀린 채로 올 때가 있음
+        if "시간" in t:
+            continue   # '시간 풀어'는 시간 금지 해제용 (아래 time_unlocked)
         if "풀기" in t or "풀어" in t or t == "/unlock":
             if len(reqs) < UNLOCK_MAX: reqs.append(m["date"])
         elif "취소" in t:
             # 아직 안 풀린(5분 안 된) 요청만 취소
             reqs = [r for r in reqs if not (r < m["date"] < r + UNLOCK_WAIT)]
     return [(r, r + UNLOCK_WAIT) for r in reqs]
+
+def time_unlocked():
+    """오늘(한국) 텔레그램에 '시간 풀어/시간 풀기'를 보냈으면 True → 그날 시간 금지 해제"""
+    if datetime.now(KST).strftime("%Y-%m-%d") in TIME_OFF_DAYS: return True
+    if not SB.TOKEN: return False
+    try:
+        with urllib.request.urlopen(f"https://api.telegram.org/bot{SB.TOKEN}/getUpdates?limit=100", timeout=20) as x:
+            ups = json.loads(x.read()).get("result", [])
+    except Exception:
+        return False
+    n = datetime.now(KST); d0 = datetime(n.year, n.month, n.day, tzinfo=KST).timestamp()
+    for u in ups:
+        m = u.get("message") or {}
+        if str((m.get("chat") or {}).get("id")) != str(SB.CHAT_ID) or m.get("date", 0) < d0: continue
+        t = unicodedata.normalize("NFC", (m.get("text") or "")).replace(" ", "")
+        if "시간" in t and "풀" in t: return True
+    return False
+
+def blocked_hour(ms):
+    h = datetime.fromtimestamp(ms / 1000, KST).hour
+    return any(a <= h < b for a, b in BLOCK_HOURS)
+
+LOT = {}
+def lot_info(inst):
+    if inst not in LOT:
+        d = (okx("GET", f"/api/v5/public/instruments?instType=SWAP&instId={inst}").get("data") or [{}])[0]
+        LOT[inst] = (float(d.get("ctVal") or 1) * float(d.get("ctMult") or 1), float(d.get("lotSz") or 1))
+    return LOT[inst]
+
+def total_eq():
+    d = (okx("GET", "/api/v5/account/balance").get("data") or [{}])[0]
+    return float(d.get("totalEq") or 0)
 
 def tg(text):
     print(text, flush=True)
@@ -304,6 +344,8 @@ def main():
     last_sync = 0
     prev = None       # 지난 확인 때 열린 포지션 {posId: (크기, 미실현손익, 포지션)}
     cool_said = set() # 쉬는 시간 안내 보낸 손절 (닫힌 시각 ms)
+    cap_said = set()  # 증거금 상한 안내 보낸 포지션
+    tu_cache = (0, False)
     last_dump = 0
     dump_said = set()
     while time.time() < end:
@@ -326,6 +368,47 @@ def main():
                         tg(f"[매매 잠금] {datetime.fromtimestamp(ct / 1000, KST):%H:%M} 진입은 투매 신호 직후라 횟수에 안 셌어요")
             ents = [e for e in ents if not dump_exempt(e[0], e[2].get("instId"))
                     and (e[2].get("posId", "") + ":" + e[2].get("cTime", "")) not in forced]   # 봇이 강제 청산한 건 횟수에서 뺌
+            # ── 시간 금지: 새벽 0~6시 · 낮 10~18시(한국)에 연 포지션은 바로 청산 (텔레그램 '시간 풀어'면 그날 해제)
+            if time.time() - tu_cache[0] > 20:
+                tu_cache = (time.time(), time_unlocked())
+            if not tu_cache[1]:
+                for ct, stt, p in ents:
+                    if stt != "열림" or ct < BLOCK_FROM_MS or not blocked_hour(ct): continue
+                    key = p.get("posId") + ":" + p.get("cTime")
+                    if key in closed_keys: continue
+                    r = close(p); ok = r.get("code") == "0"
+                    if ok:
+                        closed_keys.add(key); forced_add(key)
+                    tg(f"[시간 금지] {datetime.fromtimestamp(ct / 1000, KST):%H:%M} 진입은 금지 시간(새벽 0~6시 · 낮 10~18시)이라 "
+                       + ("바로 청산했어요" if ok else f"청산 실패 ({r.get('code')} {r.get('msg')}) · 직접 정리해주세요")
+                       + " · 꼭 해야 하면 텔레그램에 '시간 풀어'를 보내면 오늘은 바로 풀려요")
+            # ── 증거금 상한: 계좌의 40% 넘게 들어가면 새로 연 포지션은 넘은 만큼 바로 줄이고, 그 뒤에 커진 건 알림만
+            try:
+                eq = total_eq() if opened else 0
+            except Exception:
+                eq = 0
+            for p in opened:
+                try:
+                    if eq <= 0: break
+                    cv, lot = lot_info(p["instId"])
+                    sz = abs(float(p["pos"])); avg = float(p.get("avgPx") or 0); lev = float(p.get("lever") or 1)
+                    mg = sz * avg * cv / lev
+                    capm = eq * MARGIN_CAP
+                    if mg <= capm * 1.02: continue
+                    key = p.get("posId") + ":" + p.get("cTime")
+                    young = time.time() * 1000 - int(p.get("cTime") or 0) < 90000
+                    if young and key not in cap_said:
+                        cut = math.floor(((mg - capm) * lev / (avg * cv)) / lot) * lot
+                        if cut > 0:
+                            r = reduce_by(p, fmt_sz(cut))
+                            cap_said.add(key)
+                            tg(f"[증거금 상한] {p['instId']} 증거금 {mg:.0f} USDT가 계좌({eq:.0f})의 {MARGIN_CAP*100:.0f}%({capm:.0f})를 넘어서 "
+                               + (f"{fmt_sz(cut)}개 줄였어요" if r.get("code") == "0" else f"줄이기 실패 ({r.get('code')} {r.get('msg')})"))
+                    elif key + ":warn" not in cap_said:
+                        cap_said.add(key + ":warn")
+                        tg(f"[증거금 상한] {p['instId']} 증거금 {mg:.0f} USDT · 계좌({eq:.0f})의 {mg/eq*100:.0f}% · 상한 {MARGIN_CAP*100:.0f}% 넘었어요. 크기 다시 확인하세요")
+                except Exception as e:
+                    print("증거금 상한 확인 실패", e, flush=True)
             # ── 물타기 금지: 지난번에 손실 중이던 포지션이 커졌으면 커진 만큼 줄이기
             cur = {p["posId"]: (abs(float(p["pos"])), float(p.get("upl") or 0), p) for p in opened}
             if prev is not None:
