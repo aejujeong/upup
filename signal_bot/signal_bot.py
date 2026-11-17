@@ -5,7 +5,7 @@ GitHub Actions에서 5분마다 실행된다 (.github/workflows/signal_bot.yml).
 
 데이터
 - BTC·ETH: 바이낸스 현물 공개 API (data-api.binance.vision · 미국 서버에서도 열림)
-- SOXL: 1·3·5·15·30분은 OKX SOXL 무기한 선물 봉 (24시간 · 야간장 포함), 1시간·4시간·일봉은 야후 파이낸스 (장전·장후 포함 · 4시간은 1시간을 묶음)
+- SOXL: 야후 파이낸스(장전·정규장·장후 · 트레이딩뷰 SOXL 과 같은 가격) + 트레이딩뷰에만 있는 야간장 시간은 OKX SOXL 무기한 봉으로 채움 (3분은 1분을, 4시간은 1시간을 묶음)
 
 중복 방지: 마지막으로 확인한 봉 시각을 state.json에 저장 (Actions 캐시로 이어 씀)
 첫 실행 때는 지난 신호를 보내지 않고 "연결됐어요" 메시지만 보낸다.
@@ -259,6 +259,23 @@ def key_us4h(t):
     return day + (hr // 4) * 4 * 3600 - off
 
 
+def overnight_us(t):
+    """미국 야간장(블루오션) 시간인가: 동부시간 20:00~04:00 · 일요일 밤 ~ 금요일 새벽"""
+    lt = t + et_offset(t)
+    hr = (lt % 86400) // 3600
+    wd = datetime.utcfromtimestamp(lt).weekday()   # 월0 … 일6 (동부 날짜)
+    return (hr >= 20 and wd in (6, 0, 1, 2, 3)) or (hr < 4 and wd in (0, 1, 2, 3, 4))
+
+
+def stitch(yb, ob):
+    """야후 봉 + (야후에 없는 야간장 시간만) OKX 봉"""
+    if not ob:
+        return yb
+    have = {x["t"] for x in yb}
+    add = [x for x in ob if x["t"] not in have and overnight_us(x["t"])]
+    return sorted(yb + add, key=lambda x: x["t"])
+
+
 def load(sym):
     """{tf: [봉...]} · 마지막 봉은 아직 안 끝났을 수 있어서 판단에서 뺀다."""
     data = {}
@@ -275,20 +292,18 @@ def load(sym):
     m30 = yahoo(sym, "30m", "60d")
     h1 = yahoo(sym, "60m", "730d")
     d1 = yahoo(sym, "1d", "10y", prepost=False)
+    # 트레이딩뷰 SOXL 과 맞추기: 장전·정규장·장후는 야후(트레이딩뷰와 같은 가격) 그대로,
+    # 트레이딩뷰에만 있는 야간장(미국 동부 20:00~04:00, 일요일 밤~금요일 새벽)만 OKX SOXL 무기한 봉으로 채움
+    try:
+        m1 = stitch(m1, okx_candles("SOXL-USDT-SWAP", "1m", 600))
+        m5 = stitch(m5, okx_candles("SOXL-USDT-SWAP", "5m", 600))
+        m15 = stitch(m15, okx_candles("SOXL-USDT-SWAP", "15m", 1000))
+        m30 = stitch(m30, okx_candles("SOXL-USDT-SWAP", "30m", 1000))
+        h1 = stitch(h1, okx_candles("SOXL-USDT-SWAP", "1H", 1000))
+    except Exception as e:  # noqa: BLE001
+        print("야간장 채우기 실패", e)
     m3 = resample(m1, 180)
     h4 = resample(h1, 0, key_us4h)
-    m1y = m1
-    # 짧은 봉(1·3·5·15·30분)은 OKX SOXL 무기한 선물 봉으로: 24시간이라 야간장에도 신호가 나옴 · 실제 매매 가격 그대로
-    # (OKX 가 안 되면 야후로)
-    ok1 = okx_candles("SOXL-USDT-SWAP", "1m", 600)
-    if len(ok1) > 450:
-        m1 = ok1
-        m3 = okx_candles("SOXL-USDT-SWAP", "3m", 600) or resample(ok1, 180)
-        m5 = okx_candles("SOXL-USDT-SWAP", "5m", 600) or m5
-        m15 = okx_candles("SOXL-USDT-SWAP", "15m", 600) or m15
-        m30 = okx_candles("SOXL-USDT-SWAP", "30m", 600) or m30
-    else:
-        m1 = m1y
     for tf, b, sec in (("1", m1, 60), ("3", m3, 180), ("5", m5, 300), ("15", m15, 900), ("30", m30, 1800),
                        ("60", h1, 3600), ("240", h4, 4 * 3600), ("D", d1, 86400)):
         data[tf] = [x for x in b if x["t"] + sec <= now] if tf != "D" else b[:-1]
