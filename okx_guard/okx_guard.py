@@ -47,6 +47,7 @@ BLOCK_HOURS = ((0, 6), (10, 18))   # 한국 시간 진입 금지 구간 (새벽 
 TIME_OFF_DAYS = {"2026-11-17"}               # 이 날짜(YYYY-MM-DD)는 시간 금지 끔 (Claude에게 요청 시)
 BLOCK_FROM_MS = int(datetime(2026, 11, 17, 12, 15, tzinfo=KST).timestamp() * 1000)   # 이 시각 이후 연 포지션부터 적용 (이미 들고 있던 건 안 건드림)
 MARGIN_CAP = float(os.environ.get("MARGIN_CAP", "9"))   # 포지션 증거금 상한 = 계좌의 40%
+YOUNG_MS = 2 * 60 * 1000   # 잠금 규칙은 연 지 2분 안 된 포지션에만 (설정 바뀌거나 봇 재시작해도 들고 있던 건 안 건드림)
 UNLOCK_WAIT = 5 * 60
 UNLOCK_MAX = 5
 
@@ -374,6 +375,7 @@ def main():
             if not tu_cache[1]:
                 for ct, stt, p in ents:
                     if stt != "열림" or ct < BLOCK_FROM_MS or not blocked_hour(ct): continue
+                    if time.time() * 1000 - ct > YOUNG_MS: continue   # 막 연 것만
                     key = p.get("posId") + ":" + p.get("cTime")
                     if key in closed_keys: continue
                     r = close(p); ok = r.get("code") == "0"
@@ -458,6 +460,7 @@ def main():
                     tg(f"[쉬는 시간] {COOL_KRW:,}원 넘게 손절했어요 ({lossP:+.2f} USDT · 약 {lossP * KRW_RATE:+,.0f}원). {datetime.fromtimestamp(until / 1000, KST):%H:%M}까지 {COOL_MIN}분은 새로 들어가면 바로 청산돼요. 잠깐 쉬어가요")
                 for ct, stt, p in ents:
                     if stt != "열림" or not (lossT < ct < until): continue
+                    if time.time() * 1000 - ct > YOUNG_MS: continue   # 막 연 것만
                     key = p.get("posId") + ":" + p.get("cTime")
                     if key in closed_keys: continue
                     r = close(p)
@@ -470,6 +473,7 @@ def main():
             # 한도 넘은 포지션: 오늘 연 순서로 MAX_TRADES 번째 이후 + 아직 열려 있는 것 → 청산
             for idx, (ct, stt, p) in enumerate(ents):
                 if idx < limit or stt != "열림": continue
+                if time.time() * 1000 - ct > YOUNG_MS: continue   # 들고 있던 포지션은 절대 안 건드림 (막 연 것만)
                 key = p.get("posId") + ":" + p.get("cTime")
                 if key in closed_keys: continue
                 r = close(p)
