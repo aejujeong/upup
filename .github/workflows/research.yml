@@ -31,6 +31,9 @@ jobs:
           SHARD: ${{ inputs.shard }}
           KRX_ID: ${{ secrets.KRX_ID }}
           KRX_PW: ${{ secrets.KRX_PW }}
+          OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
+          OKX_SECRET: ${{ secrets.OKX_SECRET }}
+          OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
       - name: 결과 올리기
         if: always()
         run: |
