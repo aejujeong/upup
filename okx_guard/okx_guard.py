@@ -5,7 +5,7 @@
 - 텔레그램에 "풀기" 보내면 5분 뒤 그날만 +1번 · 하루 최대 5번까지 (총 +5) · 5분 안에 "취소" 보내면 취소
 - 처음 켠 날(2026-11-09)은 켠 시각(23:10) 이후 진입만 셈
 - 물타기 알림: 손실 중인 포지션을 늘리면 텔레그램 알림만 (줄이지 않음) · 수익 중 불타기는 자유, 횟수에도 안 셈
-- 시간 금지: 한국 새벽 0~6시 · 낮 10~18시에 연 포지션은 바로 청산 (텔레그램 '시간 풀어' → 그날 해제)
+- 시간 금지: 한국 새벽 1~6시 · 낮 10~18시에 연 포지션은 바로 청산 (텔레그램 '시간 풀어' → 그날 해제)
 - 증거금 상한: 한 포지션 증거금이 계좌의 40%를 넘으면 새로 연 지 90초 안이면 넘은 만큼 줄이고, 그 뒤엔 알림만
 - 닫힌 포지션은 1분마다 매매일지(1억 챌린지, Supabase trades)에 자동 기록 (okxKey 로 중복 방지)
 - 키: OKX_API_KEY / OKX_SECRET / OKX_PASSPHRASE (GitHub Secrets) · 출금 권한 없는 키 사용"""
@@ -43,7 +43,7 @@ EXTRA_TODAY = {"2026-11-18": 5}   # 그날만 한도 추가 (사용자 요청)
 COOL_MIN = int(os.environ.get("COOL_MIN", "0"))   # 끔 (11/17 사용자 요청)
 COOL_KRW = int(os.environ.get("COOL_KRW", "5000"))   # 이 금액(원) 이상 잃고 닫혔을 때만 쉬는 시간 (수수료 포함 실제 손익 · 11/16 사용자 기준)
 DUMP_GRACE = int(os.environ.get("DUMP_GRACE_SEC", "180"))   # SOXL·BTC·ETH 투매 신호 봉 마감 뒤 이 시간(초) 안에 연 포지션은 횟수·쉬는 시간에서 뺌 (알림 오고 약 2분)
-BLOCK_HOURS = ((0, 6), (10, 18))   # 한국 시간 진입 금지 구간 (새벽 0~6시 · 낮 10~18시) · 텔레그램 '시간 풀어'면 그날은 바로 풀림
+BLOCK_HOURS = ((1, 6), (10, 18))   # 한국 시간 진입 금지 구간 (새벽 1~6시 · 낮 10~18시) · 텔레그램 '시간 풀어'면 그날은 바로 풀림
 TIME_OFF_DAYS = {"2026-11-17"}               # 이 날짜(YYYY-MM-DD)는 시간 금지 끔 (Claude에게 요청 시)
 BLOCK_FROM_MS = int(datetime(2026, 11, 17, 12, 15, tzinfo=KST).timestamp() * 1000)   # 이 시각 이후 연 포지션부터 적용 (이미 들고 있던 건 안 건드림)
 MARGIN_CAP = float(os.environ.get("MARGIN_CAP", "0.4"))   # 포지션 증거금 상한 = 계좌의 40%
@@ -369,7 +369,7 @@ def main():
                         tg(f"[매매 잠금] {datetime.fromtimestamp(ct / 1000, KST):%H:%M} 진입은 투매 신호 직후라 횟수에 안 셌어요")
             ents = [e for e in ents if not dump_exempt(e[0], e[2].get("instId"))
                     and (e[2].get("posId", "") + ":" + e[2].get("cTime", "")) not in forced]   # 봇이 강제 청산한 건 횟수에서 뺌
-            # ── 시간 금지: 새벽 0~6시 · 낮 10~18시(한국)에 연 포지션은 바로 청산 (텔레그램 '시간 풀어'면 그날 해제)
+            # ── 시간 금지: 새벽 1~6시 · 낮 10~18시(한국)에 연 포지션은 바로 청산 (텔레그램 '시간 풀어'면 그날 해제)
             if time.time() - tu_cache[0] > 20:
                 tu_cache = (time.time(), time_unlocked())
             if not tu_cache[1]:
@@ -381,7 +381,7 @@ def main():
                     r = close(p); ok = r.get("code") == "0"
                     if ok:
                         closed_keys.add(key); forced_add(key)
-                    tg(f"[시간 금지] {datetime.fromtimestamp(ct / 1000, KST):%H:%M} 진입은 금지 시간(새벽 0~6시 · 낮 10~18시)이라 "
+                    tg(f"[시간 금지] {datetime.fromtimestamp(ct / 1000, KST):%H:%M} 진입은 금지 시간(새벽 1~6시 · 낮 10~18시)이라 "
                        + ("바로 청산했어요" if ok else f"청산 실패 ({r.get('code')} {r.get('msg')}) · 직접 정리해주세요")
                        + " · 꼭 해야 하면 텔레그램에 '시간 풀어'를 보내면 오늘은 바로 풀려요")
             # ── 증거금 상한: 계좌의 40% 넘게 들어가면 새로 연 포지션은 넘은 만큼 바로 줄이고, 그 뒤에 커진 건 알림만
