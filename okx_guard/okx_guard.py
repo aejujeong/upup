@@ -46,6 +46,7 @@ DUMP_GRACE = int(os.environ.get("DUMP_GRACE_SEC", "180"))   # SOXL·BTC·ETH 투
 BLOCK_HOURS = ((1, 6), (10, 18))   # 한국 시간 진입 금지 구간 (새벽 1~6시 · 낮 10~18시) · 텔레그램 '시간 풀어'면 그날은 바로 풀림
 TIME_OFF_DAYS = {"2026-11-18"}               # 이 날짜(YYYY-MM-DD)는 시간 금지 끔 (Claude에게 요청 시)
 BLOCK_FROM_MS = int(datetime(2026, 11, 17, 12, 15, tzinfo=KST).timestamp() * 1000)   # 이 시각 이후 연 포지션부터 적용 (이미 들고 있던 건 안 건드림)
+CAP_OFF_DAYS = {"2026-11-19"}   # 그날만 증거금 상한 끔 (사용자 요청)
 MARGIN_CAP = float(os.environ.get("MARGIN_CAP", "0.4"))   # 포지션 증거금 상한 = 계좌의 40%
 YOUNG_MS = 2 * 60 * 1000   # 잠금 규칙은 연 지 2분 안 된 포지션에만 (설정 바뀌거나 봇 재시작해도 들고 있던 건 안 건드림)
 UNLOCK_WAIT = 5 * 60
@@ -386,7 +387,7 @@ def main():
                        + " · 꼭 해야 하면 텔레그램에 '시간 풀어'를 보내면 오늘은 바로 풀려요")
             # ── 증거금 상한: 계좌의 40% 넘게 들어가면 새로 연 포지션은 넘은 만큼 바로 줄이고, 그 뒤에 커진 건 알림만
             try:
-                eq = total_eq() if opened else 0
+                eq = total_eq() if opened and datetime.now(KST).strftime("%Y-%m-%d") not in CAP_OFF_DAYS else 0
             except Exception:
                 eq = 0
             for p in opened:
