@@ -10,3 +10,6 @@ before = G.sb_get("capital", None)
 G.sb("POST", "app_data", {"key": "capital", "value": cap, "updated_at": datetime.now(timezone.utc).isoformat()}, {"Prefer": "resolution=merge-duplicates"})
 after = G.sb_get("capital", None)
 open("research/out_set_capital.txt", "w").write(f"환율 {rate} · 전 {before} → 후 {after}\n")
+# 앱은 capitalUsdt 가 없으면 첫 매매 환율로 역산함 → USDT 원금을 직접 저장
+G.sb("POST", "app_data", {"key": "capitalUsdt", "value": 673.44, "updated_at": datetime.now(timezone.utc).isoformat()}, {"Prefer": "resolution=merge-duplicates"})
+open("research/out_set_capital.txt", "a").write(f"capitalUsdt {G.sb_get('capitalUsdt', None)}\n")
