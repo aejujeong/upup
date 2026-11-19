@@ -48,6 +48,8 @@ TIME_OFF_DAYS = {"2026-11-18", "2026-11-19"}               # 이 날짜(YYYY-MM-
 BLOCK_FROM_MS = int(datetime(2026, 11, 17, 12, 15, tzinfo=KST).timestamp() * 1000)   # 이 시각 이후 연 포지션부터 적용 (이미 들고 있던 건 안 건드림)
 CAP_OFF_DAYS = {"2026-11-19"}   # 그날만 증거금 상한 끔 (사용자 요청)
 MARGIN_CAP = float(os.environ.get("MARGIN_CAP", "0.4"))   # 포지션 증거금 상한 = 계좌의 40%
+DAY_LOCK_PCT = 0.10          # 하루 손익(시작 자산 대비)이 +10% 이상 또는 -10% 이하면 그날 새 진입 잠금
+PNL_OFF_DAYS = set()         # 이 날짜는 하루 손익 잠금 끔 (요청 시)
 YOUNG_MS = 2 * 60 * 1000   # 잠금 규칙은 연 지 2분 안 된 포지션에만 (설정 바뀌거나 봇 재시작해도 들고 있던 건 안 건드림)
 UNLOCK_WAIT = 5 * 60
 UNLOCK_MAX = 5
@@ -179,6 +181,38 @@ def sb_get(key, default):
 def sb_set(key, value):
     sb("POST", "app_data", {"key": key, "value": value, "updated_at": datetime.now(timezone.utc).isoformat()},
        {"Prefer": "resolution=merge-duplicates"})
+def midnight_ms():
+    n = datetime.now(KST)
+    return int(datetime(n.year, n.month, n.day, tzinfo=KST).timestamp() * 1000)
+
+def transfers_today():
+    """오늘 트레이딩 계정으로 들어오고 나간 이체 합 (USDT) — 입금·출금은 손익이 아님"""
+    st, tot = midnight_ms(), 0.0
+    for x in okx("GET", "/api/v5/account/bills?type=1&limit=100").get("data") or []:
+        if int(x.get("ts") or 0) >= st and x.get("ccy") in ("USDT", "USDC", "USD"):
+            tot += float(x.get("balChg") or 0)
+    return tot
+
+def realized_today():
+    st, tot = midnight_ms(), 0.0
+    for p in okx("GET", "/api/v5/account/positions-history?limit=100").get("data") or []:
+        if p.get("type") == "1": continue
+        if int(p.get("uTime") or 0) >= st:
+            tot += float(p.get("realizedPnl") or p.get("pnl") or 0)
+    return tot
+
+def day_state(d, opened):
+    """{'d', 'base', 'lockAt', 'pct'} — 그날 시작 자산(이체 빼고)을 Supabase에 저장해 재시작해도 유지"""
+    v = sb_get("guardDay", None)
+    if isinstance(v, dict) and v.get("d") == d and v.get("base"):
+        return v
+    eq = total_eq()
+    upl = sum(float(p.get("upl") or 0) for p in opened)
+    base = eq - upl - realized_today() - transfers_today()
+    v = {"d": d, "base": round(base, 4), "lockAt": 0, "pct": 0}
+    sb_set("guardDay", v)
+    return v
+
 forced = set()   # 잠금 봇이 강제 청산한 포지션 (posId:cTime) — 매매 횟수에서 뺌
 def forced_load():
     try:
@@ -350,6 +384,7 @@ def main():
     tu_cache = (0, False)
     last_dump = 0
     dump_said = set()
+    dstate, last_day = None, 0
     while time.time() < end:
         try:
             ents, opened = today_entries()
@@ -485,6 +520,34 @@ def main():
                 tg(f"[매매 잠금] 오늘 {idx + 1}번째 진입 ({p['instId']} {p.get('posSide','')}) → 한도 {limit}번 초과라 "
                    + ("바로 청산했어요" if ok else f"청산 실패 ({r.get('code')} {r.get('msg')}) · 직접 정리해주세요")
                    + f" · 청산 직전 손익 {upl} USDT")
+            # ── 하루 손익 잠금: 시작 자산 대비 +10% 이상 벌었거나 -10% 이상 잃었으면 그 뒤 새 진입은 바로 청산 (들고 있던 건 안 건드림)
+            if d not in PNL_OFF_DAYS:
+                try:
+                    if dstate is None or dstate.get("d") != d or (not dstate.get("lockAt") and time.time() - last_day >= 30):
+                        last_day = time.time()
+                        if dstate is None or dstate.get("d") != d:
+                            dstate = day_state(d, opened)
+                        if not dstate.get("lockAt") and dstate["base"] > 0:
+                            pnl = total_eq() - dstate["base"] - transfers_today()
+                            pct = pnl / dstate["base"]
+                            if abs(pct) >= DAY_LOCK_PCT:
+                                dstate.update(lockAt=int(time.time() * 1000), pct=round(pct * 100, 1))
+                                sb_set("guardDay", dstate)
+                                tg(f"[하루 손익 잠금] 오늘 {'+' if pct > 0 else ''}{pct*100:.1f}% ({pnl:+.1f} USDT · 약 {pnl*KRW_RATE:+,.0f}원) · "
+                                   + ("목표 달성! " if pct > 0 else "") + "오늘은 여기까지예요. 지금부터 새로 들어가면 바로 청산돼요 (들고 있는 포지션은 그대로)")
+                    if dstate and dstate.get("lockAt"):
+                        for ct, stt, p in ents:
+                            if stt != "열림" or ct <= dstate["lockAt"]: continue
+                            if time.time() * 1000 - ct > YOUNG_MS: continue
+                            key = p.get("posId") + ":" + p.get("cTime")
+                            if key in closed_keys: continue
+                            r = close(p); ok = r.get("code") == "0"
+                            if ok:
+                                closed_keys.add(key); forced_add(key)
+                            tg(f"[하루 손익 잠금] 오늘 {dstate['pct']:+.1f}%로 잠겼어요 → {p['instId']} 새 진입 "
+                               + ("바로 청산했어요" if ok else f"청산 실패 ({r.get('code')} {r.get('msg')}) · 직접 정리해주세요"))
+                except Exception as e:
+                    print("하루 손익 확인 실패", e, flush=True)
         except Exception as e:
             fails += 1
             print("확인 실패", e, flush=True)
