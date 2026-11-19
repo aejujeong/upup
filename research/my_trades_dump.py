@@ -20,5 +20,8 @@ try:
     G.sb_init(); forced = G.sb_get("guardForced", []) or []
 except Exception as e:
     print("forced 실패", e)
-open("research/out_my_trades.txt", "w").write(json.dumps({"rows": out, "forced": forced}))
+eq = None
+try: eq = G.total_eq()
+except Exception: pass
+open("research/out_my_trades.txt", "w").write(json.dumps({"rows": out, "forced": forced, "eq": eq}))
 print(len(out), "건")
