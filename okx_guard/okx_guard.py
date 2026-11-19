@@ -49,7 +49,7 @@ BLOCK_FROM_MS = int(datetime(2026, 11, 17, 12, 15, tzinfo=KST).timestamp() * 100
 CAP_OFF_DAYS = {"2026-11-19"}   # 그날만 증거금 상한 끔 (사용자 요청)
 MARGIN_CAP = float(os.environ.get("MARGIN_CAP", "0.4"))   # 포지션 증거금 상한 = 계좌의 40%
 DAY_LOCK_PCT = 0.10          # 하루 손익(시작 자산 대비)이 +10% 이상 또는 -10% 이하면 그날 새 진입 잠금
-PNL_OFF_DAYS = set()         # 이 날짜는 하루 손익 잠금 끔 (요청 시)
+PNL_OFF_DAYS = {"2026-11-20"}       # 이 날짜는 하루 손익 잠금 끔 (요청 시)
 YOUNG_MS = 2 * 60 * 1000   # 잠금 규칙은 연 지 2분 안 된 포지션에만 (설정 바뀌거나 봇 재시작해도 들고 있던 건 안 건드림)
 UNLOCK_WAIT = 5 * 60
 UNLOCK_MAX = 5
