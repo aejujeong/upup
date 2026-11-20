@@ -869,6 +869,41 @@ def cluster_msgs(tf, b):
     return out
 
 
+def fail_short_msgs(data, state):
+    """SOXL 반등 실패 숏 (검증 11/20 · OKX 26.6~11월 · [후보]) — 30분·1시간
+    50선 < 100선(이미 내림) · 직전 10봉 안에 두 선 위 마감 1번↑ · 이번 봉 종가가 두 선 아래로 이탈"""
+    sent = state.setdefault("fs_sent", [])
+    out = []
+    ev = {"30": "37번 · 승률 49% · 평균 +1.15% (기존 ▽ 30분 36% · +0.21%)",
+          "60": "11번 · 승률 55% · 평균 +3.66% (기존 ▽ 1시간 42% · +0.77%)"}
+    for tf, sec in (("30", 1800), ("60", 3600)):
+        b = data.get(tf) or []
+        if len(b) < 420:
+            continue
+        I = ind(b); c, a50, a100, at = I["c"], I["a50"], I["a100"], I["at"]
+        last = -99
+        for i in range(len(b) - 60, len(b)):
+            if not all(nn(x) for x in (a50[i], a100[i], a50[i-1], a100[i-1])):
+                continue
+            lo, plo = min(a50[i], a100[i]), min(a50[i-1], a100[i-1])
+            if not (a50[i] < a100[i] and c[i] < lo and c[i-1] >= plo):
+                continue
+            if not any(c[k] > max(a50[k], a100[k]) for k in range(i - 10, i)) or i - last <= 5:
+                continue
+            last = i
+            key = f"{tf}:{b[i]['t']}"
+            if i < len(b) - 2 or key in sent:
+                continue
+            sent.append(key)
+            e, a = c[i], at[i]
+            when = datetime.fromtimestamp(b[i]["t"], KST).strftime("%m/%d %H:%M")
+            out.append((b[i]["t"] + sec, f"[반등 실패 숏] SOXL {TFNAME.get(tf, tf)} · 내림 추세에서 50·100선 위로 올라갔다가 다시 둘 다 이탈\n"
+                        f"가격 {e:.2f} · 봉 {when} (한국 시간)\n손절 {e + 2 * a:.2f} (+{2 * a / e * 100:.2f}%) · 익절 {e - 4 * a:.2f} (-{4 * a / e * 100:.2f}%)\n"
+                        f"검증: {ev[tf]} [후보]"))
+    del sent[:-100]
+    return out
+
+
 def overlap_msgs(data, state, fresh=1800):
     """SOXL 겹침 알림 (검증 11/20 · OKX 26.7~11월 · [후보])
     롱 겹침 = 1시간 ◆ 앞뒤 6시간 안에 5분·15분 ◆ / 숏 겹침 A = 5분 ▽ + 15분 ▽ 15분 안 / 숏 겹침 B = 5분 ▽ + 1시간 ▽ 6시간 안
@@ -939,6 +974,7 @@ def main():
         if label == "SOXL" and not first:
             try:
                 msgs.extend(overlap_msgs(data, state))
+                msgs.extend(fail_short_msgs(data, state))
             except Exception as e:  # noqa: BLE001
                 print("겹침 계산 실패", e)
         for tf, b in data.items():
