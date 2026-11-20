@@ -576,10 +576,10 @@ xG   = xGrade(mkt, xTf, isBTC)
 x200near = s200 > close and (s200 / close - 1) * 100 < 3
 plotshape(xOk and (showOld or barstate.islast), "50·100 동시 돌파", shape.diamond, location.belowbar, color.new(#2e7d32, 0), size = size.small, text = "◆", textcolor = color.new(#000000, 100))
 x200up = s200 > s200[40]
-// ▽ 50·100 동시 이탈 (숏) — 봇 문자와 같은 규칙: SOXL 15분 · BTC·ETH 4시간 · BTC·ETH 30분(200선 가파르게 내려갈 때만)
+// ▽ 50·100 동시 이탈 (숏) — SOXL 15분 (봇 문자) · SOXL 1시간·4시간·일봉 (차트만, 11/20 요청 · 과거 성적 약함) · BTC·ETH 4시간 · BTC·ETH 30분(200선 가파르게 내려갈 때만)
 shSym = isBTC ? "BTC" : str.contains(syminfo.ticker, "ETH") ? "ETH" : str.contains(syminfo.ticker, "SOXL") ? "SOXL" : ""
 shSlope = xAt > 0 ? (s200 - s200[40]) / xAt : 0.0
-shRule = (shSym == "SOXL" and tf == "15") or ((shSym == "BTC" or shSym == "ETH") and tf == "240") or ((shSym == "BTC" or shSym == "ETH") and tf == "30" and shSlope < -1)
+shRule = (shSym == "SOXL" and (tf == "15" or tf == "60" or tf == "240" or timeframe.isdaily)) or ((shSym == "BTC" or shSym == "ETH") and tf == "240") or ((shSym == "BTC" or shSym == "ETH") and tf == "30" and shSlope < -1)
 shOk = shRule and xA50 > xAv and close < math.min(xA50, xAv) and close[1] >= math.min(xA50[1], xAv[1])
 // ── 다발 (검증 11/17 · OKX SOXL): 숏 = 5·15분 직전 16봉 안 ▽ 3개↑ + 롱 신호 없음 / 롱 = 5분 직전 16봉 안 롱 신호 2개↑ + ▽ 없음 / 1시간 ◆ 롱
 shRawB = xA50 > xAv and close < math.min(xA50, xAv) and close[1] >= math.min(xA50[1], xAv[1])
@@ -596,10 +596,6 @@ plotshape(h1Long and (showOld or barstate.islast), "1시간 롱", shape.labelup,
 shSl = close + 2 * xAt
 shTp = close - 4 * xAt
 plotshape(shOk and (showOld or barstate.islast), "50·100 동시 이탈 (숏)", shape.triangledown, location.abovebar, color.new(#e53935, 0), size = size.small, text = "숏", textcolor = color.new(#e57373, 0))
-// ▽ 과이격 숏 (참고) — SOXL 1시간 · 종가가 20선보다 ATR 3배 이상 위 + 음봉 + 200선이 40봉 전보다 낮음(상승장 아님)
-//   검증 36회 · 평균 +1.67% · 승률 42% (손절 +2ATR · 익절 -4ATR) · 표본이 적어 참고용
-ovSh = isSoxl and tf == "60" and close - ta.sma(close, 20) >= 3 * xAt and close < open and shSlope < 0
-plotshape(ovSh and (showOld or barstate.islast), "과이격 숏 (참고)", shape.labeldown, location.abovebar, color.new(#ef6c00, 0), size = size.tiny, text = "과이격 숏(참고)", textcolor = color.white)
 var int  xlT = na      // 마지막 동시 돌파 시각 · ★ 여부 · 200선 오르는 중 여부 (표에 '지금 신호' 표시용)
 var bool xlStar = false
 var bool xlUp = false
