@@ -904,6 +904,18 @@ def fail_short_msgs(data, state):
     return out
 
 
+def trend_idx(b, I):
+    """▲ 추세 돌파 규칙 (모든 봉 같게): 50선 위·50선 20봉 전보다 높음 · 직전 48봉 고점 돌파 · 봉 길이 48봉 평균 1.3배↑ · RSI 70↑"""
+    c, a50, rs = I["c"], I["a50"], I["rs"]; out = []
+    for i in range(max(70, len(b) - 300), len(b)):
+        if not (nn(a50[i]) and nn(a50[i-20]) and nn(rs[i])):
+            continue
+        hh = max(x["h"] for x in b[i-48:i]); ra = sum(x["h"] - x["l"] for x in b[i-48:i]) / 48
+        if c[i] > a50[i] > a50[i-20] and c[i] > hh and (b[i]["h"] - b[i]["l"]) >= 1.3 * ra and rs[i] >= 70:
+            out.append(i)
+    return out
+
+
 def overlap_msgs(data, state, fresh=1800):
     """SOXL 겹침 알림 (검증 11/20 · OKX 26.7~11월 · [후보])
     롱 겹침 = 1시간 ◆ 앞뒤 6시간 안에 5분·15분 ◆ / 숏 겹침 A = 5분 ▽ + 15분 ▽ 15분 안 / 숏 겹침 B = 5분 ▽ + 1시간 ▽ 6시간 안
@@ -916,6 +928,7 @@ def overlap_msgs(data, state, fresh=1800):
         I = ind(b)
         S[("L", tf)] = [b[i]["t"] + sec for i, _ in sig_cross(b, I)]
         S[("S", tf)] = [b[i]["t"] + sec for i in short_idx(b, I)]
+        S[("T", tf)] = [b[i]["t"] + sec for i in trend_idx(b, I)]
     sent = state.setdefault("ovl_sent", [])
     now = time.time(); out = []
     def check(kind, big, smalls, W, text):
@@ -937,6 +950,12 @@ def overlap_msgs(data, state, fresh=1800):
     check("L", ("L", "60"), (("L", "5"), ("L", "15")), 6 * 3600,
           "[롱 겹침] SOXL 1시간 ◆ {big} + {stf}분 ◆ {small} (6시간 안)\n가격 {px:.2f}\n"
           "검증: 5분+1시간 14번 승률 64% · 평균 +3.98% / 15분+1시간 8번 62% · +3.39% (1시간봉 손절·익절 선 기준) [후보] · 몇 시간 들고 가는 자리")
+    check("L", ("L", "60"), (("T", "5"), ("T", "15")), 3 * 3600,
+          "[롱 겹침] SOXL 1시간 ◆ {big} + {stf}분 ▲ 추세 돌파 {small} (3시간 안)\n가격 {px:.2f}\n"
+          "검증: 5분▲+1시간◆ 13번 승률 62% · 평균 +3.94% / 15분▲+1시간◆ 11번 55% · +2.94% (1시간봉 선 기준) [후보]")
+    check("LT", ("L", "15"), (("T", "5"),), 900,
+          "[롱 겹침] SOXL 15분 ◆ {big} + 5분 ▲ 추세 돌파 {small} (15분 안)\n가격 {px:.2f}\n"
+          "검증: 20번 승률 60% · 평균 +1.87% (15분봉 선 기준 · 15분 ◆ 혼자는 39% · +0.00%) [후보]")
     check("SA", ("S", "15"), (("S", "5"),), 900,
           "[숏 겹침] SOXL 15분 ▽ {big} + 5분 ▽ {small} (15분 안)\n가격 {px:.2f}\n"
           "검증: 36번 승률 69% · 평균 +3.22% (15분봉 손절·익절 선 기준 · 15분 ▽ 혼자는 40% · +0.71%) [후보]")

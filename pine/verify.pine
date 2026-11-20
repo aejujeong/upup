@@ -634,7 +634,7 @@ if fsOk
 plotshape(fsOk and (showOld or barstate.islast), "반등 실패 숏", shape.labeldown, location.abovebar, color.new(#ff6d00, 0), size = size.tiny, text = "반등 실패 숏", textcolor = color.white)
 
 // ── 겹침 (검증 11/20 · OKX 26.7~11월 · 후보) · SOXL 5분봉 차트에서만 (작은 봉은 큰 차트에서 못 불러옴)
-//   롱 겹침 = 1시간 ◆ 앞뒤 6시간 안에 5분·15분 ◆ / 숏 겹침 = 5분 ▽ + 15분 ▽ 15분 안 · 또는 5분 ▽ + 1시간 ▽ 6시간 안
+//   롱 겹침(하늘색) = 1시간 ◆ 앞뒤 6시간 안에 5분·15분 ◆ · 1시간 ◆ 3시간 안에 5분·15분 ▲ 추세 돌파 · 15분 ◆ + 5분 ▲ 15분 안 / 숏 겹침 = 5분 ▽ + 15분 ▽ 15분 안 · 또는 5분 ▽ + 1시간 ▽ 6시간 안
 f_shT() =>
     a50 = ta.sma(close, 50)
     hv  = ta.cum(nz(volume)) > 0
@@ -657,25 +657,45 @@ H6 = 6 * 3600000
 c5(t) => t + 300000
 c15(t) => t + 900000
 c60(t) => t + 3600000
-lgOvNow = ovOn and not na(xl60) and ((not na(d5T) and math.abs(c5(d5T) - c60(xl60)) <= H6) or (not na(xl15) and math.abs(c15(xl15) - c60(xl60)) <= H6))
+// ▲ 추세 돌파 규칙 (모든 봉 같게) — 5분은 이 차트, 15분은 불러옴
+f_trT() =>
+    m50 = ta.sma(close, 50)
+    tr0 = close > m50 and m50 > m50[20] and close > ta.highest(high, 48)[1] and (high - low) >= 1.3 * ta.sma(high - low, 48)[1] and ta.rsi(close, 14) >= 70
+    var int lt = na
+    if tr0
+        lt := time
+    lt
+t5T  = f_trT()
+t15T = request.security(regSym, "15", f_trT())
+H3 = 3 * 3600000
+lgA = ovOn and not na(xl60) and ((not na(d5T) and math.abs(c5(d5T) - c60(xl60)) <= H6) or (not na(xl15) and math.abs(c15(xl15) - c60(xl60)) <= H6))
+lgT = ovOn and not na(xl60) and ((not na(t5T) and math.abs(c5(t5T) - c60(xl60)) <= H3) or (not na(t15T) and math.abs(c15(t15T) - c60(xl60)) <= H3))
+lgC = ovOn and not na(xl15) and not na(t5T) and math.abs(c5(t5T) - c15(xl15)) <= 900000
+lgOvNow = lgA or lgT
 ch60  = ta.change(xl60) != 0
 ch15  = ta.change(xl15) != 0
 chS15 = ta.change(sh15T) != 0
 chS60 = ta.change(sh60T) != 0
-lgOvNew = lgOvNow and (ch60 or xOk or ch15)
+chT5  = ta.change(t5T) != 0
+chT15 = ta.change(t15T) != 0
+lgOvNew = lgOvNow and (ch60 or xOk or ch15 or chT5 or chT15)
+var int lgCKey = na
+lgCShow = lgC and (ch15 or chT5) and (na(lgCKey) or xl15 != lgCKey)
+if lgCShow
+    lgCKey := xl15
 shA = ovOn and not na(s5T) and not na(sh15T) and math.abs(c5(s5T) - c15(sh15T)) <= 900000
 shB = ovOn and not na(s5T) and not na(sh60T) and math.abs(c5(s5T) - c60(sh60T)) <= H6
 shOvNew = (shA or shB) and (shRawB or chS15 or chS60)
 var int lgOvKey = na
 var int shOvKey = na
-lgOvShow = lgOvNew and (na(lgOvKey) or xl60 != lgOvKey)
-if lgOvShow
+lgOvShow = (lgOvNew and (na(lgOvKey) or xl60 != lgOvKey)) or lgCShow
+if lgOvNew and (na(lgOvKey) or xl60 != lgOvKey)
     lgOvKey := xl60
 shKeyNow = shA ? sh15T : sh60T
 shOvShow = shOvNew and (na(shOvKey) or shKeyNow != shOvKey)
 if shOvShow
     shOvKey := shKeyNow
-plotshape(lgOvShow and (showOld or barstate.islast), "롱 겹침", shape.labelup, location.belowbar, color.new(#00c853, 0), size = size.tiny, text = "롱 겹침", textcolor = color.white)
+plotshape(lgOvShow and (showOld or barstate.islast), "롱 겹침", shape.labelup, location.belowbar, color.new(#00e5ff, 0), size = size.small, text = "롱 겹침", textcolor = color.black)
 plotshape(shOvShow and (showOld or barstate.islast), "숏 겹침", shape.labeldown, location.abovebar, color.new(#d50000, 0), size = size.tiny, text = "숏 겹침", textcolor = color.white)
 
 // 분봉 차트에서도 한국·미국 종목은 일봉 근거 내용을 위 표에 보여 주기
