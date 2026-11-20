@@ -420,7 +420,7 @@ def main():
                     tg(f"[시간 금지] {datetime.fromtimestamp(ct / 1000, KST):%H:%M} 진입은 금지 시간(새벽 1~6시 · 낮 10~18시)이라 "
                        + ("바로 청산했어요" if ok else f"청산 실패 ({r.get('code')} {r.get('msg')}) · 직접 정리해주세요")
                        + " · 꼭 해야 하면 텔레그램에 '시간 풀어'를 보내면 오늘은 바로 풀려요")
-            # ── 증거금 상한: 계좌의 40% 넘게 들어가면 새로 연 포지션은 넘은 만큼 바로 줄이고, 그 뒤에 커진 건 알림만
+            # ── 증거금 상한: 계좌의 40% 넘게 들어가면 문자 알림만 (줄이지 않음)
             try:
                 eq = total_eq() if opened and datetime.now(KST).strftime("%Y-%m-%d") not in CAP_OFF_DAYS else 0
             except Exception:
@@ -434,7 +434,7 @@ def main():
                     capm = eq * MARGIN_CAP
                     if mg <= capm * 1.02: continue
                     key = p.get("posId") + ":" + p.get("cTime")
-                    young = time.time() * 1000 - int(p.get("cTime") or 0) < 90000
+                    young = False   # 줄이지 않고 알림만 (11/20 사용자 요청)
                     if young and key not in cap_said:
                         cut = math.floor(((mg - capm) * lev / (avg * cv)) / lot) * lot
                         if cut > 0:
