@@ -579,7 +579,7 @@ x200up = s200 > s200[40]
 // ▽ 50·100 동시 이탈 (숏) — SOXL 15분 (봇 문자) · SOXL 1시간·4시간·일봉 (차트만, 11/20 요청 · 과거 성적 약함) · BTC·ETH 4시간 · BTC·ETH 30분(200선 가파르게 내려갈 때만)
 shSym = isBTC ? "BTC" : str.contains(syminfo.ticker, "ETH") ? "ETH" : str.contains(syminfo.ticker, "SOXL") ? "SOXL" : ""
 shSlope = xAt > 0 ? (s200 - s200[40]) / xAt : 0.0
-shRule = (shSym == "SOXL" and (tf == "15" or tf == "60" or tf == "240" or timeframe.isdaily)) or ((shSym == "BTC" or shSym == "ETH") and tf == "240") or ((shSym == "BTC" or shSym == "ETH") and tf == "30" and shSlope < -1)
+shRule = (shSym == "SOXL") or ((shSym == "BTC" or shSym == "ETH") and tf == "240") or ((shSym == "BTC" or shSym == "ETH") and tf == "30" and shSlope < -1)
 shOk = shRule and xA50 > xAv and close < math.min(xA50, xAv) and close[1] >= math.min(xA50[1], xAv[1])
 // ── 다발 (검증 11/17 · OKX SOXL): 숏 = 5·15분 직전 16봉 안 ▽ 3개↑ + 롱 신호 없음 / 롱 = 5분 직전 16봉 안 롱 신호 2개↑ + ▽ 없음 / 1시간 ◆ 롱
 shRawB = xA50 > xAv and close < math.min(xA50, xAv) and close[1] >= math.min(xA50[1], xAv[1])
@@ -622,11 +622,11 @@ alertcondition(xOk, "50·100 동시 돌파", "50·100 동시 돌파: {{ticker}} 
 [x240, xl240, xb240, xs240] = request.security(regSym, tf240, f_xTF(mkt, "240"))
 [xD, xlD, xbD, xsD]   = request.security(regSym, "D", f_xTF(mkt, "D"))
 
-// ── 반등 실패 숏 (검증 11/20 · OKX 26.6~11월 · 후보) — SOXL 30분·1시간
+// ── 반등 실패 숏 (검증 11/20 · OKX 26.6~11월 · 후보) — SOXL 모든 봉 표시 (검증상 좋은 건 30분·1시간 · 5·15분은 기존 ▽보다 약함)
 //   50선 < 100선(이미 내림) · 직전 10봉 안에 두 선 위 마감 1번↑ · 종가가 두 선 아래로 이탈 · 30분 37번 49% +1.15% / 1시간 11번 55% +3.66%
 fsLo  = math.min(xA50, xAv)
 fsUp  = math.sum(close > math.max(xA50, xAv) ? 1 : 0, 10)[1] >= 1
-fsRaw = isSoxl and (tf == "30" or tf == "60") and xA50 < xAv and close < fsLo and close[1] >= fsLo[1] and fsUp
+fsRaw = isSoxl and xA50 < xAv and close < fsLo and close[1] >= fsLo[1] and fsUp
 var int fsLastB = na
 fsOk = fsRaw and (na(fsLastB) or bar_index - fsLastB > 5)
 if fsOk
