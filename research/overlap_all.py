@@ -1,7 +1,8 @@
 """모든 봉 조합 겹침 검증 (OKX SOXL 무기한) → research/out_overlap_all.txt
 롱 ◆ 50·100 동시 돌파 / 숏 ▽ 50·100 동시 이탈
 겹침 = 작은 봉 신호와 큰 봉 신호(같은 방향)의 마감 시각 차이가 '큰 봉 1개 길이' 이내 → 늦게 뜬 신호 마감에 진입
-결과는 큰 봉으로 계산: 손절 2ATR · 익절 4ATR (큰 봉 ATR) · 최대 32봉 · 수수료 0.1% · 같은 봉에 둘 다 닿으면 손절
+결과 = 차트 지표 선 그대로: 손절 종가∓2ATR · 익절 ±4ATR · 시간 제한 없이 둘 중 닿을 때까지 · 수수료 0.1% · 같은 봉에 둘 다 닿으면 손절
+[작은 봉 선] = 작은 봉 차트의 선으로 매매 / [큰 봉 선] = 큰 봉 차트의 선으로 매매
 비교 = 같은 기간 큰 봉 신호 단독 전부"""
 import sys, statistics as st, bisect
 sys.path.insert(0, "signal_bot")
@@ -27,13 +28,13 @@ for tf, bar in TFS:
 def trade(tc, d, tf):
     b, Tt, at = D[tf], T[tf], I[tf]["at"]
     i = bisect.bisect_right(Tt, tc) - 1
-    if i < 401 or i + 32 >= len(b): return None
+    if i < 401 or i + 1 >= len(b): return None
     e, a = b[i]["c"], at[i]
     sl, tp = e - d * 2 * a, e + d * 4 * a
-    for j in range(i + 1, i + 33):
+    for j in range(i + 1, len(b)):
         if (b[j]["l"] <= sl) if d > 0 else (b[j]["h"] >= sl): return d * (sl / e - 1) * 100 - 0.1
         if (b[j]["h"] >= tp) if d > 0 else (b[j]["l"] <= tp): return d * (tp / e - 1) * 100 - 0.1
-    return d * (b[i + 32]["c"] / e - 1) * 100 - 0.1
+    return None   # 아직 안 끝남
 def res(ts, d, tf):
     r = [x for x in (trade(t, d, tf) for t in ts) if x is not None]
     return r
@@ -56,9 +57,12 @@ for d, dn in ((1, "롱 ◆"), (-1, "숏 ▽")):
                 near = []
                 while k < len(sa) and sa[k] <= t + W: near.append(sa[k]); k += 1
                 if near: ev.add(max([t] + near))
-            ro, rb = res(sorted(ev), d, b), res(sb, d, b)
-            L.append(f"  {NM[a]:>4}+{NM[b]:<4} 겹침 {fmt(ro)} | 단독 {fmt(rb)} | {datetime.fromtimestamp(st0, B.KST):%m/%d}~")
-            if len(ro) >= 10 and rb and st.mean(ro) > st.mean(rb) + 0.3 and st.mean(ro) > 0.5:
-                good.append(f"{dn} {NM[a]}+{NM[b]}: 겹침 {fmt(ro).strip()} vs 단독 {fmt(rb).strip()}")
+            ev = sorted(ev)
+            ros, ras = res(ev, d, a), res(sa, d, a)
+            rob, rbb = res(ev, d, b), res(sb, d, b)
+            L.append(f"  {NM[a]:>4}+{NM[b]:<4} [작은 봉 선] 겹침 {fmt(ros)} 작은 봉 단독 {fmt(ras)} || [큰 봉 선] 겹침 {fmt(rob)} 큰 봉 단독 {fmt(rbb)} | {datetime.fromtimestamp(st0, B.KST):%m/%d}~")
+            for nm, ro, rb in (("작은 봉 선", ros, ras), ("큰 봉 선", rob, rbb)):
+                if len(ro) >= 10 and rb and st.mean(ro) > st.mean(rb) + 0.3 and st.mean(ro) > 0.5:
+                    good.append(f"{dn} {NM[a]}+{NM[b]} [{nm}]: 겹침 {fmt(ro).strip()} vs 단독 {fmt(rb).strip()}")
 L += ["", "■ 겹침이 단독보다 확실히 나은 조합 (10번↑ · 평균 +0.5%↑ · 단독보다 +0.3%p↑)"] + ["  " + g for g in good]
-open("research/out_overlap_all.txt", "w", encoding="utf-8").write("\n".join(L) + "\n")
+open("research/out_overlap_all2.txt", "w", encoding="utf-8").write("\n".join(L) + "\n")
