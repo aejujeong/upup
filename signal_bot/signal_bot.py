@@ -869,6 +869,49 @@ def cluster_msgs(tf, b):
     return out
 
 
+def overlap_msgs(data, state):
+    """SOXL 겹침 알림 (검증 11/20 · OKX 26.7~11월 · [후보])
+    롱 겹침 = 1시간 ◆ 앞뒤 6시간 안에 5분·15분 ◆ / 숏 겹침 A = 5분 ▽ + 15분 ▽ 15분 안 / 숏 겹침 B = 5분 ▽ + 1시간 ▽ 6시간 안
+    둘 중 늦게 뜬 신호가 방금(30분 안) 떴을 때 1번만"""
+    S = {}
+    for tf, sec in (("5", 300), ("15", 900), ("60", 3600)):
+        b = data.get(tf) or []
+        if len(b) < 420:
+            return []
+        I = ind(b)
+        S[("L", tf)] = [b[i]["t"] + sec for i, _ in sig_cross(b, I)]
+        S[("S", tf)] = [b[i]["t"] + sec for i in short_idx(b, I)]
+    sent = state.setdefault("ovl_sent", [])
+    now = time.time(); out = []
+    def check(kind, big, smalls, W, text):
+        for tb in S[big]:
+            for sm in smalls:
+                near = [t for t in S[sm] if abs(t - tb) <= W]
+                if not near:
+                    continue
+                te = max([tb] + near)
+                key = f"{kind}:{tb}"
+                if key in sent or now - te > 1800:
+                    continue
+                sent.append(key)
+                tf_s = sm[1]; ts = max(near)
+                out.append((te, text.format(big=datetime.fromtimestamp(tb - (3600 if big[1] == '60' else 900), KST).strftime('%H:%M'),
+                                            small=datetime.fromtimestamp(ts - int(tf_s) * 60, KST).strftime('%H:%M'), stf=tf_s,
+                                            px=data['5'][-1]['c'])))
+                break
+    check("L", ("L", "60"), (("L", "5"), ("L", "15")), 6 * 3600,
+          "[롱 겹침] SOXL 1시간 ◆ {big} + {stf}분 ◆ {small} (6시간 안)\n가격 {px:.2f}\n"
+          "검증: 5분+1시간 14번 승률 64% · 평균 +3.98% / 15분+1시간 8번 62% · +3.39% (1시간봉 손절·익절 선 기준) [후보] · 몇 시간 들고 가는 자리")
+    check("SA", ("S", "15"), (("S", "5"),), 900,
+          "[숏 겹침] SOXL 15분 ▽ {big} + 5분 ▽ {small} (15분 안)\n가격 {px:.2f}\n"
+          "검증: 36번 승률 69% · 평균 +3.22% (15분봉 손절·익절 선 기준 · 15분 ▽ 혼자는 40% · +0.71%) [후보]")
+    check("SB", ("S", "60"), (("S", "5"),), 6 * 3600,
+          "[숏 겹침] SOXL 1시간 ▽ {big} + 5분 ▽ {small} (6시간 안)\n가격 {px:.2f}\n"
+          "검증: 32번 승률 53% · 평균 +2.95% (1시간봉 손절·익절 선 기준 · 1시간 ▽ 혼자는 46% · +1.71%) [후보]")
+    del sent[:-300]
+    return out
+
+
 def main():
     global CHAT_ID
     try:
@@ -893,6 +936,11 @@ def main():
         data = load(sym)
         counts[sym] = sum(len(v) for v in data.values())
         label, found = scan(sym, data, calm)
+        if label == "SOXL" and not first:
+            try:
+                msgs.extend(overlap_msgs(data, state))
+            except Exception as e:  # noqa: BLE001
+                print("겹침 계산 실패", e)
         for tf, b in data.items():
             if not b:
                 continue
