@@ -855,10 +855,10 @@ def cluster_msgs(tf, b):
     win = range(L - 15, L + 1)
     nsh = sum(1 for k in win if k in sh); nlg = sum(1 for k in win if k in lg)
     bar = b[L]; when = datetime.fromtimestamp(bar["t"], KST).strftime("%m/%d %H:%M")
-    span = "80분" if tf == "5" else "4시간"
+    span = {"5": "80분", "15": "4시간", "30": "8시간"}[tf]
     out = []
     if L in sh and nsh >= 3 and nlg == 0:
-        ev = ("80분 뒤 승률 65% · 평균 +1.26% (55번)" if tf == "5" else "4시간 뒤 승률 55% · 평균 +1.30% (40번)")
+        ev = {"5": "80분 뒤 승률 65% · 평균 +1.26% (55번)", "15": "4시간 뒤 승률 55% · 평균 +1.30% (40번)", "30": "8시간 뒤 승률 59% · 평균 +1.37% (17번뿐 · 참고)"}[tf]
         out.append(f"[숏 다발] SOXL {tf}분 · 직전 {span} 안 ▽ 동시 이탈 {nsh}개 · 롱 신호 없음\n"
                    f"가격 {bar['c']:.2f} · 봉 {when} (한국 시간)\n"
                    f"검증: {ev} · 하락장 기간 위주라 [후보] · 손절 꼭 걸고 몇 시간 들고 가는 쪽")
@@ -1002,7 +1002,7 @@ def main():
             key = f"{sym}:{tf}"
             prev = seen.get(key)
             newest = b[-1]["t"]
-            if not first and prev is not None and label == "SOXL" and tf in ("5", "15") and b[-1]["t"] > prev:
+            if not first and prev is not None and label == "SOXL" and tf in ("5", "15", "30") and b[-1]["t"] > prev:
                 try:
                     for m in cluster_msgs(tf, b):
                         msgs.append((b[-1]["t"], m))

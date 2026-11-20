@@ -587,8 +587,8 @@ lgB = xOk or buy
 cntSh = math.sum(shRawB ? 1 : 0, 16)
 cntLg = math.sum(lgB ? 1 : 0, 16)
 isSoxl = str.contains(syminfo.ticker, "SOXL")
-shClu = isSoxl and (tf == "5" or tf == "15") and shRawB and cntSh >= 3 and cntLg == 0
-lgClu = isSoxl and tf == "5" and lgB and cntLg >= 2 and cntSh == 0
+shClu = isSoxl and (tf == "5" or tf == "15" or tf == "30") and shRawB and cntSh >= 3 and cntLg == 0
+lgClu = isSoxl and (tf == "5" or tf == "15" or tf == "30") and lgB and cntLg >= 2 and cntSh == 0
 h1Long = isSoxl and tf == "60" and xOk
 plotshape(shClu and (showOld or barstate.islast), "숏 다발", shape.labeldown, location.abovebar, color.new(#c62828, 0), size = size.tiny, text = "숏 다발", textcolor = color.white)
 plotshape(lgClu and (showOld or barstate.islast), "롱 다발", shape.labelup, location.belowbar, color.new(#2e7d32, 0), size = size.tiny, text = "롱 다발", textcolor = color.white)
@@ -1372,7 +1372,7 @@ if barstate.islast and czStOn
     string rr = sw > 0 and sl_ > 0 and ssLos < 0 ? " · 손익비 1:" + str.tostring((ssWin / sw) / (-ssLos / sl_), "#.#") : ""
     stRow(7, (shRule ? "▽ 동시 이탈 숏" : "▽ 동시 이탈 숏 (이 봉은 규칙 없음)") + rr, ssN, ssW, ssP, 1, shLast)
     stRow(8, isSoxl ? "반등 실패 숏" : "반등 실패 숏 (SOXL만)", fsN, fsW, fsP, 1, not na(fsT) and fsT >= math.max(tX, tB, tS))
-    stRow(9, isSoxl and tf == "5" ? "롱 다발" : "롱 다발 (SOXL 5분만)", lcN, lcW, lcP, 1, not na(lcT) and lcT >= math.max(tX, tB, tS))
+    stRow(9, isSoxl and (tf == "5" or tf == "15" or tf == "30") ? "롱 다발" : "롱 다발 (SOXL 5·15·30분만)", lcN, lcW, lcP, 1, not na(lcT) and lcT >= math.max(tX, tB, tS))
     stRow(10, isSoxl and tf == "5" ? "롱 겹침 (5분 선)" : "롱 겹침 (SOXL 5분만)", loN, loW, loP, 1, not na(loT) and loT >= math.max(tX, tB, tS))
     stRow(11, isSoxl and tf == "5" ? "숏 겹침 (5분 선)" : "숏 겹침 (SOXL 5분만)", soN, soW, soP, 1, not na(soT) and soT >= math.max(tX, tB, tS))
     stC(0, 12, blLast ? "마지막 신호 " + str.format_time(blT, "MM/dd HH:mm", "Asia/Seoul") + " · ▲ " + blName + " → ▶ 줄 참고" : shLast ? "마지막 신호 " + str.format_time(slT, "MM/dd HH:mm", "Asia/Seoul") + " · ▽ 동시 이탈 숏 → ▶ 줄 참고" : tX > 0 ? "마지막 신호 " + str.format_time(xlT, "MM/dd HH:mm", "Asia/Seoul") + " · ◆ " + (xlStar ? "★" : "★ 아님") + " · 200선 " + (xlUp ? "오르는 중" : "내려가는 중") + " → ▶ 줄 참고" : "아직 신호 없음", color.new(#3a3a1a, 0), "", color.new(#FFD54F, 0))
