@@ -596,6 +596,10 @@ plotshape(h1Long and (showOld or barstate.islast), "1시간 롱", shape.labelup,
 shSl = close + 2 * xAt
 shTp = close - 4 * xAt
 plotshape(shOk and (showOld or barstate.islast), "50·100 동시 이탈 (숏)", shape.triangledown, location.abovebar, color.new(#e53935, 0), size = size.small, text = "숏", textcolor = color.new(#e57373, 0))
+// ▽ 과이격 숏 (참고) — SOXL 1시간 · 종가가 20선보다 ATR 3배 이상 위 + 음봉 + 200선이 40봉 전보다 낮음(상승장 아님)
+//   검증 36회 · 평균 +1.67% · 승률 42% (손절 +2ATR · 익절 -4ATR) · 표본이 적어 참고용
+ovSh = isSoxl and tf == "60" and close - ta.sma(close, 20) >= 3 * xAt and close < open and shSlope < 0
+plotshape(ovSh and (showOld or barstate.islast), "과이격 숏 (참고)", shape.labeldown, location.abovebar, color.new(#ef6c00, 0), size = size.tiny, text = "과이격 숏(참고)", textcolor = color.white)
 var int  xlT = na      // 마지막 동시 돌파 시각 · ★ 여부 · 200선 오르는 중 여부 (표에 '지금 신호' 표시용)
 var bool xlStar = false
 var bool xlUp = false
