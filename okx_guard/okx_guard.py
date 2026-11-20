@@ -44,7 +44,7 @@ COOL_MIN = int(os.environ.get("COOL_MIN", "0"))   # 끔 (11/17 사용자 요청)
 COOL_KRW = int(os.environ.get("COOL_KRW", "5000"))   # 이 금액(원) 이상 잃고 닫혔을 때만 쉬는 시간 (수수료 포함 실제 손익 · 11/16 사용자 기준)
 DUMP_GRACE = int(os.environ.get("DUMP_GRACE_SEC", "180"))   # SOXL·BTC·ETH 투매 신호 봉 마감 뒤 이 시간(초) 안에 연 포지션은 횟수·쉬는 시간에서 뺌 (알림 오고 약 2분)
 BLOCK_HOURS = ((1, 6), (10, 18))   # 한국 시간 진입 금지 구간 (새벽 1~6시 · 낮 10~18시) · 텔레그램 '시간 풀어'면 그날은 바로 풀림
-TIME_OFF_DAYS = {"2026-11-18", "2026-11-19"}               # 이 날짜(YYYY-MM-DD)는 시간 금지 끔 (Claude에게 요청 시)
+TIME_OFF_DAYS = {"2026-11-18", "2026-11-19", "2026-11-21"}               # 이 날짜(YYYY-MM-DD)는 시간 금지 끔 (Claude에게 요청 시)
 BLOCK_FROM_MS = int(datetime(2026, 11, 17, 12, 15, tzinfo=KST).timestamp() * 1000)   # 이 시각 이후 연 포지션부터 적용 (이미 들고 있던 건 안 건드림)
 CAP_OFF_DAYS = {"2026-11-19"}   # 그날만 증거금 상한 끔 (사용자 요청)
 MARGIN_CAP = float(os.environ.get("MARGIN_CAP", "0.4"))   # 포지션 증거금 상한 = 계좌의 40%
