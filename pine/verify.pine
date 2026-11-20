@@ -306,7 +306,7 @@ if mkt == "코인" and tf != "1" and tf != "3" and tf != "5" and tf != "15" and 
     name := "이 봉에는 검증된 근거가 없어요"
 
 // ───────────────────────── 차트 표시 ─────────────────────────
-plotshape(buy and (showOld or barstate.islast), "매수 신호", shape.triangleup, location.belowbar, color.new(#2e7d32, 0), size = size.small)
+plotshape(buy and (showOld or barstate.islast), "매수 신호", shape.triangleup, location.belowbar, str.contains(name, "추세 돌파") ? color.new(#9e9e9e, 0) : color.new(#2e7d32, 0), size = size.small)   // 추세 돌파 ▲는 회색
 plotshape(wait_ and (showOld or barstate.islast), "조건은 맞지만 목표가 가까워 대기", shape.circle, location.belowbar, color.new(#9e9e9e, 0), size = size.tiny)
 if buy and not na(sl)
     line.new(bar_index, sl, bar_index + 20, sl, color = color.new(#c62828, 0), style = line.style_dashed)
@@ -592,7 +592,6 @@ lgClu = isSoxl and tf == "5" and lgB and cntLg >= 2 and cntSh == 0
 h1Long = isSoxl and tf == "60" and xOk
 plotshape(shClu and (showOld or barstate.islast), "숏 다발", shape.labeldown, location.abovebar, color.new(#c62828, 0), size = size.tiny, text = "숏 다발", textcolor = color.white)
 plotshape(lgClu and (showOld or barstate.islast), "롱 다발", shape.labelup, location.belowbar, color.new(#2e7d32, 0), size = size.tiny, text = "롱 다발", textcolor = color.white)
-plotshape(h1Long and (showOld or barstate.islast), "1시간 롱", shape.labelup, location.belowbar, color.new(#1565c0, 0), size = size.tiny, text = "1시간 롱", textcolor = color.white)
 shSl = close + 2 * xAt
 shTp = close - 4 * xAt
 plotshape(shOk and (showOld or barstate.islast), "50·100 동시 이탈 (숏)", shape.triangledown, location.abovebar, color.new(#e53935, 0), size = size.small, text = "숏", textcolor = color.new(#e57373, 0))
