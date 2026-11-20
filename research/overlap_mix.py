@@ -1,6 +1,6 @@
 """◆·▲ 섞어서 모든 봉 롱 겹침 (OKX SOXL) → research/out_overlap_mix.txt
 ▲ = 추세 돌파 규칙(50선 위·상승 · 48봉 고점 돌파 · 봉 1.3배 · RSI 70↑)을 모든 봉에 똑같이 적용
-겹침 = 두 신호 마감 차이 W 이내 → 늦게 뜬 신호 마감에 진입 · 큰 봉 선(손절 2ATR·익절 4ATR) 닿을 때까지 · 수수료 0.1%
+겹침 = 두 신호 마감 차이 W 이내 → 큰 봉 신호 1개당 1번 · 큰 봉 신호와 첫 작은 봉 신호 중 늦은 쪽에서 진입 · 큰 봉 선(손절 2ATR·익절 4ATR) 닿을 때까지 · 수수료 0.1%
 비교 = 같은 기간 큰 봉 쪽 신호 혼자"""
 import sys, statistics as st, bisect
 sys.path.insert(0, "signal_bot")
@@ -47,12 +47,14 @@ for x in range(len(keys)):
         sa = [t for t in S[a] if t >= st0]; sb = [t for t in S[b] if t >= st0]
         base = res([t for t in S[bigk] if t >= st0], big)
         for W in sorted({big * 60, 3 * 3600, 6 * 3600}):
+            # 큰 봉 신호 1개당 1번만 (작은 봉 신호가 여러 번 겹쳐도 같은 자리로 셈)
+            bigL = sa if a == bigk else sb; oth = sb if a == bigk else sa
             ev = set()
-            for t in sa:
-                k = bisect.bisect_left(sb, t - W)
+            for t in bigL:
+                k = bisect.bisect_left(oth, t - W)
                 near = []
-                while k < len(sb) and sb[k] <= t + W: near.append(sb[k]); k += 1
-                if near: ev.add(max([t] + near))
+                while k < len(oth) and oth[k] <= t + W: near.append(oth[k]); k += 1
+                if near: ev.add(max(t, min(near)))
             r = res(sorted(ev), big)
             rows.append((a, b, W, r, base, bigk))
 L += ["", "■ 마름모+삼각형 겹침 전부 (칸: 횟수 승률 평균 · 비교 = 큰 봉 신호 혼자)"]
