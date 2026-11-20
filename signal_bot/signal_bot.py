@@ -869,7 +869,7 @@ def cluster_msgs(tf, b):
     return out
 
 
-def overlap_msgs(data, state):
+def overlap_msgs(data, state, fresh=1800):
     """SOXL 겹침 알림 (검증 11/20 · OKX 26.7~11월 · [후보])
     롱 겹침 = 1시간 ◆ 앞뒤 6시간 안에 5분·15분 ◆ / 숏 겹침 A = 5분 ▽ + 15분 ▽ 15분 안 / 숏 겹침 B = 5분 ▽ + 1시간 ▽ 6시간 안
     둘 중 늦게 뜬 신호가 방금(30분 안) 떴을 때 1번만"""
@@ -891,7 +891,7 @@ def overlap_msgs(data, state):
                     continue
                 te = max([tb] + near)
                 key = f"{kind}:{tb}"
-                if key in sent or now - te > 1800:
+                if key in sent or now - te > fresh:
                     continue
                 sent.append(key)
                 tf_s = sm[1]; ts = max(near)
