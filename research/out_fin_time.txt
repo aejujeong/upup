@@ -1,0 +1,5 @@
+corp map 4020 245.8s
+codes 4020
+10개 0.8s status 013 rows 0
+50개 0.8s status 013 rows 0
+100개 0.8s status 013 rows 0
