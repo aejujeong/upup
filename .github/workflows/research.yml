@@ -34,6 +34,7 @@ jobs:
           OKX_API_KEY: ${{ secrets.OKX_API_KEY }}
           OKX_SECRET: ${{ secrets.OKX_SECRET }}
           OKX_PASSPHRASE: ${{ secrets.OKX_PASSPHRASE }}
+          DART_KEY: ${{ secrets.DART_KEY }}
       - name: 결과 올리기
         if: always()
         run: |
