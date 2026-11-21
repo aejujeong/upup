@@ -664,6 +664,120 @@ def load_cycle_ref():
     return {"secs": secs, "flows": flows}
 
 
+# ───────── 실적 꾸준히 상승 (DART 다중회사 주요계정) ─────────
+REV_NAMES = ("매출액", "수익(매출액)", "영업수익", "매출")
+OP_NAMES = ("영업이익", "영업이익(손실)")
+
+
+def _amt(x):
+    try:
+        return float(str(x).replace(",", "")) if x not in (None, "", "-") else None
+    except Exception:
+        return None
+
+
+def _fin_report(cm_codes, year, rc, deadline):
+    """한 보고서(연도·종류)의 종목별 매출·영업이익 (연결 우선). 캐시: 마감 뒤 45일까지는 3일마다 새로 받음"""
+    f = CACHE / f"fin_{year}_{rc}.json"
+    today = dt.date.today()
+    try:
+        saved = json.loads(f.read_text(encoding="utf-8"))
+        age = (today - dt.date.fromisoformat(saved["t"])).days
+        if (today - deadline).days > 45 and dt.date.fromisoformat(saved["t"]) > deadline + dt.timedelta(days=45) or age < 3:
+            return saved["d"]
+    except Exception:
+        pass
+    out = {}
+    items = list(cm_codes.items())
+    for k in range(0, len(items), 100):
+        part = items[k:k + 100]
+        try:
+            j = json.loads(_dart_get("fnlttMultiAcnt.json", corp_code=",".join(cc for _, cc in part), bsns_year=str(year), reprt_code=rc))
+        except Exception as e:
+            print(f"  실적 {year} {rc} 받기 실패: {e}")
+            continue
+        for x in j.get("list", []) or []:
+            sc = x.get("stock_code"); nm = (x.get("account_nm") or "").strip()
+            key = "r" if nm in REV_NAMES else "o" if nm in OP_NAMES else None
+            if not sc or not key or x.get("sj_div") not in ("IS", "CIS"):
+                continue
+            fs = x.get("fs_div")
+            d = out.setdefault(sc, {})
+            if d.get(key + "fs") == "CFS" and fs != "CFS":
+                continue
+            d[key] = [_amt(x.get("thstrm_amount")), _amt(x.get("thstrm_add_amount")), _amt(x.get("frmtrm_amount")),
+                      _amt(x.get("frmtrm_add_amount")), _amt(x.get("bfefrmtrm_amount"))]
+            d[key + "fs"] = fs
+    CACHE.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"t": today.isoformat(), "d": out}), encoding="utf-8")
+    return out
+
+
+def load_fin(codes):
+    """{종목: {"f": 2(연간 3년 연속 + 최근 4분기 전년 대비 증가) / 1(분기만), "tip": 설명}}"""
+    if not DART_KEY:
+        return {}
+    cm = _dart_corp_codes()
+    cmc = {c: cm[c] for c in codes if c in cm}
+    today = dt.date.today()
+    DL = {1: (5, 16), 2: (8, 15), 3: (11, 15)}
+    def qdead(y, q):
+        return dt.date(y + 1, 4, 1) if q == 4 else dt.date(y, *DL[q])
+    y, q = today.year, 4
+    while qdead(y, q) > today:
+        q -= 1
+        if q == 0:
+            y, q = y - 1, 4
+    quarters = []
+    yy, qq = y, q
+    for _ in range(4):
+        quarters.append((yy, qq)); qq -= 1
+        if qq == 0:
+            yy, qq = yy - 1, 4
+    A = today.year - 1 if today >= dt.date(today.year, 4, 1) else today.year - 2
+    RC = {1: "11013", 2: "11012", 3: "11014", 4: "11011"}
+    rep = {}
+    def R(yr, qn):
+        k = (yr, qn)
+        if k not in rep:
+            rep[k] = _fin_report(cmc, yr, RC[qn], qdead(yr, qn))
+        return rep[k]
+    ann = R(A, 4); ann1 = R(A - 1, 4)
+    for yr, qn in quarters:
+        R(yr, qn)
+        if qn == 4:
+            R(yr, 3)
+    out = {}
+    def qval(sc, yr, qn, key):
+        """(이번 분기, 작년 같은 분기) — 4분기는 연간 - 3분기 누적"""
+        if qn < 4:
+            v = (rep[(yr, qn)].get(sc) or {}).get(key)
+            return (v[0], v[2]) if v else (None, None)
+        a = (rep[(yr, 4)].get(sc) or {}).get(key); c3 = (rep[(yr, 3)].get(sc) or {}).get(key)
+        if not a or not c3 or None in (a[0], a[2], c3[1], c3[3]):
+            return (None, None)
+        return (a[0] - c3[1], a[2] - c3[3])
+    for sc in cmc:
+        qok, qtip = True, []
+        for yr, qn in quarters:
+            r_, rp = qval(sc, yr, qn, "r"); o_, op = qval(sc, yr, qn, "o")
+            if None in (r_, rp, o_, op) or not (r_ > rp and o_ > op and o_ > 0):
+                qok = False; break
+            qtip.append(f"{str(yr)[2:]}.{qn}Q 매출 {(r_ / rp - 1) * 100:+.0f}% · 영업이익 {'흑자 전환' if op <= 0 else f'{(o_ / op - 1) * 100:+.0f}%'}")
+        if not qok:
+            continue
+        a, a1 = ann.get(sc) or {}, ann1.get(sc) or {}
+        aok = False
+        if a.get("r") and a.get("o") and a1.get("r") and a1.get("o"):
+            rv = [a1["r"][4], a["r"][4], a["r"][2], a["r"][0]]; ov = [a1["o"][4], a["o"][4], a["o"][2], a["o"][0]]
+            aok = None not in rv + ov and all(rv[i] < rv[i + 1] for i in range(3)) and all(ov[i] < ov[i + 1] for i in range(3)) and ov[-1] > 0
+        tip = (f"{A - 3}~{A}년 매출·영업이익 해마다 증가 + " if aok else "") + "최근 4분기 매출·영업이익 모두 작년 같은 분기보다 증가: " + " / ".join(reversed(qtip))
+        out[sc] = {"f": 2 if aok else 1, "tip": tip}
+    print(f"실적 꾸준히 상승: 둘 다 {sum(v['f'] == 2 for v in out.values())}개 · 분기만 {sum(v['f'] == 1 for v in out.values())}개 (분기 {quarters[-1]}~{quarters[0]}, 연간 {A - 3}~{A})")
+    return out
+
+
+
 def load_descs(codes):
     f = CACHE / "desc.json"
     try:
@@ -1007,6 +1121,16 @@ def collect(days_all):
     tlog("섹터·주기 계산 끝")
     descs = load_descs([t for t in rows if t[-1] == "0" or t[:5] + "0" not in rows])   # 우선주는 보통주 소개를 같이 씀
     tlog("회사 소개 받기 끝")
+    try:
+        fin = load_fin([t for t in rows if t[-1] == "0"])
+    except Exception as e:
+        print(f"실적 받기 중 문제가 생겨 건너뜁니다: {e}")
+        fin = {}
+    for t, r in rows.items():
+        g = fin.get(t) or fin.get(t[:5] + "0")
+        if g:
+            r["fin"] = g["f"]; r["finTip"] = g["tip"]
+    tlog("실적 꾸준히 상승 끝")
     for t, r in rows.items():
         r["desc"] = descs.get(t) or descs.get(t[:5] + "0", "")
         r["sub"] = sub_sector(r.get("sec", ""), " ".join([r.get("prod", ""), r["desc"], r.get("sec1", "")]), r.get("sec1", ""))
@@ -2888,7 +3012,7 @@ const wonTd = v => `<td class="${v > 0 ? 'pos' : v < 0 ? 'neg' : ''}">${won(v, t
 const COLS = [
   {k:null,   t:'관심', cell: (r) => `<td class="st">${starBtn(r.code)}</td>`},
   {k:null,   t:'순위', cell: (r, x) => `<td>${x.rank}</td>`},
-  {k:'name', t:'종목명', cell: (r) => { const h = DAN_HIT[r.code] && DAN_HIT[r.code].length >= 2 ? DAN_HIT[r.code] : null; const j = flowJudge(r); return `<td class="name">${esc(r.name)}${h ? ` <span class="sigb good" title="지금 고른 조건 안에서 외국인+기관 합산/시총 상위 10개에 ${h.join('·')} 탭 모두 들어감 (단타 필터를 켜면 단타 조건 기준)">${h.length}개 겹침 <small>${h.join('·')}</small></span>` : ''}${j ? ` <span class="sigb ${j.cls}" title="${esc(j.tip)}">${j.t}</span>` : ''}${k2Badge(r)}</td>`; }},
+  {k:'name', t:'종목명', cell: (r) => { const h = DAN_HIT[r.code] && DAN_HIT[r.code].length >= 2 ? DAN_HIT[r.code] : null; const j = flowJudge(r); return `<td class="name">${esc(r.name)}${h ? ` <span class="sigb good" title="지금 고른 조건 안에서 외국인+기관 합산/시총 상위 10개에 ${h.join('·')} 탭 모두 들어감 (단타 필터를 켜면 단타 조건 기준)">${h.length}개 겹침 <small>${h.join('·')}</small></span>` : ''}${j ? ` <span class="sigb ${j.cls}" title="${esc(j.tip)}">${j.t}</span>` : ''}${k2Badge(r)}${finBadge(r)}</td>`; }},
   {k:'sig',  t:'신호', cell: (r) => `<td>${sigBadge(sigOf(r))}</td>`},
   {k:null,   t:'코드', cell: (r) => `<td class="code">${r.code}</td>`},
   {k:null,   t:'시장', cell: (r) => `<td>${r.mkt}</td>`},
@@ -3701,7 +3825,7 @@ function renderPicks(){
   $('pickRows').innerHTML = list.map(x => {
     const first = x.sec !== prev; if (first) rank = 0; rank++; prev = x.sec;
     return `<tr data-code="${x.r.code}" class="${first ? 'first' : ''}"><td class="name nw">${first ? `${esc(x.sec)}<div class="hist">${esc(x.lab || '')}</div>` : ''}</td><td class="nw">${rank}</td>
-      <td class="name nw">${esc(x.r.name)}</td><td class="nw"><span class="tot">${fmt(x.total, 0)}</span></td>
+      <td class="name nw">${esc(x.r.name)}${finBadge(x.r)}</td><td class="nw"><span class="tot">${fmt(x.total, 0)}</span></td>
       <td class="nw">${(() => { const k = phStreak(x.r.code, S.asof ? (x.r.h && x.r.h.px) : x.r.price); if (!k) return PH.data && !PH.data.none ? '<span class="muted">-</span>' : '<span class="muted">불러오는 중</span>'; return `${k.n}일째${k.n > 1 && k.ret !== null ? ` · <span class="${k.ret > 0 ? 'pos' : k.ret < 0 ? 'neg' : ''}">${plus(k.ret)}${fmt(k.ret, 1)}%</span>` : ''}<div class="hist">첫 추천 ${k.first.slice(5)}</div>`; })()}</td>
       <td class="nw">${(() => { const t = phStat(x.lab); if (!t) return '<span class="muted">-</span>'; const f = (h, lb) => t[h] ? `${lb} 승률 ${t[h].w}% · 평균 <span class="${t[h].a > 0 ? 'pos' : t[h].a < 0 ? 'neg' : ''}">${plus(t[h].a)}${fmt(t[h].a, 1)}%</span>` : ''; return `${f(20, '20일 뒤')}<div class="hist">${f(60, '60일 뒤')} · ${t[20] ? t[20].n : 0}건</div>`; })()}</td>
       <td class="nw">${fmt(x.flow, 0)}</td><td class="nw">${S.asof && !(x.r.h && x.r.h.sr) ? '-' : fmt(x.pos, 0)}</td><td class="nw">${fmt(x.earn, 0)}</td><td class="nw">${S.asof ? '-' : fmt(x.pat, 0)}</td><td class="nw">${fmt(x.cool, 0)}</td>
@@ -4682,6 +4806,10 @@ function k2Good(r, x){
 const k2List = r => (S.asof ? k2AsOf(r) : (r.k2 || [])).map(x => ({...x, good: k2Good(r, x)}));
 // 3봉 확인: 신호 뒤 4시간봉 3개가 지난 시점 종가가 플러스 (검증: 좋은 조건에서 3봉 확인 뒤 그때 사서 20일 · 손절 -10% → 평균 +4.4%·이긴 비율 55% / 강한 돌파면 +11.1%·57%. 5봉 확인보다 나았음)
 const k2Of = (r, k) => k2List(r).find(x => x.k === (k || S.k2f) && (!S.k2good || x.good) && (!S.k2c5 || (x.c3 !== null && x.c3 !== undefined && x.c3 > 0))) || null;
+function finBadge(r){
+  if (!r.fin) return '';
+  return r.fin === 2 ? ` <span class="sigb good" title="${esc(r.finTip || '')}">실적 꾸준↑</span>` : ` <span class="sigb" title="${esc(r.finTip || '')}">분기 실적↑</span>`;
+}
 function k2Badge(r){
   const all = k2List(r); if (!all.length) return '';
   const list = S.k2f !== 'ALL' ? all.filter(x => x.k === S.k2f) : all.filter(x => x.k === 'S');   // 필터 끔: 강한 돌파만 표시
