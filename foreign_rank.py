@@ -676,40 +676,63 @@ def _amt(x):
         return None
 
 
+FIN_WORKERS = 8                # DART 실적을 동시에 몇 묶음씩 받을지 (100종목 한 묶음에 50초쯤 걸림)
+FIN_BUDGET_MIN = 12            # 한 번 실행에 실적 받기에 쓸 최대 시간(분). 넘으면 다음 실행 때 이어서
+_FIN_T0 = [None]
+
+
 def _fin_report(cm_codes, year, rc, deadline):
-    """한 보고서(연도·종류)의 종목별 매출·영업이익 (연결 우선). 캐시: 마감 뒤 45일까지는 3일마다 새로 받음"""
+    """한 보고서(연도·종류)의 종목별 매출·영업이익 (연결 우선)
+    받은 종목은 캐시에 쌓고, 시간 제한에 걸리면 다음 실행 때 나머지를 이어 받음. 마감 뒤 45일까지는 3일마다 처음부터 새로."""
+    from concurrent.futures import ThreadPoolExecutor
     f = CACHE / f"fin_{year}_{rc}.json"
     today = dt.date.today()
+    fresh = (today - deadline).days <= 45
     try:
         saved = json.loads(f.read_text(encoding="utf-8"))
-        age = (today - dt.date.fromisoformat(saved["t"])).days
-        if (today - deadline).days > 45 and dt.date.fromisoformat(saved["t"]) > deadline + dt.timedelta(days=45) or age < 3:
-            return saved["d"]
+        if fresh and (today - dt.date.fromisoformat(saved["t"])).days >= 3:
+            saved = {"t": today.isoformat(), "d": {}, "got": []}
     except Exception:
-        pass
-    out = {}
-    items = list(cm_codes.items())
-    for k in range(0, len(items), 100):
-        part = items[k:k + 100]
+        saved = {"t": today.isoformat(), "d": {}, "got": []}
+    got = set(saved.get("got", []))
+    todo = sorted(c for c in cm_codes if c not in got)
+    if not todo:
+        return saved["d"]
+    if _FIN_T0[0] is None:
+        _FIN_T0[0] = time.time()
+    chunks = [todo[k:k + 100] for k in range(0, len(todo), 100)]
+    out = saved["d"]
+
+    def one(part):
+        if time.time() - _FIN_T0[0] > FIN_BUDGET_MIN * 60:
+            return part, None
         try:
-            j = json.loads(_dart_get("fnlttMultiAcnt.json", corp_code=",".join(cc for _, cc in part), bsns_year=str(year), reprt_code=rc))
+            return part, json.loads(_dart_get("fnlttMultiAcnt.json", corp_code=",".join(cm_codes[c] for c in part), bsns_year=str(year), reprt_code=rc))
         except Exception as e:
             print(f"  실적 {year} {rc} 받기 실패: {e}")
-            continue
-        for x in j.get("list", []) or []:
-            sc = x.get("stock_code"); nm = (x.get("account_nm") or "").strip()
-            key = "r" if nm in REV_NAMES else "o" if nm in OP_NAMES else None
-            if not sc or not key or x.get("sj_div") not in ("IS", "CIS"):
+            return part, None
+
+    with ThreadPoolExecutor(FIN_WORKERS) as ex:
+        for part, j in ex.map(one, chunks):
+            if j is None:
                 continue
-            fs = x.get("fs_div")
-            d = out.setdefault(sc, {})
-            if d.get(key + "fs") == "CFS" and fs != "CFS":
-                continue
-            d[key] = [_amt(x.get("thstrm_amount")), _amt(x.get("thstrm_add_amount")), _amt(x.get("frmtrm_amount")),
-                      _amt(x.get("frmtrm_add_amount")), _amt(x.get("bfefrmtrm_amount"))]
-            d[key + "fs"] = fs
+            got.update(part)
+            for x in j.get("list", []) or []:
+                sc = x.get("stock_code"); nm = (x.get("account_nm") or "").strip()
+                key = "r" if nm in REV_NAMES else "o" if nm in OP_NAMES else None
+                if not sc or not key or x.get("sj_div") not in ("IS", "CIS"):
+                    continue
+                fs = x.get("fs_div")
+                d = out.setdefault(sc, {})
+                if d.get(key + "fs") == "CFS" and fs != "CFS":
+                    continue
+                d[key] = [_amt(x.get("thstrm_amount")), _amt(x.get("thstrm_add_amount")), _amt(x.get("frmtrm_amount")),
+                          _amt(x.get("frmtrm_add_amount")), _amt(x.get("bfefrmtrm_amount"))]
+                d[key + "fs"] = fs
     CACHE.mkdir(parents=True, exist_ok=True)
-    f.write_text(json.dumps({"t": today.isoformat(), "d": out}), encoding="utf-8")
+    f.write_text(json.dumps({"t": saved["t"], "d": out, "got": sorted(got)}), encoding="utf-8")
+    left = len([c for c in cm_codes if c not in got])
+    print(f"  실적 {year} {rc}: {len(cm_codes) - left}/{len(cm_codes)} 종목 받음" + (" (나머지는 다음 실행 때)" if left else ""))
     return out
 
 

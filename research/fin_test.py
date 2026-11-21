@@ -5,6 +5,7 @@ os.environ.setdefault("CACHE_DIR", "/tmp/frcache")
 import foreign_rank as F
 cm = F._dart_corp_codes()
 codes = [c for c in cm if c[-1] == "0"]
+F.FIN_BUDGET_MIN = 60
 t0 = time.time()
 out = F.load_fin(codes)
 L = [f"대상 {len(codes)} · {time.time() - t0:.0f}초 · 둘 다 {sum(v['f'] == 2 for v in out.values())} · 분기만 {sum(v['f'] == 1 for v in out.values())}"]
