@@ -1,5 +1,21 @@
-corp map 4020 245.8s
-codes 4020
-10개 0.8s status 013 rows 0
-50개 0.8s status 013 rows 0
-100개 0.8s status 013 rows 0
+corp map 4020 194.8s
+0 0.7s status 013 조회된 데이타가 없습니다. rows 0
+100 0.9s status 013 조회된 데이타가 없습니다. rows 0
+200 0.7s status 013 조회된 데이타가 없습니다. rows 0
+300 0.7s status 013 조회된 데이타가 없습니다. rows 0
+400 0.7s status 013 조회된 데이타가 없습니다. rows 0
+500 0.7s status 013 조회된 데이타가 없습니다. rows 0
+600 2.6s status 000 정상 rows 74
+700 38.6s status 000 정상 rows 1442
+800 48.2s status 000 정상 rows 1929
+900 53.9s status 000 정상 rows 2268
+1000 54.9s status 000 정상 rows 2226
+1100 51.0s status 000 정상 rows 2245
+1200 46.9s status 000 정상 rows 1926
+1300 52.8s status 000 정상 rows 2185
+1400 54.6s status 000 정상 rows 2227
+1500 33.4s status 000 정상 rows 1436
+1600 51.8s status 000 정상 rows 2114
+1700 58.3s status 000 정상 rows 2450
+1800 56.1s status 000 정상 rows 2292
+10분 넘어 중단
